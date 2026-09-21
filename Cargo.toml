@@ -1,0 +1,11 @@
+# Placeholder workspace for a future Rust ext_proc connector.
+#
+# This is intentionally NOT a Built on Envoy Rust dynamic-module crate
+# (cdylib / HttpFilter). The product is an out-of-process ExternalProcessor
+# gRPC server linking libmodsecurity — see docs/boe/.
+#
+# Runnable code remains in the experiment lab until a clean migration.
+
+[workspace]
+resolver = "2"
+members = ["crates/ext-proc-modsec"]

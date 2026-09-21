@@ -1,0 +1,12 @@
+[package]
+name = "ext-proc-modsec"
+version = "0.0.0"
+edition = "2021"
+license = "MIT-0"
+authors = ["Etienne Munnich"]
+description = "Placeholder for Envoy ext_proc → libmodsecurity connector (not implemented here yet)"
+publish = false
+
+[[bin]]
+name = "ext-proc-modsec"
+path = "src/main.rs"

@@ -1,0 +1,12 @@
+# .gitignore
+/target/
+**/*.rs.bk
+Cargo.lock
+.DS_Store
+*.swp
+.env
+.env.*
+!.env.example
+experiments/lab/logs/
+*.log
+/refs/
