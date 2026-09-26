@@ -10,3 +10,6 @@ Cargo.lock
 experiments/lab/logs/
 *.log
 /refs/
+
+# Demo CRS checkout (install-crs.sh)
+demo/.crs/
