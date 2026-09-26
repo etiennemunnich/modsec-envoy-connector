@@ -1,44 +1,8 @@
-# Third-party attribution — envoy-modsec-connex
+envoy-modsec-connex
+Copyright (c) 2026 Etienne Munnich
 
-This project is an Envoy **External Processing (`ext_proc`)** connector to
-**libmodsecurity** (ModSecurity v3). It is **not** affiliated with or endorsed by
-the Envoy, ModSecurity, OWASP CRS, or Built on Envoy projects.
+This product includes software developed for an Envoy ExternalProcessor
+(ext_proc) connector to libmodsecurity.
 
-## Envoy
-
-- Project: [envoyproxy/envoy](https://github.com/envoyproxy/envoy)
-- Relevant API: External Processor (`envoy.service.ext_proc.v3`)
-- Typical license: Apache License 2.0
-- This repository implements a client of that API; Envoy itself is not vendored here.
-
-## ModSecurity / libmodsecurity
-
-- Project: [owasp-modsecurity/ModSecurity](https://github.com/owasp-modsecurity/ModSecurity)
-- Typical license: Apache License 2.0
-- Runtime dependency when the connector links against libmodsecurity.
-
-## OWASP Core Rule Set (CRS)
-
-- Project: [coreruleset/coreruleset](https://github.com/coreruleset/coreruleset)
-- Typical license: Apache License 2.0
-- CRS rule packs are **optional** for engine/connector development and must be
-  fetched/attributed separately when used. Do not treat CRS as bundled unless a
-  future release explicitly vendors it with license compliance.
-
-## Built on Envoy (BoE)
-
-- Docs: https://builtonenvoy.io/
-- Catalog / examples: [tetratelabs/built-on-envoy](https://github.com/tetratelabs/built-on-envoy)
-- This repo targets BoE `type: ext_proc` alignment for a **future** catalog path.
-  **No catalog submission** has been made from this repository.
-
-## Coraza (reference only)
-
-- Coraza and its Envoy connectors are studied for body/EOS design lessons only.
-- This product ships **libmodsecurity**, not Coraza.
-
-## Other dependencies
-
-Rust crate and system library licenses will be enumerated as the connector code
-is migrated from the experiment lab. Until then, treat this NOTICE as the
-honesty layer for Envoy / ModSecurity / CRS naming.
+Licensed under the Apache License, Version 2.0.
+See the LICENSE file in the project root.

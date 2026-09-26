@@ -1,0 +1,17 @@
+[package]
+name = "modsec-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "Apache-2.0"
+authors = ["Etienne Munnich"]
+description = "Safe façade over libmodsecurity for the Envoy ext_proc connector (scaffold)."
+publish = false
+
+[dependencies]
+thiserror = "2"
+
+[features]
+default = []
+# Reserved: link real libmodsecurity via `modsecurity` crate after migrate.
+native = []

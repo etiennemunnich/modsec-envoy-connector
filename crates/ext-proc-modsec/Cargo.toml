@@ -1,12 +1,16 @@
 [package]
 name = "ext-proc-modsec"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
-license = "MIT-0"
+rust-version = "1.83"
+license = "Apache-2.0"
 authors = ["Etienne Munnich"]
-description = "Placeholder for Envoy ext_proc → libmodsecurity connector (not implemented here yet)"
+description = "Envoy ExternalProcessor (ext_proc) → libmodsecurity connector (scaffold until migrate)."
 publish = false
 
 [[bin]]
 name = "ext-proc-modsec"
 path = "src/main.rs"
+
+[dependencies]
+modsec-engine = { path = "../modsec-engine" }

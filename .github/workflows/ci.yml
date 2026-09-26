@@ -1,0 +1,59 @@
+name: ci
+
+# Thin PR gate: pin-check + rust-quality on Ubuntu.
+# Full CRS go-ftw, fail-mode live proofs, H2 protocol suite, ModSec-linked
+# builds stay Mac lab / dispatch — never free-tier PR (see AGENTS.md).
+
+on:
+  push:
+    branches:
+      - main
+      - "cursor/**"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENVOY_PIN: v1.39.1
+  MODSECURITY_PIN: v3.0.16
+  CRS_TAG: v4.29.0
+
+jobs:
+  pin-check:
+    name: pin-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert versions.lock.md pins
+        run: |
+          chmod +x scripts/check-pins.sh
+          ./scripts/check-pins.sh
+
+  rust-quality:
+    name: rust-quality (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: "[BUILD] cargo check"
+        run: cargo check --workspace
+
+      - name: "[BUILD TEST] cargo fmt"
+        run: cargo fmt --all -- --check
+
+      - name: "[BUILD TEST] cargo clippy -D warnings"
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: "[BUILD TEST] cargo test"
+        run: cargo test --workspace
+
+      - name: "[BUILD] cargo build -p ext-proc-modsec"
+        run: cargo build -p ext-proc-modsec
