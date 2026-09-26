@@ -6,6 +6,15 @@ Versions used in this tree are listed in [`versions.lock.md`](../versions.lock.m
 
 Architecture and outcomes: [`docs/how-it-works.md`](../docs/how-it-works.md).
 
+## Scripts
+
+| Script | Role |
+|--------|------|
+| [`scripts/install-envoy.sh`](./scripts/install-envoy.sh) | Verify / pull Envoy **v1.39.1** |
+| [`scripts/install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh) | Verify libmodsecurity **v3.0.16** |
+| [`scripts/install-crs.sh`](./scripts/install-crs.sh) | Clone CRS **v4.29.0** into `demo/.crs` |
+| [`scripts/smoke.sh`](./scripts/smoke.sh) | Pin check + `cargo build` / `cargo test` |
+
 ---
 
 ## 1. Envoy Proxy v1.39.1
