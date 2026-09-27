@@ -1,6 +1,7 @@
 name: release
 
-# Tag vX.Y.Z on main → per-arch native release build (x86_64, aarch64) →
+# Tag vX.Y.Z on main → gate (the tag commit is on main and ci is green for
+# it) → per-arch native release build (x86_64, aarch64) →
 # ext-proc-modsec-<ver>-linux-<arch>.tar.gz + .sha256 → per-arch image →
 # multi-arch manifest ghcr.io/<owner>/<repo>:<ver> → GitHub Release.
 # workflow_dispatch builds and pushes the same artifacts under sha-<short>
@@ -19,8 +20,37 @@ permissions:
   contents: read
 
 jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Tag commit is on main and ci is green for it
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # identical = main's tip, behind = an ancestor of main; ahead/diverged = not on main.
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" -q .status)"
+          case "${status}" in
+            identical | behind) echo "${GITHUB_REF_NAME} (${GITHUB_SHA::7}) is on main (${status})" ;;
+            *) echo "::error::tag ${GITHUB_REF_NAME} (${GITHUB_SHA::7}) is not on main (compare: ${status})"; exit 1 ;;
+          esac
+          got="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
+            -q '.check_runs[] | select(.conclusion == "success") | .name')"
+          for n in "ci-ok" "pin-check" "rust-quality (x86_64)" "rust-quality (aarch64)" "msrv (rust-version)" \
+                   "e2e-pin / e2e (x86_64)" "e2e-pin / e2e (aarch64)"; do
+            grep -qxF "${n}" <<<"${got}" || { echo "::error::no green '${n}' check on ${GITHUB_SHA::7} (dispatch ci on it first)"; exit 1; }
+            echo "green: ${n}"
+          done
+
   build:
     name: build (${{ matrix.arch }})
+    needs: gate
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
