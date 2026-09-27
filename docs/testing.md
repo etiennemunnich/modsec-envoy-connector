@@ -26,7 +26,7 @@ Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-clo
 | **E — Stable versions** | a new stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x release, and the last three stables of each axis, pass layers B–D with the other axes at their pins | `release-watch` (daily) → `stable-candidate` × arch → issue; `stable-window` × arch (weekly); locally `scripts/ci-live-e2e.sh` with `ENVOY_VERSION` / `MODSECURITY_PIN` / `CRS_TAG`, or `scripts/probe-modsec-pin.sh`, `envoy-candidate-smoke.sh`, `crs-version-probe.sh` |
 | **Trace** | one request followed across every hop by `x-request-id` (Envoy access log → connector phases → CRS matches → origin) | `ci` → `e2e-pin` × arch; `demo/scripts/hop-trace.sh` |
 
-All of it runs on GitHub-hosted runners (`ubuntu-latest`, `ubuntu-24.04-arm`), natively per architecture — no self-hosted or Mac runner, no QEMU, no cross-compiling. See [Hosted CI](#hosted-ci).
+All of it runs on GitHub-hosted runners (`ubuntu-24.04`, `ubuntu-24.04-arm`), natively per architecture — no self-hosted or Mac runner, no QEMU, no cross-compiling. See [Hosted CI](#hosted-ci).
 
 ---
 
@@ -76,14 +76,16 @@ GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarc
 
 | Workflow | Trigger | What runs (× x86_64, aarch64) | Reports |
 |----------|---------|-------------------------------|---------|
-| `ci` | push to `main` / `cursor/**`, PR, dispatch; doc-only changes skipped, `versions.lock.md` always runs | `pin-check`; `rust-quality` (fmt, clippy, tests, build); on `main`: `e2e-pin` = live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke at the pins | check status |
-| `release-watch` | daily 05:17 UTC, dispatch (`force=<axis>:<tag>`, `dry_run`) | lists stable releases (Envoy `v1.x.y`, libmodsecurity `v3.0.x`, CRS `v4.x.y` — filtered from the release list, never `releases/latest`); a tag newer than the pin gets an issue and a `stable-candidate` dispatch | issue `stable-candidate: <axis> <tag>` |
+| `ci` | every push to `main` / `cursor/**`, PR, dispatch; runs on `main` are never cancelled | `pin-check` (pins + install-script fallbacks, workflow rules, CI-script tests); `rust-quality` × arch (fmt, clippy, tests, build, all `--locked`, Rust from `rust-toolchain.toml`); `msrv` (`cargo check` at `rust-version`); `supply-chain` (cargo-deny: RustSec, licenses, sources); `protos` (`gen-protos.sh --check`, protoc 25.3); `e2e-pin` × arch = live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke at the pins — on `main` pushes, PRs and dispatches, not `cursor/**` pushes; `ci-ok` = one verdict over all of them. Docs-only changes (`docs/**`, `*.md` except `versions.lock.md`) skip the heavy jobs and still get a `ci-ok` | check status |
+| `release-watch` | daily 05:17 UTC, dispatch (`force=<axis>:<tag>`, `dry_run`) | lists stable releases (Envoy `v1.x.y`, libmodsecurity `v3.0.x`, CRS `v4.x.y` — all pages of the release list, never `releases/latest`); the latest stable **and** the top patch of the pinned minor line, when newer than the pin, each get a `stable-candidate` dispatch (the issue is opened after the dispatch succeeds); newer tags outside those patterns are flagged "new line — not tracked"; a tag is retested until its issue has a ✅ result (or 3 ❌) | issue `stable-candidate: <axis> <tag>`; its own failures: issue `release-watch: failing` |
 | `stable-candidate` | dispatch (from `release-watch` or by hand) | that axis at the candidate, the others at their pins; same live suites as `e2e-pin` | comment on the issue: per-arch result, measured minutes, bump lines |
-| `stable-window` | weekly (Mon 04:23 UTC), dispatch (`depth`) | pins + the last 3 stables of each axis, one axis moved per cell (7 cells); live suites | issue `stable-window: failing cells` on failure, closed when green |
+| `stable-window` | weekly (Mon 04:23 UTC), dispatch (`depth`) | pins + the last 3 stables of each axis + the CRS LTS (`CRS_LTS_TAG`) when outside that window, one axis moved per cell (8 cells); libmodsecurity below v3.0.13 is skipped; live suites | issue `stable-window: failing cells` on failure, closed when green |
 | `crs-full` | monthly (7th, 03:41 UTC), dispatch | full CRS go-ftw at the pins | issue `crs-full: go-ftw failing` on failure, closed when green |
-| `release` | tag `vX.Y.Z`; dispatch = dry run under `sha-<short>` | release build per arch → `ext-proc-modsec-<ver>-linux-{x86_64,aarch64}.tar.gz` (+ `.sha256`; bundles `libmodsecurity.so`), per-arch image, multi-arch `ghcr.io/<owner>/envoy-modsec-connex:<ver>`, GitHub Release (tag only) | Release page |
+| `release` | tag `vX.Y.Z` (`vX.Y.Z-rc.N` = pre-release); dispatch | tags only: `gate` = the tag commit is on `main` and has green `ci-ok`, `pin-check`, `rust-quality` × arch, `msrv`, `e2e-pin` × arch. Then release build per arch → `ext-proc-modsec-<ver>-linux-{x86_64,aarch64}.tar.gz` (+ `.sha256`; bundles `libmodsecurity.so`), per-arch image pushed by digest, multi-arch `ghcr.io/<owner>/envoy-modsec-connex:<ver>` from both digests, GitHub Release (tag only); build provenance attested once the repo is public. A dispatch skips the gate and the Release but **does push** the image, tagged `sha-<short>` | Release page |
 
-Candidates never bump anything: after a green `stable-candidate`, a human or agent edits `versions.lock.md` (plus `scripts/check-pins.sh` and `ci.yml` env) on `main`, and `ci` re-runs as the gate.
+Candidates never bump anything: after a green `stable-candidate`, a human or agent edits `versions.lock.md` (plus the offline fallback in that axis's install script, which `pin-check` compares) on `main`, and `ci` re-runs as the gate.
+
+Every live suite must also reach a floor of passing checks, not just exit 0: fail-modes ≥ 57, go-ftw demo tests ≥ 8, CRS body ids ≥ 100, CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.
 
 ### Measured (2026-09-27, private repo, 2-vCPU runners)
 
@@ -108,7 +110,9 @@ Candidates never bump anything: after a green `stable-candidate`, a human or age
 - **Class 6:** with `SecAuditLog` pointing at an unwritable path, libmodsecurity v3.0.16 still loads the rules; the suite proves decisions are unchanged (attack **403**, origin untouched; benign **200**).
 - **HTTP/3 and WebSocket frames** are not tested and not supported.
 - **Not ported from the experiment lab:** the perf harness, and hop-trace for WebSocket / gRPC origins (the demo origin is plain HTTP).
-- **CI runs the live suites on `main` only.** `cursor/**` pushes and PRs get pin-check + rust-quality; a PR is proven live only after it lands (or by dispatching `ci`).
-- **The release tag path is proven by dispatch, not by a real tag:** the dispatch run builds and pushes the same tarballs and multi-arch image; only the final `gh release create` step is tag-only.
+- **Live suites run on `main` pushes, PRs and dispatches**, not on `cursor/**` pushes (those get the Rust, supply-chain and protos gates; dispatch `ci` on the branch for the live suites).
+- **The release tag path has run once, as the pre-release `v0.1.0-rc.1`** (gate → both arch builds → multi-arch image → GitHub pre-release with both tarballs); no final `v0.1.0` has been cut.
+- **Build provenance is not attested yet:** GitHub artifact attestations need a public repo on this plan, so those steps are skipped while the repo is private.
+- **`main` has no branch protection or ruleset:** both need GitHub Pro or a public repo. `ci-ok` is the check to require once they are available.
 - **Tarballs are not static:** they bundle `libmodsecurity.so` but need Ubuntu 24.04's pcre2, libxml2, yajl, curl, GeoIP and LMDB runtime libraries (the image has them).
 - **Pins:** quote [`versions.lock.md`](../versions.lock.md) — do not invent tip flags.
