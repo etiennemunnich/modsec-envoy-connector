@@ -35,13 +35,13 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 | Gate | Where | What |
 |------|-------|------|
-| **PR thin** | GitHub Actions | `rust-quality` + `pin-check` (see `.github/workflows/ci.yml`) |
-| **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh` |
-| **Dispatch** | GitHub Actions (manual) | version window: `modsec-window-matrix`, `modsec-pin-probe`, `envoy-candidate-smoke`, `crs-version-probe` (see `versions.window.md`) |
-| **CRS** | go-ftw | **H1** rule fidelity — never full ~5k on free-tier PR |
+| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check` + `rust-quality`; on `main` also `e2e-pin` (live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke) |
+| **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; results as issues (see `docs/testing.md`) |
+| **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`; `scripts/ci-live-e2e.sh` runs a CI cell locally |
+| **CRS** | go-ftw | **H1** rule fidelity only |
 | **Fail-closed** | `demo/scripts/fail-closed.sh` | absolute gate: kill → 500, hang → 504, bad rules → 500, origin untouched |
 
-Do not claim Mac-only proofs from cloud CI.
+GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not claim Mac-only proofs from cloud CI.
 
 ## Docs
 

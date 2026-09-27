@@ -10,10 +10,12 @@ Candidate versions to probe before bumping a pin. The pins themselves live in [`
 
 ## Probes
 
+CI computes the window from upstream releases (`scripts/stable-releases.sh window <axis>`) and tests it weekly on x86_64 + aarch64 (`stable-window`); new stables newer than the pin are tested as they appear (`release-watch` → `stable-candidate`). See [docs/testing.md](./docs/testing.md#hosted-ci). The table above is the last manual check.
+
 | Axis | Local | What it proves |
 |------|-------|----------------|
 | libmodsecurity | `MODSECURITY_PIN=v3.0.15 ./scripts/probe-modsec-pin.sh` (Linux) | The connector builds, passes clippy and every test against exactly that engine tag. |
 | Envoy | `ENVOY_VERSION=v1.38.4 ./scripts/envoy-candidate-smoke.sh` | That Envoy runs the demo config, and smoke, fail-closed and the H1/H2 fail-mode suite pass. |
 | CRS | `CRS_TAG=v4.28.0 ./scripts/crs-version-probe.sh` | That CRS loads in the pinned engine; smoke and go-ftw pass (`FTW_MODE=full` for the whole regression tree). |
 
-Update the window when a new stable lands, run the matching probe, then bump `versions.lock.md`.
+Any axis, locally: `ENVOY_VERSION=… MODSECURITY_PIN=… CRS_TAG=… ./scripts/ci-live-e2e.sh` (what CI runs per cell). After a green `stable-candidate`, bump `versions.lock.md` on `main`.

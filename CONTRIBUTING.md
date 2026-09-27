@@ -35,15 +35,17 @@ cargo test --workspace
 
 ## Test matrix
 
-| Layer | CI (PR) | Local / Mac |
-|-------|---------|-------------|
-| `pin-check` | **Yes** | `./scripts/check-pins.sh` |
-| `rust-quality` (fmt, clippy, test, build) | **Yes** | same cargo commands |
-| libmodsecurity-linked build + gRPC integration tests | **Yes** (source-built v3.0.16, cached) | `cargo test --workspace` |
-| go-ftw CRS (H1) | **No** full suite on free-tier PR | Mac lab / dispatch |
-| Fail-closed / live demo | **No** live drills on PR | `demo/scripts/smoke.sh` / `demo/scripts/fail-closed.sh` |
-| H2 protocol delivery | **No** | Custom lab scripts |
-| Version-matrix cells | Dispatch / self-hosted when present | Mac |
+All CI runs on GitHub-hosted runners, natively on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64). Details and measured minutes: [docs/testing.md](./docs/testing.md#hosted-ci).
+
+| Layer | CI | Local |
+|-------|----|-------|
+| `pin-check` | every push / PR | `./scripts/check-pins.sh` |
+| `rust-quality` (fmt, clippy, tests incl. gRPC against libmodsecurity, build) | every push / PR, × arch | same cargo commands |
+| Live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke | `e2e-pin` × arch on every `main` push | `./scripts/ci-live-e2e.sh` or the `demo/scripts/` suites |
+| New stable Envoy / libmodsecurity / CRS | `release-watch` (daily) → `stable-candidate` × arch → issue | `ENVOY_VERSION=… ./scripts/ci-live-e2e.sh` |
+| Last 3 stables per axis | `stable-window` × arch (weekly) | same, per cell |
+| Full CRS go-ftw | `crs-full` × arch (monthly) | `./demo/scripts/go-ftw.sh full` |
+| Release artifacts | `release` on tag (dispatch = dry run) | — |
 
 ## Versioning
 
