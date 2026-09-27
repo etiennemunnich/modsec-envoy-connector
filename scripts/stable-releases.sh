@@ -9,12 +9,19 @@
 #   ./scripts/stable-releases.sh window <axis> [n]  newest n (default 3): for envoy
 #                                                   and crs the top patch of each of
 #                                                   the newest n minors
-#   ./scripts/stable-releases.sh pin    <axis>      pin from versions.lock.md
+#   ./scripts/stable-releases.sh line   <axis> <tag>  highest stable on <tag>'s minor line
+#                                                   (v1.38.3 -> top v1.38.x)
+#   ./scripts/stable-releases.sh untracked <axis>   recent stable tags newer than the pin
+#                                                   that the axis pattern does not cover
+#                                                   (a new major/minor line, e.g. v3.1.0)
+#   ./scripts/stable-releases.sh pin    <axis>      pin from versions.lock.md (LOCK_FILE)
 #   ./scripts/stable-releases.sh valid  <axis> <tag>  exit 0 if tag matches the stable pattern
 #
 # Axes: envoy (v1.x.y) · modsecurity (v3.0.x, never v2) · crs (v4.x.y).
+# Env: LOCK_FILE (default versions.lock.md) - tests point it at a fake lock.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LOCK_FILE="${LOCK_FILE:-${ROOT}/versions.lock.md}"
 
 repo_of() {
   case "$1" in
@@ -43,13 +50,30 @@ pin_key() {
   esac
 }
 
-list() {
-  local repo pat
+stable_tags() { # every non-draft, non-prerelease tag (all pages unless $2 = "recent")
+  local repo
   repo="$(repo_of "$1")"
-  pat="$(pattern_of "$1")"
-  gh api "repos/${repo}/releases?per_page=100" \
-    -q '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name' \
-    | grep -E "${pat}" | sort -uV
+  if [[ "${2:-}" == recent ]]; then
+    gh api "repos/${repo}/releases?per_page=30" -q '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name'
+  else
+    gh api --paginate "repos/${repo}/releases?per_page=100" -q '.[] | select(.draft | not) | select(.prerelease | not) | .tag_name'
+  fi
+}
+
+list() {
+  local tags
+  tags="$(stable_tags "$1" | grep -E "$(pattern_of "$1")" | sort -uV || true)"
+  [[ -n "${tags}" ]] || { echo "stable-releases: no $1 release matches $(pattern_of "$1")" >&2; exit 1; }
+  echo "${tags}"
+}
+
+newer() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]; }
+
+pin_of() {
+  local v
+  v="$(grep -E "^$(pin_key "$1")=" "${LOCK_FILE}" | head -1 | cut -d= -f2 || true)"
+  [[ -n "${v}" ]] || { echo "stable-releases: no $(pin_key "$1")= in ${LOCK_FILE}" >&2; exit 1; }
+  echo "${v}"
 }
 
 window() {
@@ -71,7 +95,17 @@ case "${cmd}" in
   list) list "${axis}" ;;
   latest) list "${axis}" | tail -n 1 ;;
   window) window "${axis}" "${3:-3}" ;;
-  pin) grep -E "^$(pin_key "${axis}")=" "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2 ;;
+  line)
+    [[ "${3:-}" =~ $(pattern_of "${axis}") ]] || { echo "not a stable ${axis} tag: '${3:-}'" >&2; exit 2; }
+    prefix="${3%.*}."
+    list "${axis}" | awk -v p="${prefix}" 'index($0, p) == 1' | tail -n 1
+    ;;
+  untracked)
+    pin="$(pin_of "${axis}")"
+    stable_tags "${axis}" recent | { grep -vE "$(pattern_of "${axis}")" || true; } | sort -uV \
+      | while read -r t; do if newer "${t}" "${pin}"; then echo "${t}"; fi; done
+    ;;
+  pin) pin_of "${axis}" ;;
   valid) [[ "${3:-}" =~ $(pattern_of "${axis}") ]] ;;
   *) echo "unknown command '${cmd}'" >&2; exit 2 ;;
 esac
