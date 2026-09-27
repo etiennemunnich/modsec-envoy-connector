@@ -1,0 +1,6 @@
+# CI and release builds use exactly this toolchain (rustup reads this file).
+# Bump deliberately; the crates' rust-version (MSRV) is checked separately in ci.yml.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -58,10 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (clippy + rustfmt)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - uses: ./.github/actions/rust-toolchain
 
       - name: OS id
         id: os
@@ -74,8 +71,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-
+          key: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:
@@ -92,6 +89,25 @@ jobs:
 
       - name: cargo build -p ext-proc-modsec
         run: cargo build -p ext-proc-modsec
+
+  msrv:
+    name: msrv (rust-version)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/libmodsecurity
+        with:
+          pin: ${{ env.MODSECURITY_PIN }}
+      - name: cargo check with the crates' rust-version
+        run: |
+          set -euo pipefail
+          msrv="$(grep -m1 '^rust-version' crates/ext-proc-modsec/Cargo.toml | cut -d'"' -f2)"
+          [[ "${msrv}" == "$(grep -m1 '^rust-version' crates/modsec-engine/Cargo.toml | cut -d'"' -f2)" ]] \
+            || { echo "::error::crates declare different rust-version values"; exit 1; }
+          rustup toolchain install "${msrv}" --profile minimal
+          cargo "+${msrv}" --version
+          cargo "+${msrv}" check --workspace --all-targets --locked
 
   e2e-pin:
     name: e2e-pin

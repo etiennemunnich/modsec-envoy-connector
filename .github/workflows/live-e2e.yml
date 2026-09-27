@@ -61,7 +61,7 @@ jobs:
             echo "crs=$(pick crs "$IN_CRS")"
           } | tee -a "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
 
       - name: OS id
         id: os
@@ -74,8 +74,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-
+          key: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:

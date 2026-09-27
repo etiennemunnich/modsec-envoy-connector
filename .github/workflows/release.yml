@@ -53,7 +53,7 @@ jobs:
             echo "pin=$(./scripts/stable-releases.sh pin modsecurity)"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
 
       - uses: ./.github/actions/libmodsecurity
         with:
