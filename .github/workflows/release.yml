@@ -2,10 +2,12 @@ name: release
 
 # Tag vX.Y.Z on main → gate (the tag commit is on main and ci is green for
 # it) → per-arch native release build (x86_64, aarch64) →
-# ext-proc-modsec-<ver>-linux-<arch>.tar.gz + .sha256 → per-arch image →
-# multi-arch manifest ghcr.io/<owner>/<repo>:<ver> → GitHub Release.
-# workflow_dispatch builds and pushes the same artifacts under sha-<short>
-# without creating a Release (to prove the pipeline without cutting a version).
+# ext-proc-modsec-<ver>-linux-<arch>.tar.gz + .sha256 → per-arch image pushed
+# by digest (untagged) → multi-arch manifest ghcr.io/<owner>/<repo>:<ver> from
+# both digests → GitHub Release (a pre-release for vX.Y.Z-suffix tags).
+# Build provenance is attested when the repo is public.
+# workflow_dispatch is NOT a dry run for GHCR: it pushes the same images and
+# tags the manifest sha-<short>; it only skips the gate and the Release.
 
 on:
   push:
@@ -121,25 +123,41 @@ jobs:
             dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
           retention-days: 7
 
-      - name: Build + push ${{ matrix.platform }} image
+      # Pushed by digest only: nothing is tagged until both arches passed (manifest job).
+      - name: Build, test and push ${{ matrix.platform }} image by digest
+        id: img
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           VER: ${{ steps.meta.outputs.version }}
-          ARCH: ${{ matrix.arch }}
           DIR: ${{ steps.pkg.outputs.dir }}
           PLATFORM: ${{ matrix.platform }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker build --platform "$PLATFORM" -f packaging/Dockerfile \
-            --label org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
-            --label org.opencontainers.image.revision="$GITHUB_SHA" \
-            --label org.opencontainers.image.version="$VER" \
-            --label org.opencontainers.image.licenses=Apache-2.0 \
-            -t "${IMAGE}:${VER}-${ARCH}" "$DIR"
-          docker run --rm "${IMAGE}:${VER}-${ARCH}" --version
-          docker push "${IMAGE}:${VER}-${ARCH}"
+          docker buildx create --name release --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 --use
+          labels=(
+            --label org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
+            --label org.opencontainers.image.revision="$GITHUB_SHA"
+            --label org.opencontainers.image.version="$VER"
+            --label org.opencontainers.image.licenses=Apache-2.0
+          )
+          docker buildx build --platform "$PLATFORM" -f packaging/Dockerfile "${labels[@]}" --load -t local/ext-proc-modsec:test "$DIR"
+          docker run --rm local/ext-proc-modsec:test --version
+          docker buildx build --platform "$PLATFORM" -f packaging/Dockerfile "${labels[@]}" \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "$RUNNER_TEMP/meta.json" "$DIR"
+          digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/meta.json")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no image digest in buildx metadata"; exit 1; }
+          echo "${IMAGE}@${digest}"
+          mkdir -p "$RUNNER_TEMP/digests" && echo "$digest" > "$RUNNER_TEMP/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/${{ matrix.arch }}
+          retention-days: 1
 
   manifest:
     name: multi-arch manifest
@@ -149,17 +167,37 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
-      - name: Merge per-arch images
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Tag the multi-arch manifest (from the per-arch digests)
+        id: m
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then ver="$GITHUB_REF_NAME"; else ver="sha-${GITHUB_SHA::7}"; fi
+          x86="$(cat "$RUNNER_TEMP/digests/x86_64")" arm="$(cat "$RUNNER_TEMP/digests/aarch64")"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx imagetools create -t "${image}:${ver}" "${image}:${ver}-x86_64" "${image}:${ver}-aarch64"
+          docker buildx imagetools create -t "${image}:${ver}" "${image}@${x86}" "${image}@${arm}"
           docker buildx imagetools inspect "${image}:${ver}" | tee -a "$GITHUB_STEP_SUMMARY"
+          digest="$(docker buildx imagetools inspect "${image}:${ver}" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      # Artifact attestations need a public repo (or GitHub Enterprise Cloud) for private ones.
+      - name: Build provenance for the image
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.m.outputs.image }}
+          subject-digest: ${{ steps.m.outputs.digest }}
+          push-to-registry: true
 
   github-release:
     name: github release
@@ -169,12 +207,20 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: ext-proc-modsec-*
           path: dist
           merge-multiple: true
+      - name: Build provenance for the tarballs
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -193,5 +239,7 @@ jobs:
             echo "- Image (linux/amd64, linux/arm64): \`${image}\`"
             echo "- Tarballs bundle \`bin/ext-proc-modsec\` and \`lib/libmodsecurity.so*\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. Run with \`LD_LIBRARY_PATH=<dir>/lib\`."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md \
+          pre=()
+          [[ "$GITHUB_REF_NAME" != *-* ]] || pre=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --verify-tag "${pre[@]}" --title "$GITHUB_REF_NAME" --notes-file notes.md \
             dist/*.tar.gz dist/*.tar.gz.sha256
