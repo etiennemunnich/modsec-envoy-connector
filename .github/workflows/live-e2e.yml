@@ -53,13 +53,13 @@ jobs:
         run: |
           set -euo pipefail
           pick() { local axis="$1" in="$2" v; v="${in:-$(./scripts/stable-releases.sh pin "$axis")}"
-            ./scripts/stable-releases.sh valid "$axis" "$v" || { echo "::error::bad $axis version '$v'"; exit 1; }
+            ./scripts/stable-releases.sh valid "$axis" "$v" || { echo "::error::bad $axis version '$v'" >&2; exit 1; }
             echo "$v"; }
-          {
-            echo "envoy=$(pick envoy "$IN_ENVOY")"
-            echo "modsec=$(pick modsecurity "$IN_MODSEC")"
-            echo "crs=$(pick crs "$IN_CRS")"
-          } | tee -a "$GITHUB_OUTPUT"
+          # Plain assignments so a failing pick aborts the step (inside echo "$(...)" it would not).
+          envoy="$(pick envoy "$IN_ENVOY")"
+          modsec="$(pick modsecurity "$IN_MODSEC")"
+          crs="$(pick crs "$IN_CRS")"
+          printf 'envoy=%s\nmodsec=%s\ncrs=%s\n' "$envoy" "$modsec" "$crs" | tee -a "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/rust-toolchain
 
@@ -115,6 +115,7 @@ jobs:
           ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
           MODSECURITY_PIN: ${{ steps.v.outputs.modsec }}
           CRS_TAG: ${{ steps.v.outputs.crs }}
+          EXPECT_ARCH: ${{ matrix.arch }}
         run: ./scripts/ci-live-e2e.sh
 
       - name: Upload demo logs (failure only)
