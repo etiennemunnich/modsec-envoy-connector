@@ -3,47 +3,61 @@
 #
 #   ci-report.sh --title "stable-candidate: envoy v1.40.0" --mode always [--issue N] [--pass-note FILE]
 #   ci-report.sh --title "stable-window: failing cells" --mode on-failure
+#   ci-report.sh --verdict-only [--allow-skipped]   print pass|fail and stop (no issue)
 #
 # The body is a table of this run's jobs (except the report job itself) with
 # conclusion, runner and measured wall time; "min" rounds each job up to the
-# next whole minute, as Actions billing does.
+# next whole minute, as Actions billing does. The verdict is "pass" only if at
+# least one job succeeded and every other job succeeded too; a skipped job
+# is a failure unless --allow-skipped (a run whose jobs were all skipped
+# proves nothing).
 #   always      comment on the issue with that title (created if missing), pass or fail
 #   on-failure  create / comment on failure; on success, close an open issue with
 #               a "passing again" comment
-# Env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_JOB.
+# Env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_JOB;
+#      CI_REPORT_JOBS_JSON=<file> reads the jobs from a file instead of the API (tests).
 set -euo pipefail
 
-TITLE="" MODE="always" ISSUE="" PASS_NOTE=""
+TITLE="" MODE="always" ISSUE="" PASS_NOTE="" VERDICT_ONLY="" ALLOW_SKIPPED=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title) TITLE="$2"; shift 2 ;;
     --mode) MODE="$2"; shift 2 ;;
     --issue) ISSUE="$2"; shift 2 ;;
     --pass-note) PASS_NOTE="$2"; shift 2 ;;
+    --verdict-only) VERDICT_ONLY=1; shift ;;
+    --allow-skipped) ALLOW_SKIPPED=1; shift ;;
     *) echo "unknown arg $1" >&2; exit 2 ;;
   esac
 done
-[[ -n "${TITLE}" ]] || { echo "--title is required" >&2; exit 2; }
-: "${GITHUB_REPOSITORY:?}" "${GITHUB_RUN_ID:?}"
-RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-
-jobs_json="$(mktemp)"
-gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" >"${jobs_json}"
+[[ -n "${TITLE}" || -n "${VERDICT_ONLY}" ]] || { echo "--title is required" >&2; exit 2; }
+if [[ -n "${CI_REPORT_JOBS_JSON:-}" ]]; then
+  jobs_json="${CI_REPORT_JOBS_JSON}"
+  RUN_URL="(jobs from ${jobs_json})"
+else
+  : "${GITHUB_REPOSITORY:?}" "${GITHUB_RUN_ID:?}"
+  RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+  jobs_json="$(mktemp)"
+  gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" >"${jobs_json}"
+fi
 
 body="$(mktemp)"
-verdict="$(python3 - "${jobs_json}" "${body}" "${RUN_URL}" <<'PY'
-import json, math, sys
+verdict="$(ALLOW_SKIPPED="${ALLOW_SKIPPED}" python3 - "${jobs_json}" "${body}" "${RUN_URL}" <<'PY'
+import json, math, os, sys
 from datetime import datetime
 jobs = json.load(open(sys.argv[1]))["jobs"]
 out, run_url = sys.argv[2], sys.argv[3]
+allow_skipped = bool(os.environ.get("ALLOW_SKIPPED"))
 def ts(s):
     return datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
-rows, total_s, total_min, ok = [], 0, 0, True
+rows, total_s, total_min, ok, succeeded = [], 0, 0, True, 0
 for j in jobs:
     if j["name"].endswith("report"):
         continue
     concl = j.get("conclusion") or j.get("status")
-    if concl not in ("success", "skipped"):
+    if concl == "success":
+        succeeded += 1
+    elif not (concl == "skipped" and allow_skipped):
         ok = False
     start, end = ts(j.get("started_at")), ts(j.get("completed_at"))
     secs = int((end - start).total_seconds()) if start and end and concl != "skipped" else 0
@@ -58,9 +72,13 @@ with open(out, "w") as f:
     f.write("| Job | Result | Runner | Wall | min |\n|---|---|---|---|---|\n")
     f.write("\n".join(rows) + "\n")
     f.write(f"| **total** | | | {total_s // 60}m{total_s % 60:02d}s | **{total_min}** |\n")
-print("pass" if ok else "fail")
+print("pass" if ok and succeeded > 0 else "fail")
 PY
 )"
+if [[ -n "${VERDICT_ONLY}" ]]; then
+  echo "${verdict}"
+  exit 0
+fi
 
 if [[ "${verdict}" == "pass" && -n "${PASS_NOTE}" && -f "${PASS_NOTE}" ]]; then
   { echo; cat "${PASS_NOTE}"; } >>"${body}"

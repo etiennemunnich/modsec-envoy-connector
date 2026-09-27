@@ -61,6 +61,8 @@ jobs:
         run: ./scripts/check-pins.sh
       - name: Workflow rules (SHA-pinned actions, pinned runners)
         run: ./scripts/check-workflows.sh
+      - name: CI helper script tests (offline)
+        run: ./scripts/test-ci-scripts.sh
 
   rust-quality:
     name: rust-quality (${{ matrix.arch }})
