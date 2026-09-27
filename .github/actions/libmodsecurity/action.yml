@@ -9,12 +9,18 @@ inputs:
 runs:
   using: composite
   steps:
+    # The .so links against distro sonames, so a build is only reusable on the same OS release.
+    - name: OS id
+      id: os
+      shell: bash
+      run: . /etc/os-release && echo "id=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+
     - name: Cache libmodsecurity ${{ inputs.pin }}
       id: cache
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/.local/modsecurity
-        key: libmodsecurity-${{ inputs.pin }}-${{ runner.os }}-${{ runner.arch }}-pcre2
+        key: libmodsecurity-${{ inputs.pin }}-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ hashFiles('scripts/install-libmodsecurity-ubuntu.sh') }}
 
     # Needed on cache hits too: libmodsecurity.so links against these.
     - name: libmodsecurity runtime dependencies
@@ -47,3 +53,8 @@ runs:
         ver="$(PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig" pkg-config --modversion modsecurity)"
         echo "libmodsecurity ${ver}"
         [[ "${ver}" == "${PIN#v}" ]] || { echo "::error::built ${ver}, want ${PIN}"; exit 1; }
+        # pkg-config only reads the .pc file; a .so restored from another OS release fails here.
+        if ldd "${PREFIX}/lib/libmodsecurity.so" | grep 'not found'; then
+          echo "::error::libmodsecurity.so has unresolved libraries on $(. /etc/os-release && echo "${ID}-${VERSION_ID}")"
+          exit 1
+        fi

@@ -72,7 +72,7 @@ The overrides file records measured Envoy platform differences, like CRS's own `
 
 ## Hosted CI
 
-GitHub-hosted runners only: `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64), each building and testing natively. `ubuntu-slim` runs the release watcher.
+GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), each building and testing natively. Both are pinned to the same Ubuntu release (never `ubuntu-latest`), and the libmodsecurity and cargo caches are keyed on the OS release, so a move to a newer Ubuntu is one deliberate change for both architectures. `ubuntu-slim` runs the release watcher.
 
 | Workflow | Trigger | What runs (× x86_64, aarch64) | Reports |
 |----------|---------|-------------------------------|---------|

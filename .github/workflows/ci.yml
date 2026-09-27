@@ -38,7 +38,7 @@ env:
 jobs:
   pin-check:
     name: pin-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-latest }
+          - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +63,10 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: OS id
+        id: os
+        run: . /etc/os-release && echo "id=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -70,8 +74,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: quality-cargo-${{ runner.os }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: quality-cargo-${{ runner.os }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-
+          key: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:

@@ -39,7 +39,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-latest, ftw_arch: amd64 }
+          - { arch: x86_64, runner: ubuntu-24.04, ftw_arch: amd64 }
           - { arch: aarch64, runner: ubuntu-24.04-arm, ftw_arch: arm64 }
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +63,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: OS id
+        id: os
+        run: . /etc/os-release && echo "id=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -70,8 +74,8 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: e2e-cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: e2e-cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-
+          key: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:

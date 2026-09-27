@@ -28,7 +28,7 @@ jobs:
     name: report
     needs: full
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
