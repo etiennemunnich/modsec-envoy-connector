@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use envoy_types::pb::google::protobuf::{value::Kind, Struct};
+use crate::pb::google::protobuf::{value::Kind, Struct};
 
 /// Namespace key Envoy's ext_proc filter uses when packing attributes.
 pub const EXT_PROC_ATTR_NAMESPACE: &str = "envoy.filters.http.ext_proc";
@@ -144,7 +144,7 @@ fn split_host_port(addr: &str) -> (String, Option<i32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use envoy_types::pb::google::protobuf::Value;
+    use crate::pb::google::protobuf::Value;
 
     fn s(v: &str) -> Value {
         Value {

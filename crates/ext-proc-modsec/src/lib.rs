@@ -10,8 +10,13 @@
 
 pub mod config;
 pub mod connection_meta;
+pub mod logging;
 pub mod metrics;
 pub mod metrics_server;
+/// Envoy ext_proc v3 messages and gRPC service, generated from the vendored
+/// `proto/` tree by `scripts/gen-protos.sh`. Do not edit.
+#[allow(clippy::all, rustdoc::all, missing_docs)]
+pub mod pb;
 pub mod processor;
 pub mod responses;
 

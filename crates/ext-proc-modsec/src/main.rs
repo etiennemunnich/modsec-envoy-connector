@@ -10,27 +10,35 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use clap::Parser;
-use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
-use ext_proc_modsec::config::Config;
+use ext_proc_modsec::config::{Command, Config, USAGE};
 use ext_proc_modsec::metrics::ConnectorMetrics;
-use ext_proc_modsec::{metrics_server, ModSecProcessor};
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
+use ext_proc_modsec::{logging, metrics_server, ModSecProcessor};
 use modsec_engine::Engine;
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
 use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let config = match Config::from_env() {
+        Ok(Command::Run(c)) => c,
+        Ok(Command::Help) => {
+            print!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(Command::Version) => {
+            println!("ext-proc-modsec {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("error: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    logging::init();
 
-    let config = Config::parse();
     match run(config).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -54,9 +62,10 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("bind metrics {}: {e}", config.metrics_listen))?;
 
     let metrics = Arc::new(ConnectorMetrics::default());
+    let processor = ModSecProcessor::new(engine, metrics);
     tokio::spawn(metrics_server::serve(
         metrics_listener,
-        Arc::clone(&metrics),
+        processor.clone(),
         grpc_addr,
     ));
 
@@ -65,11 +74,14 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         metrics = %config.metrics_listen,
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"
     );
+    // Single service, no router: the generated server answers UNIMPLEMENTED
+    // for any other gRPC path.
     Server::builder()
-        .add_service(ExternalProcessorServer::new(ModSecProcessor::new(
-            engine, metrics,
-        )))
-        .serve_with_incoming_shutdown(TcpListenerStream::new(grpc_listener), shutdown_signal())
+        .serve_with_incoming_shutdown(
+            ExternalProcessorServer::new(processor),
+            TcpIncoming::from(grpc_listener),
+            shutdown_signal(),
+        )
         .await?;
     info!("shutdown complete");
     Ok(())

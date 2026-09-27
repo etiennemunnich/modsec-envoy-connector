@@ -1,32 +1,39 @@
 //! Minimal HTTP/1.1 endpoint for scrapes and readiness.
 //!
 //! - `GET /metrics` — Prometheus text exposition.
-//! - `GET /healthz` — exercises the real gRPC `Process` path: dials this
-//!   process's ExternalProcessor, sends headers-only `GET /__connex_healthz`,
-//!   and expects a request-headers Continue within 2s. An `ImmediateResponse`
-//!   (deny or fail-closed) or a timeout yields 503.
+//! - `GET /healthz` — 200 only if both hold within 2s:
+//!   1. the gRPC listener completes an HTTP/2 connection preface + SETTINGS
+//!      exchange (the same server stack Envoy talks to), and
+//!   2. a headers-only `GET /__connex_healthz` run through a fresh
+//!      `Exchange` (the code `Process` runs per message, with the loaded
+//!      rules) answers request-headers Continue.
+//!
+//!   An `ImmediateResponse` (deny or fail-closed), a dead listener, or a
+//!   timeout yields 503.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use envoy_types::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
-use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
-use envoy_types::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
-use envoy_types::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
-use envoy_types::pb::envoy::service::ext_proc::v3::{HttpHeaders, ProcessingRequest};
-use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
 
-use crate::metrics::ConnectorMetrics;
+use crate::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
+use crate::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
+use crate::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
+use crate::pb::envoy::service::ext_proc::v3::{HttpHeaders, ProcessingRequest};
+use crate::processor::{run_blocking, ModSecProcessor, Step};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// HTTP/2 client connection preface (RFC 9113 §3.4) followed by an empty
+/// SETTINGS frame.
+const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+const H2_FRAME_SETTINGS: u8 = 0x4;
+
 /// Serve `/metrics` and `/healthz` on an already-bound listener.
-pub async fn serve(listener: TcpListener, metrics: Arc<ConnectorMetrics>, grpc_addr: SocketAddr) {
+pub async fn serve(listener: TcpListener, processor: ModSecProcessor, grpc_addr: SocketAddr) {
     if let Ok(addr) = listener.local_addr() {
         info!(%addr, "metrics + healthz listening (GET /metrics, GET /healthz)");
     }
@@ -38,9 +45,9 @@ pub async fn serve(listener: TcpListener, metrics: Arc<ConnectorMetrics>, grpc_a
                 continue;
             }
         };
-        let metrics = Arc::clone(&metrics);
+        let processor = processor.clone();
         tokio::spawn(async move {
-            handle(sock, peer, &metrics, grpc_addr).await;
+            handle(sock, peer, &processor, grpc_addr).await;
         });
     }
 }
@@ -48,7 +55,7 @@ pub async fn serve(listener: TcpListener, metrics: Arc<ConnectorMetrics>, grpc_a
 async fn handle(
     mut sock: TcpStream,
     peer: SocketAddr,
-    metrics: &ConnectorMetrics,
+    processor: &ModSecProcessor,
     grpc_addr: SocketAddr,
 ) {
     let mut buf = [0u8; 1024];
@@ -65,7 +72,7 @@ async fn handle(
 
     match target {
         Some("/metrics") => {
-            let body = metrics.render();
+            let body = processor.metrics().render();
             write_response(
                 &mut sock,
                 "200 OK",
@@ -74,38 +81,38 @@ async fn handle(
             )
             .await;
         }
-        Some("/healthz") => match tokio::time::timeout(PROBE_TIMEOUT, probe(grpc_addr)).await {
-            Ok(Ok(())) => write_response(&mut sock, "200 OK", "text/plain", b"ok\n").await,
-            Ok(Err(e)) => {
-                warn!(?peer, error = %e, "healthz Process probe failed");
-                let body = format!("process probe failed: {e}\n");
-                write_response(
-                    &mut sock,
-                    "503 Service Unavailable",
-                    "text/plain",
-                    body.as_bytes(),
-                )
-                .await;
+        Some("/healthz") => {
+            match tokio::time::timeout(PROBE_TIMEOUT, probe(processor, grpc_addr)).await {
+                Ok(Ok(())) => write_response(&mut sock, "200 OK", "text/plain", b"ok\n").await,
+                Ok(Err(e)) => {
+                    warn!(?peer, error = %e, "healthz Process probe failed");
+                    let body = format!("process probe failed: {e}\n");
+                    write_response(
+                        &mut sock,
+                        "503 Service Unavailable",
+                        "text/plain",
+                        body.as_bytes(),
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    warn!(?peer, "healthz Process probe timed out");
+                    write_response(
+                        &mut sock,
+                        "503 Service Unavailable",
+                        "text/plain",
+                        b"process probe timeout\n",
+                    )
+                    .await;
+                }
             }
-            Err(_) => {
-                warn!(?peer, "healthz Process probe timed out");
-                write_response(
-                    &mut sock,
-                    "503 Service Unavailable",
-                    "text/plain",
-                    b"process probe timeout\n",
-                )
-                .await;
-            }
-        },
+        }
         _ => write_response(&mut sock, "404 Not Found", "text/plain", b"not found\n").await,
     }
 }
 
-async fn probe(grpc_addr: SocketAddr) -> Result<(), String> {
-    let mut client = ExternalProcessorClient::connect(format!("http://{grpc_addr}"))
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
+async fn probe(processor: &ModSecProcessor, grpc_addr: SocketAddr) -> Result<(), String> {
+    h2_handshake(grpc_addr).await?;
     let hv = |k: &str, v: &str| HeaderValue {
         key: k.into(),
         raw_value: v.as_bytes().to_vec(),
@@ -128,16 +135,12 @@ async fn probe(grpc_addr: SocketAddr) -> Result<(), String> {
         })),
         ..Default::default()
     };
-    let mut stream = client
-        .process(futures::stream::iter([msg]))
-        .await
-        .map_err(|e| format!("process rpc: {e}"))?
-        .into_inner();
-    let resp = stream
-        .next()
-        .await
-        .ok_or("process stream ended with no response")?
-        .map_err(|e| format!("process message: {e}"))?;
+    let mut exchange = processor.exchange();
+    let resp = match run_blocking(|| exchange.on_message(msg)) {
+        Step::Reply(r) | Step::Final(r) => r,
+        Step::Silent => return Err("process step answered nothing".into()),
+        Step::Abort(s) => return Err(format!("process aborted: {s}")),
+    };
     match resp.response {
         Some(ProcResponse::RequestHeaders(_)) => Ok(()),
         Some(ProcResponse::ImmediateResponse(ir)) => Err(format!(
@@ -147,6 +150,28 @@ async fn probe(grpc_addr: SocketAddr) -> Result<(), String> {
         )),
         other => Err(format!("unexpected Process response: {other:?}")),
     }
+}
+
+/// The gRPC listener must answer an HTTP/2 preface with a SETTINGS frame.
+async fn h2_handshake(grpc_addr: SocketAddr) -> Result<(), String> {
+    let mut sock = TcpStream::connect(grpc_addr)
+        .await
+        .map_err(|e| format!("connect gRPC {grpc_addr}: {e}"))?;
+    sock.write_all(H2_PREFACE)
+        .await
+        .map_err(|e| format!("send HTTP/2 preface: {e}"))?;
+    let mut header = [0u8; 9];
+    sock.read_exact(&mut header)
+        .await
+        .map_err(|e| format!("read HTTP/2 SETTINGS: {e}"))?;
+    if header[3] != H2_FRAME_SETTINGS {
+        return Err(format!(
+            "gRPC listener answered frame type {:#x}, want SETTINGS",
+            header[3]
+        ));
+    }
+    let _ = sock.shutdown().await;
+    Ok(())
 }
 
 async fn write_response(sock: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) {

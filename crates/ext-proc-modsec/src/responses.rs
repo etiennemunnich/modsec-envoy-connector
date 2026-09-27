@@ -4,11 +4,11 @@
 //! (including 0) into HTTP **200**, so every status sent here is validated
 //! first: block statuses must be 4xx/5xx and redirect statuses 3xx.
 
-use envoy_types::pb::envoy::config::core::v3::header_value_option::HeaderAppendAction;
-use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
-use envoy_types::pb::envoy::r#type::v3::{HttpStatus, StatusCode};
-use envoy_types::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
-use envoy_types::pb::envoy::service::ext_proc::v3::{
+use crate::pb::envoy::config::core::v3::header_value_option::HeaderAppendAction;
+use crate::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
+use crate::pb::envoy::r#type::v3::{HttpStatus, StatusCode};
+use crate::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
+use crate::pb::envoy::service::ext_proc::v3::{
     BodyResponse, HeaderMutation, HeadersResponse, ImmediateResponse, ProcessingResponse,
     TrailersResponse,
 };

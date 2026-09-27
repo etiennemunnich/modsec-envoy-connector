@@ -13,25 +13,27 @@
 //! There is no code path that answers Continue after an engine error.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use envoy_types::pb::envoy::config::core::v3::HeaderValue;
-use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessor;
-use envoy_types::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
-use envoy_types::pb::envoy::service::ext_proc::v3::{
-    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
-};
-use envoy_types::pb::google::protobuf::Struct;
-use futures::Stream;
 use modsec_engine::{Decision, Engine, InspectionSession};
 use tokio::runtime::{Handle, RuntimeFlavor};
+use tokio_stream::Stream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
 
 use crate::connection_meta::ConnectionEndpoints;
 use crate::metrics::{ConnectorMetrics, Phase};
+use crate::pb::envoy::config::core::v3::HeaderValue;
+use crate::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessor;
+use crate::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
+use crate::pb::envoy::service::ext_proc::v3::{
+    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
+};
+use crate::pb::google::protobuf::Struct;
 use crate::responses::{self, Direction};
 
 const DENY_BODY: &[u8] = b"Forbidden\n";
@@ -48,6 +50,15 @@ impl ModSecProcessor {
     pub fn new(engine: Arc<Engine>, metrics: Arc<ConnectorMetrics>) -> Self {
         Self { engine, metrics }
     }
+
+    pub fn metrics(&self) -> &Arc<ConnectorMetrics> {
+        &self.metrics
+    }
+
+    /// A fresh per-stream state, exactly as `Process` creates one.
+    pub fn exchange(&self) -> Exchange {
+        Exchange::new(Arc::clone(&self.engine), Arc::clone(&self.metrics))
+    }
 }
 
 type ProcessStream =
@@ -61,46 +72,85 @@ impl ExternalProcessor for ModSecProcessor {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
-        let mut inbound = request.into_inner();
-        let mut exchange = Exchange::new(Arc::clone(&self.engine), Arc::clone(&self.metrics));
-
-        let outbound = async_stream::stream! {
-            while let Some(msg) = inbound.message().await.transpose() {
-                let msg = match msg {
-                    Ok(m) => m,
-                    Err(e) => {
-                        warn!(
-                            request_id = exchange.rid(),
-                            error = %e,
-                            "ext_proc stream read error"
-                        );
-                        exchange.metrics.inc_stream_errors();
-                        break;
-                    }
-                };
-                match run_blocking(|| exchange.on_message(msg)) {
-                    Step::Reply(r) => yield Ok(r),
-                    Step::Silent => {}
-                    Step::Final(r) => {
-                        yield Ok(r);
-                        break;
-                    }
-                    Step::Abort(status) => {
-                        yield Err(status);
-                        break;
-                    }
-                }
-            }
+        let driver = Driver {
+            exchange: self.exchange(),
+            inbound: request.into_inner(),
         };
+        Ok(Response::new(Box::pin(Outbound {
+            next: Some(Box::pin(driver.step())),
+        }) as ProcessStream))
+    }
+}
 
-        Ok(Response::new(Box::pin(outbound) as ProcessStream))
+type Reply = Result<ProcessingResponse, Status>;
+type PendingStep = Pin<Box<dyn Future<Output = Option<(Reply, Option<Driver>)>> + Send>>;
+
+/// Reply stream for one `Process` call. Envoy's messages are read only while
+/// tonic polls for the next reply, so once the stream is finished (or tonic
+/// drops it) nothing reads the inbound side again; dropping it drops the
+/// `Exchange`, which runs the ModSecurity logging phase.
+struct Outbound {
+    next: Option<PendingStep>,
+}
+
+impl Stream for Outbound {
+    type Item = Reply;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Reply>> {
+        let Some(step) = self.next.as_mut() else {
+            return Poll::Ready(None);
+        };
+        match step.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(None) => {
+                self.next = None;
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some((reply, more))) => {
+                self.next = more.map(|d| Box::pin(d.step()) as PendingStep);
+                Poll::Ready(Some(reply))
+            }
+        }
+    }
+}
+
+struct Driver {
+    exchange: Exchange,
+    inbound: Streaming<ProcessingRequest>,
+}
+
+impl Driver {
+    /// Read until one message yields a reply. `None` ends the stream (Envoy
+    /// closed it or a read failed); a terminal reply comes without a driver.
+    async fn step(mut self) -> Option<(Reply, Option<Driver>)> {
+        loop {
+            let msg = match self.inbound.message().await {
+                Ok(Some(m)) => m,
+                Ok(None) => return None,
+                Err(e) => {
+                    warn!(
+                        request_id = self.exchange.rid(),
+                        error = %e,
+                        "ext_proc stream read error"
+                    );
+                    self.exchange.metrics.inc_stream_errors();
+                    return None;
+                }
+            };
+            return match run_blocking(|| self.exchange.on_message(msg)) {
+                Step::Reply(r) => Some((Ok(r), Some(self))),
+                Step::Silent => continue,
+                Step::Final(r) => Some((Ok(r), None)),
+                Step::Abort(status) => Some((Err(status), None)),
+            };
+        }
     }
 }
 
 /// libmodsecurity evaluation is synchronous CPU work (CRS on large bodies can
 /// take milliseconds). On the multi-threaded runtime, move it off the async
 /// worker so other streams keep making progress.
-fn run_blocking<T>(f: impl FnOnce() -> T) -> T {
+pub fn run_blocking<T>(f: impl FnOnce() -> T) -> T {
     match Handle::try_current().map(|h| h.runtime_flavor()) {
         Ok(RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
         _ => f(),

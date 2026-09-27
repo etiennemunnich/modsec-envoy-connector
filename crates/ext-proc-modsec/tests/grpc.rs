@@ -8,24 +8,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use envoy_types::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
-use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
-use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
-use envoy_types::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
-use envoy_types::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
-use envoy_types::pb::envoy::service::ext_proc::v3::{
-    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
-};
-use envoy_types::pb::google::protobuf::{value::Kind, Struct, Value};
 use ext_proc_modsec::connection_meta::EXT_PROC_ATTR_NAMESPACE;
 use ext_proc_modsec::metrics::ConnectorMetrics;
+use ext_proc_modsec::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::{
+    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
+};
+use ext_proc_modsec::pb::google::protobuf::{value::Kind, Struct, Value};
 use ext_proc_modsec::{metrics_server, ModSecProcessor};
 use modsec_engine::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tonic::transport::server::TcpIncoming;
 use tonic::transport::{Channel, Server};
 use tonic::Streaming;
 
@@ -38,22 +39,31 @@ fn rules_path(name: &str) -> PathBuf {
 struct Harness {
     addr: SocketAddr,
     metrics: Arc<ConnectorMetrics>,
+    processor: ModSecProcessor,
+}
+
+fn processor() -> ModSecProcessor {
+    let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
+    ModSecProcessor::new(engine, Arc::new(ConnectorMetrics::default()))
 }
 
 async fn start() -> Harness {
-    let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
-    let metrics = Arc::new(ConnectorMetrics::default());
+    let processor = processor();
+    let metrics = Arc::clone(processor.metrics());
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let svc = ExternalProcessorServer::new(ModSecProcessor::new(engine, Arc::clone(&metrics)));
+    let svc = ExternalProcessorServer::new(processor.clone());
     tokio::spawn(async move {
         Server::builder()
-            .add_service(svc)
-            .serve_with_incoming(TcpListenerStream::new(listener))
+            .serve_with_incoming(svc, TcpIncoming::from(listener))
             .await
             .expect("serve");
     });
-    Harness { addr, metrics }
+    Harness {
+        addr,
+        metrics,
+        processor,
+    }
 }
 
 /// One Envoy-like `Process` stream.
@@ -64,10 +74,12 @@ struct Stream {
 
 impl Stream {
     async fn open(addr: SocketAddr) -> Self {
-        let mut client: ExternalProcessorClient<Channel> =
-            ExternalProcessorClient::connect(format!("http://{addr}"))
-                .await
-                .expect("connect");
+        let channel = Channel::from_shared(format!("http://{addr}"))
+            .expect("uri")
+            .connect()
+            .await
+            .expect("connect");
+        let mut client = ExternalProcessorClient::new(channel);
         let (tx, rx) = mpsc::channel(8);
         let rx = client
             .process(ReceiverStream::new(rx))
@@ -392,7 +404,10 @@ async fn response_without_request_below_400_fails_closed() {
         let mut s = Stream::open(h.addr).await;
         let r = s.send(resp_headers(status, &[], true)).await.unwrap();
         let (code, details, _) = immediate(&r).expect("immediate");
-        assert_eq!(code, 500, "status {status} without a request must fail closed");
+        assert_eq!(
+            code, 500,
+            "status {status} without a request must fail closed"
+        );
         assert_eq!(details, "modsec_fail_closed");
         s.expect_closed().await;
     }
@@ -485,11 +500,7 @@ async fn healthz_exercises_process_and_metrics_render() {
     let h = start().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let maddr = listener.local_addr().unwrap();
-    tokio::spawn(metrics_server::serve(
-        listener,
-        Arc::clone(&h.metrics),
-        h.addr,
-    ));
+    tokio::spawn(metrics_server::serve(listener, h.processor.clone(), h.addr));
 
     let health = http_get(maddr, "/healthz").await;
     assert!(health.starts_with("HTTP/1.1 200"), "{health}");
@@ -505,13 +516,28 @@ async fn healthz_exercises_process_and_metrics_render() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn healthz_is_503_when_grpc_is_down() {
-    let metrics = Arc::new(ConnectorMetrics::default());
     let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_addr = dead.local_addr().unwrap();
     drop(dead);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let maddr = listener.local_addr().unwrap();
-    tokio::spawn(metrics_server::serve(listener, metrics, dead_addr));
+    tokio::spawn(metrics_server::serve(listener, processor(), dead_addr));
+    let health = http_get(maddr, "/healthz").await;
+    assert!(health.starts_with("HTTP/1.1 503"), "{health}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthz_is_503_when_listener_does_not_speak_http2() {
+    let fake = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fake_addr = fake.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = fake.accept().await {
+            let _ = sock.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
+        }
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let maddr = listener.local_addr().unwrap();
+    tokio::spawn(metrics_server::serve(listener, processor(), fake_addr));
     let health = http_get(maddr, "/healthz").await;
     assert!(health.starts_with("HTTP/1.1 503"), "{health}");
 }

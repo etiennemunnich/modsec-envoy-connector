@@ -17,13 +17,14 @@ name = "ext-proc-modsec"
 path = "src/main.rs"
 
 [dependencies]
-async-stream = "0.3"
-clap = { version = "4", features = ["derive", "env"] }
-envoy-types = "0.7.6"
-futures = "0.3"
 modsec-engine = { path = "../modsec-engine" }
+prost = { version = "0.14", default-features = false, features = ["std", "derive"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "io-util"] }
-tokio-stream = { version = "0.1", features = ["net"] }
-tonic = "0.14"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-stream = { version = "0.1", default-features = false }
+tonic = { version = "0.14", default-features = false, features = ["server", "codegen"] }
+tonic-prost = { version = "0.14", default-features = false }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# gRPC client for the integration tests only; the shipped binary has no client stack.
+tonic = { version = "0.14", default-features = false, features = ["server", "codegen", "channel"] }
