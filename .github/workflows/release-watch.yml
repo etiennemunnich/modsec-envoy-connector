@@ -1,0 +1,47 @@
+name: release-watch
+
+# Daily: look for stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x
+# releases newer than versions.lock.md (filtered from the releases list, not
+# releases/latest). Each new tag gets a tracking issue and a stable-candidate
+# run on both architectures. Idempotent: the issue title is the dedupe key.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Also test <axis>:<tag> (e.g. envoy:v1.38.4), even if not newer"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Report only; open no issue, dispatch nothing"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: watch
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find new stable releases and dispatch candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: ./scripts/release-watch.sh

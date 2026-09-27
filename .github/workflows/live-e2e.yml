@@ -1,0 +1,128 @@
+name: live-e2e
+
+# Reusable live cell: Envoy → connector → libmodsecurity (+ CRS) on GitHub-
+# hosted Ubuntu, natively on x86_64 and aarch64 (no QEMU, no cross-compile).
+# Empty version inputs mean "the pin in versions.lock.md".
+
+on:
+  workflow_call:
+    inputs:
+      envoy_version:
+        type: string
+        default: ""
+      modsecurity_pin:
+        type: string
+        default: ""
+      crs_tag:
+        type: string
+        default: ""
+      suites:
+        description: "space-separated: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full"
+        type: string
+        default: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
+      timeout_minutes:
+        type: number
+        default: 45
+
+permissions:
+  contents: read
+
+env:
+  GO_FTW_VERSION: "2.6.0"
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-latest, ftw_arch: amd64 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, ftw_arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve versions
+        id: v
+        env:
+          IN_ENVOY: ${{ inputs.envoy_version }}
+          IN_MODSEC: ${{ inputs.modsecurity_pin }}
+          IN_CRS: ${{ inputs.crs_tag }}
+        run: |
+          set -euo pipefail
+          pick() { local axis="$1" in="$2" v; v="${in:-$(./scripts/stable-releases.sh pin "$axis")}"
+            ./scripts/stable-releases.sh valid "$axis" "$v" || { echo "::error::bad $axis version '$v'"; exit 1; }
+            echo "$v"; }
+          {
+            echo "envoy=$(pick envoy "$IN_ENVOY")"
+            echo "modsec=$(pick modsecurity "$IN_MODSEC")"
+            echo "crs=$(pick crs "$IN_CRS")"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: e2e-cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: e2e-cargo-${{ runner.os }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-
+
+      - uses: ./.github/actions/libmodsecurity
+        with:
+          pin: ${{ steps.v.outputs.modsec }}
+
+      - name: Cache Envoy ${{ steps.v.outputs.envoy }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/envoy-bin
+          key: envoy-${{ steps.v.outputs.envoy }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install Envoy ${{ steps.v.outputs.envoy }}, go-ftw, lsof
+        env:
+          ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
+          ENVOY_BIN_DIR: ${{ runner.temp }}/envoy-bin
+          FTW_ARCH: ${{ matrix.ftw_arch }}
+          SUITES: ${{ inputs.suites }}
+        run: |
+          set -euo pipefail
+          command -v lsof >/dev/null || sudo apt-get install -y --no-install-recommends lsof
+          PATH="${ENVOY_BIN_DIR}:${PATH}" ./demo/scripts/install-envoy.sh
+          echo "${ENVOY_BIN_DIR}" >> "$GITHUB_PATH"
+          if [[ "${SUITES}" == *go-ftw* ]]; then
+            dir="${RUNNER_TEMP}/go-ftw" base="https://github.com/coreruleset/go-ftw/releases/download/v${GO_FTW_VERSION}"
+            asset="ftw_${GO_FTW_VERSION}_linux_${FTW_ARCH}.tar.gz"
+            mkdir -p "$dir" && cd "$dir"
+            curl -fsSL --retry 3 -O "${base}/${asset}" -O "${base}/ftw-checksums.txt"
+            grep " ${asset}\$" ftw-checksums.txt | sha256sum -c -
+            tar xzf "${asset}" ftw
+            ./ftw -v
+            echo "$dir" >> "$GITHUB_PATH"
+          fi
+
+      - name: Live suites (${{ inputs.suites }})
+        env:
+          SUITES: ${{ inputs.suites }}
+          ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
+          MODSECURITY_PIN: ${{ steps.v.outputs.modsec }}
+          CRS_TAG: ${{ steps.v.outputs.crs }}
+        run: ./scripts/ci-live-e2e.sh
+
+      - name: Upload demo logs (failure only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ matrix.arch }}-envoy${{ steps.v.outputs.envoy }}-modsec${{ steps.v.outputs.modsec }}-crs${{ steps.v.outputs.crs }}
+          path: |
+            demo/.run/*.log
+            demo/.run/*.md
+            demo/.run/fail-modes/
+            demo/.run/go-ftw/
+            demo/.run/hop-trace/
+          retention-days: 5
+          if-no-files-found: ignore

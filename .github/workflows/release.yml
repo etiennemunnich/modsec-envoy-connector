@@ -1,0 +1,167 @@
+name: release
+
+# Tag vX.Y.Z on main → per-arch native release build (x86_64, aarch64) →
+# ext-proc-modsec-<ver>-linux-<arch>.tar.gz + .sha256 → per-arch image →
+# multi-arch manifest ghcr.io/<owner>/<repo>:<ver> → GitHub Release.
+# workflow_dispatch builds and pushes the same artifacts under sha-<short>
+# without creating a Release (to prove the pipeline without cutting a version).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-latest, platform: linux/amd64 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm, platform: linux/arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            ver="${GITHUB_REF_NAME}"
+            [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::tag $ver is not vX.Y.Z"; exit 1; }
+            want="v$(grep -m1 '^version' crates/ext-proc-modsec/Cargo.toml | cut -d'"' -f2)"
+            [[ "${ver%%-*}" == "$want" ]] || { echo "::error::tag $ver != crate version $want"; exit 1; }
+          else
+            ver="sha-${GITHUB_SHA::7}"
+          fi
+          {
+            echo "version=$ver"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "pin=$(./scripts/stable-releases.sh pin modsecurity)"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/libmodsecurity
+        with:
+          pin: ${{ steps.meta.outputs.pin }}
+
+      - name: cargo build --release
+        run: cargo build --release --locked -p ext-proc-modsec
+
+      - name: Package tarball
+        id: pkg
+        env:
+          VER: ${{ steps.meta.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          name="ext-proc-modsec-${VER}-linux-${ARCH}"
+          out="dist/${name}"
+          mkdir -p "${out}/bin" "${out}/lib"
+          install -m 0755 target/release/ext-proc-modsec "${out}/bin/"
+          cp -P "${MODSECURITY_PREFIX:-$GITHUB_WORKSPACE/.local/modsecurity}"/lib/libmodsecurity.so* "${out}/lib/"
+          cp LICENSE NOTICE versions.lock.md "${out}/"
+          file "${out}/bin/ext-proc-modsec"
+          LD_LIBRARY_PATH="${out}/lib" ldd "${out}/bin/ext-proc-modsec"
+          LD_LIBRARY_PATH="${out}/lib" "${out}/bin/ext-proc-modsec" --version
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" && cat "${name}.tar.gz.sha256")
+          echo "dir=${out}" >> "$GITHUB_OUTPUT"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            dist/${{ steps.pkg.outputs.name }}.tar.gz
+            dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
+          retention-days: 7
+
+      - name: Build + push ${{ matrix.platform }} image
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          VER: ${{ steps.meta.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          DIR: ${{ steps.pkg.outputs.dir }}
+          PLATFORM: ${{ matrix.platform }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --platform "$PLATFORM" -f packaging/Dockerfile \
+            --label org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$VER" \
+            --label org.opencontainers.image.licenses=Apache-2.0 \
+            -t "${IMAGE}:${VER}-${ARCH}" "$DIR"
+          docker run --rm "${IMAGE}:${VER}-${ARCH}" --version
+          docker push "${IMAGE}:${VER}-${ARCH}"
+
+  manifest:
+    name: multi-arch manifest
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Merge per-arch images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then ver="$GITHUB_REF_NAME"; else ver="sha-${GITHUB_SHA::7}"; fi
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create -t "${image}:${ver}" "${image}:${ver}-x86_64" "${image}:${ver}-aarch64"
+          docker buildx imagetools inspect "${image}:${ver}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  github-release:
+    name: github release
+    if: github.ref_type == 'tag'
+    needs: manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
+          {
+            echo "Envoy ext_proc → libmodsecurity connector ${GITHUB_REF_NAME}."
+            echo
+            echo "Pins (versions.lock.md):"
+            fence="\`\`\`"
+            echo "$fence"
+            sed -n "/^${fence}\$/,/^${fence}\$/p" versions.lock.md | sed "/^${fence}\$/d"
+            echo "$fence"
+            echo
+            echo "- Image (linux/amd64, linux/arm64): \`${image}\`"
+            echo "- Tarballs bundle \`bin/ext-proc-modsec\` and \`lib/libmodsecurity.so*\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. Run with \`LD_LIBRARY_PATH=<dir>/lib\`."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md \
+            dist/*.tar.gz dist/*.tar.gz.sha256

@@ -1,0 +1,89 @@
+name: stable-window
+
+# Weekly: live e2e against the last 3 stables of each axis, one axis moved off
+# its pin per cell (never a cartesian product), on x86_64 + aarch64. Catches
+# connector drift against older/parallel release lines. Files the issue
+# "stable-window: failing cells" on failure and closes it when green again.
+
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: "Stables per axis"
+        required: false
+        default: "3"
+        type: string
+
+concurrency:
+  group: stable-window
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute cells from upstream stable releases
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPTH: ${{ inputs.depth || '3' }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPTH" =~ ^[1-5]$ ]] || { echo "::error::depth must be 1-5"; exit 1; }
+          cells='[{"cell":"pins","envoy":"","modsec":"","crs":""}]'
+          add() { cells="$(python3 -c 'import json,sys; c=json.loads(sys.argv[1]); c.append(json.loads(sys.argv[2])); print(json.dumps(c))' "$cells" "$1")"; }
+          for axis in envoy modsecurity crs; do
+            pin="$(./scripts/stable-releases.sh pin "$axis")"
+            for tag in $(./scripts/stable-releases.sh window "$axis" "$DEPTH"); do
+              [[ "$tag" == "$pin" ]] && continue
+              case "$axis" in
+                envoy) add "{\"cell\":\"envoy $tag\",\"envoy\":\"$tag\",\"modsec\":\"\",\"crs\":\"\"}" ;;
+                modsecurity) add "{\"cell\":\"modsecurity $tag\",\"envoy\":\"\",\"modsec\":\"$tag\",\"crs\":\"\"}" ;;
+                crs) add "{\"cell\":\"crs $tag\",\"envoy\":\"\",\"modsec\":\"\",\"crs\":\"$tag\"}" ;;
+              esac
+            done
+          done
+          echo "cells=$cells" >> "$GITHUB_OUTPUT"
+          python3 -c 'import json,sys; [print("-", c["cell"]) for c in json.loads(sys.argv[1])]' "$cells" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  cell:
+    name: ${{ matrix.cell }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.cells) }}
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      envoy_version: ${{ matrix.envoy }}
+      modsecurity_pin: ${{ matrix.modsec }}
+      crs_tag: ${{ matrix.crs }}
+      suites: "smoke fail-closed fail-modes go-ftw-smoke"
+
+  report:
+    name: report
+    needs: cell
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: File or close the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-report.sh --mode on-failure --title "stable-window: failing cells"

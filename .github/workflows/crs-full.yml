@@ -1,0 +1,43 @@
+name: crs-full
+
+# Monthly: the whole OWASP CRS go-ftw regression tree (HTTP/1.x, status codes,
+# demo/ftw/envoy-overrides.yaml) at the pins on x86_64 + aarch64. Files the
+# issue "crs-full: go-ftw failing" on failure and closes it when green again.
+
+on:
+  schedule:
+    - cron: "41 3 7 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: crs-full
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    name: go-ftw full
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      suites: "go-ftw-full"
+      timeout_minutes: 60
+
+  report:
+    name: report
+    needs: full
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: File or close the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-report.sh --mode on-failure --title "crs-full: go-ftw failing"

@@ -1,0 +1,82 @@
+name: stable-candidate
+
+# Test one stable upstream release on x86_64 + aarch64: that axis at the
+# candidate, the other two at their pins, full live e2e (smoke, fail-closed,
+# H1/H2 fail-modes, hop-trace, go-ftw smoke). Result goes to the issue
+# "stable-candidate: <axis> <tag>". Dispatched by release-watch.yml or by hand.
+# Nothing is bumped: a human/agent edits versions.lock.md on main, which
+# re-runs ci.yml as the real gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Axis to move off its pin"
+        required: true
+        type: choice
+        options: [envoy, modsecurity, crs]
+      version:
+        description: "Stable tag, e.g. v1.40.0 / v3.0.17 / v4.30.0"
+        required: true
+        type: string
+      issue:
+        description: "Tracking issue number (empty: find or create by title)"
+        required: false
+        default: ""
+        type: string
+
+run-name: stable-candidate ${{ inputs.component }} ${{ inputs.version }}
+
+concurrency:
+  group: stable-candidate-${{ inputs.component }}-${{ inputs.version }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: candidate
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      envoy_version: ${{ inputs.component == 'envoy' && inputs.version || '' }}
+      modsecurity_pin: ${{ inputs.component == 'modsecurity' && inputs.version || '' }}
+      crs_tag: ${{ inputs.component == 'crs' && inputs.version || '' }}
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
+
+  report:
+    name: report
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Comment result on the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ inputs.component }}
+          VERSION: ${{ inputs.version }}
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          set -euo pipefail
+          ./scripts/stable-releases.sh valid "$COMPONENT" "$VERSION" || { echo "::error::'$VERSION' is not a stable $COMPONENT tag"; exit 1; }
+          [[ -z "$ISSUE" || "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue must be a number"; exit 1; }
+          case "$COMPONENT" in
+            envoy) key=ENVOY_PIN ;;
+            modsecurity) key=MODSECURITY_PIN ;;
+            crs) key=CRS_TAG ;;
+          esac
+          cat > "$RUNNER_TEMP/pass-note.md" <<EOF
+          ### Ready to bump on main
+          Both architectures passed with \`${key}=${VERSION}\` and the other axes at their pins. To adopt it, in one commit on \`main\`:
+          - \`versions.lock.md\`: table row + machine-readable \`${key}=${VERSION}\`
+          - \`scripts/check-pins.sh\` default and \`.github/workflows/ci.yml\` \`env.${key}\`
+          - docs that quote the pin (\`docs/*.md\` frontmatter), then let \`ci\` re-run as the gate.
+          EOF
+          ./scripts/ci-report.sh --mode always --title "stable-candidate: ${COMPONENT} ${VERSION}" \
+            ${ISSUE:+--issue "$ISSUE"} --pass-note "$RUNNER_TEMP/pass-note.md"
