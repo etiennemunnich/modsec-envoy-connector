@@ -58,6 +58,8 @@ After a **validated** moderate slice: `git commit` + `git push` on the working t
 ## Crate layout
 
 - `crates/ext-proc-modsec` — tonic ExternalProcessor binary (product name).
-- `crates/modsec-engine` — safe façade over libmodsecurity; keep `unsafe` / FFI here only.
+- `crates/modsec-engine` — safe façade over libmodsecurity; own `msc_*` FFI (`src/ffi.rs`); keep `unsafe` / FFI here only.
+- `proto/` → `crates/ext-proc-modsec/src/pb/` — vendored Envoy ext_proc proto closure and its committed generated code; never hand-edit `pb/`, rerun `scripts/gen-protos.sh`.
+- No new crates without a reason in the commit; the runtime set is tokio, tokio-stream, tonic (server + codegen), prost, tonic-prost, tracing.
 
 Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `scripts/probe-modsec-pin.sh`, `scripts/envoy-candidate-smoke.sh`, `scripts/crs-version-probe.sh`. Anything else from `modsec-envoy-experiement` (perf harness, WebSocket / gRPC hop tracing) — port deliberately; do not dump experiment history wholesale.

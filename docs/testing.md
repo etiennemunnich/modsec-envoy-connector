@@ -57,7 +57,7 @@ macOS (arm64), Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, go-ftw v2.6.0
 
 | Suite | Result |
 |-------|--------|
-| `cargo test --workspace` | 47 passed, 0 failed |
+| `cargo test --workspace` | 54 passed, 0 failed |
 | `smoke.sh` | passed |
 | `fail-closed.sh` | passed |
 | `fail-modes.sh` (H1 + H2) | 59 passed, 0 failed |

@@ -6,7 +6,11 @@ Short guide for humans and agents. Standards for agents: **[AGENTS.md](./AGENTS.
 
 1. Rust **1.88+** (MSRV in crate `Cargo.toml`; CI uses `stable`).
 2. libmodsecurity **v3.0.16** discoverable via `pkg-config modsecurity` (`./demo/scripts/install-libmodsecurity.sh`: Homebrew on macOS, source build on Ubuntu).
+   The `pkg-config` tool must be on `PATH` (or set `MODSECURITY_LIB_DIR` to the directory holding `libmodsecurity`).
 3. For the live Envoy demo and fail-closed drills, follow [`demo/README.md`](./demo/README.md).
+4. `protoc` is only needed to regenerate the committed ext_proc code after refreshing `proto/`: `./scripts/gen-protos.sh` (`--check` to verify).
+
+Dependencies are deliberately few: `tokio`, `tokio-stream`, `tonic` (server + codegen only), `prost`, `tonic-prost`, `tracing`. Justify any new crate in the commit message.
 
 ```bash
 cargo fmt --all -- --check
