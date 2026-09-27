@@ -51,7 +51,7 @@ GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not cla
 4. **Pin runners and toolchains; never float.** `ubuntu-24.04` / `ubuntu-24.04-arm` together, never `ubuntu-latest`. Rust comes from `rust-toolchain.toml`. Actions are pinned by full commit SHA with a `# vX.Y.Z` comment. No third-party actions in jobs with write scopes. (`scripts/check-workflows.sh` enforces the mechanical parts.)
 5. **Cache keys include everything that changes the output:** OS id + version, arch, upstream tag, the hash of the build script, the toolchain file.
 6. **Report jobs use `if: ${{ !cancelled() }}`, never `always()`.** A cancelled run must not file a failure issue.
-7. **`main` runs are never cancelled:** `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`.
+7. **`main` runs are never cancelled.** `cancel-in-progress: false` is not enough: a concurrency group always cancels its *pending* run when a newer one queues. Give each main run its own group (`ci-main-<run_id>`) and cancel only on other refs.
 8. **Watchers** propose the latest stable *and* the top patch on the pinned line, warn on release lines the pattern does not cover, dedupe only on a recorded result (never on "issue exists"), create tracking state only after the dispatch succeeded, and report their own failures.
 9. **Releases are gated.** The tag commit must be on `main` and the required `ci` checks green for that SHA before anything is pushed to GHCR or released.
 10. **Workflow comments and docs match the triggers.** When you change `on:` or `if:`, update the workflow's header comment and `docs/testing.md` in the same commit.
