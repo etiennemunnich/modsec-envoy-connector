@@ -14,10 +14,14 @@ Dependencies are deliberately few: `tokio`, `tokio-stream`, `tonic` (server + co
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ./scripts/check-pins.sh
+./scripts/check-workflows.sh     # when you touch .github/
+./scripts/test-ci-scripts.sh     # when you touch scripts/ci-*.sh
 ```
+
+CI builds with the toolchain in `rust-toolchain.toml`; rustup picks it up locally too.
 
 ## Pull requests
 
@@ -30,22 +34,23 @@ cargo test --workspace
 
 - [ ] Fail-closed preserved (no enforcement fail-open; no `Continue` after ModSec Err)
 - [ ] Pins in `versions.lock.md` still accurate (or bumped deliberately)
-- [ ] `pin-check` + `rust-quality` green (or explained)
+- [ ] `ci-ok` green (or explained)
 - [ ] Mac / dispatch proofs noted if the change needs them (CRS full, fail-mode, H2)
 
 ## Test matrix
 
-All CI runs on GitHub-hosted runners, natively on `ubuntu-latest` (x86_64) and `ubuntu-24.04-arm` (aarch64). Details and measured minutes: [docs/testing.md](./docs/testing.md#hosted-ci).
+All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64). Details and measured minutes: [docs/testing.md](./docs/testing.md#hosted-ci).
 
 | Layer | CI | Local |
 |-------|----|-------|
-| `pin-check` | every push / PR | `./scripts/check-pins.sh` |
-| `rust-quality` (fmt, clippy, tests incl. gRPC against libmodsecurity, build) | every push / PR, × arch | same cargo commands |
-| Live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke | `e2e-pin` × arch on every `main` push | `./scripts/ci-live-e2e.sh` or the `demo/scripts/` suites |
+| `pin-check` (pins, workflow rules, CI-script tests) | every push / PR | `./scripts/check-pins.sh`, `check-workflows.sh`, `test-ci-scripts.sh` |
+| `rust-quality` (fmt, clippy, tests incl. gRPC against libmodsecurity, build) | every non-docs push / PR, × arch | same cargo commands |
+| `msrv`, `supply-chain` (cargo-deny), `protos` | every non-docs push / PR | `cargo deny check`, `./scripts/gen-protos.sh --check` |
+| Live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke | `e2e-pin` × arch on `main` pushes, PRs and dispatches | `./scripts/ci-live-e2e.sh` or the `demo/scripts/` suites |
 | New stable Envoy / libmodsecurity / CRS | `release-watch` (daily) → `stable-candidate` × arch → issue | `ENVOY_VERSION=… ./scripts/ci-live-e2e.sh` |
 | Last 3 stables per axis | `stable-window` × arch (weekly) | same, per cell |
 | Full CRS go-ftw | `crs-full` × arch (monthly) | `./demo/scripts/go-ftw.sh full` |
-| Release artifacts | `release` on tag (dispatch = dry run) | — |
+| Release artifacts | `release` on a tag that is on `main` with green `ci` (dispatch pushes an image, no Release) | — |
 
 ## Versioning
 
