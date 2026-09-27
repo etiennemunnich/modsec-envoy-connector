@@ -21,8 +21,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A concurrency group always cancels its *pending* run when a newer one queues,
+# whatever cancel-in-progress says, so main gets one group per run.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.ref == 'refs/heads/main' && format('ci-main-{0}', github.run_id) || format('ci-{0}', github.ref) }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
