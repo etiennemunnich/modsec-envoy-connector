@@ -38,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Docs-only change?
         id: d
@@ -52,6 +53,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: versions.lock.md pins (and install-script fallbacks)
         run: ./scripts/check-pins.sh
       - name: Workflow rules (SHA-pinned actions, pinned runners)
@@ -73,6 +76,8 @@ jobs:
           - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/rust-toolchain
 
@@ -121,6 +126,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: libmodsecurity pin (versions.lock.md)
         id: pins
         run: |
@@ -151,6 +158,8 @@ jobs:
       CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/rust-toolchain
       - name: Install cargo-deny ${{ env.CARGO_DENY_VERSION }} (release binary, sha256-pinned)
         run: |
@@ -177,6 +186,8 @@ jobs:
       PROTOC_SHA256: f853e691868d0557425ea290bf7ba6384eef2fa9b04c323afab49a770ba9da80
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/rust-toolchain
       - name: Install protoc ${{ env.PROTOC_VERSION }} (release zip, sha256-pinned)
         run: |

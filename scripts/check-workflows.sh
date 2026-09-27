@@ -26,6 +26,17 @@ rule "remote action not pinned by commit SHA with a # vX.Y.Z comment" \
 rule "floating runner label (use ubuntu-24.04 / ubuntu-24.04-arm)" \
   "$(grep -nE 'ubuntu-latest' "${files[@]}" || true)"
 
+# No job pushes via git, so no checkout may leave the token in the git config.
+rule "actions/checkout without persist-credentials: false in its with: block" \
+  "$(for f in "${files[@]}"; do
+    awk -v f="${f}" '
+      pending != "" && /^[[:space:]]*-[[:space:]]/ { print pending; pending = "" }
+      pending != "" && /persist-credentials:[[:space:]]*false/ { pending = "" }
+      /uses:[[:space:]]*actions\/checkout@/ { pending = f ":" FNR ": " $0 }
+      END { if (pending != "") print pending }
+    ' "${f}"
+  done)"
+
 # always() also runs after a cancel, so a cancelled run would file a failure issue.
 rule "always() in a condition (use \${{ !cancelled() }})" \
   "$(grep -nE 'if:.*always\(\)' "${files[@]}" || true)"

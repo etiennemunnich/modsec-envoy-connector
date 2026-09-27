@@ -34,6 +34,8 @@ jobs:
       cells: ${{ steps.plan.outputs.cells }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Compute cells from upstream stable releases
         id: plan
         env:
@@ -104,6 +106,8 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: File or close the failure issue
         env:
           GH_TOKEN: ${{ github.token }}

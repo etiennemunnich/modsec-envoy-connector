@@ -80,6 +80,11 @@ check "check-workflows: ubuntu-latest"      1 "$(wf "${good}
     runs-on: ubuntu-latest")"
 check "check-workflows: always()"           1 "$(wf "${good}
     if: always()")"
+check "check-workflows: checkout keeps creds" 1 "$(wf '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: true')"
+check "check-workflows: checkout, last step"  1 "$(wf '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0')"
 
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"
