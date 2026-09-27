@@ -44,6 +44,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Assert versions.lock.md pins
         run: ./scripts/check-pins.sh
+      - name: Workflow rules (SHA-pinned actions, pinned runners)
+        run: ./scripts/check-workflows.sh
 
   rust-quality:
     name: rust-quality (${{ matrix.arch }})
