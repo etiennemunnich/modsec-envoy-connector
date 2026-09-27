@@ -71,12 +71,20 @@ jobs:
             modsecurity) key=MODSECURITY_PIN ;;
             crs) key=CRS_TAG ;;
           esac
-          cat > "$RUNNER_TEMP/pass-note.md" <<EOF
+          pin="$(./scripts/stable-releases.sh pin "$COMPONENT")"
+          if [[ "$(printf '%s\n%s\n' "$VERSION" "$pin" | sort -V | tail -1)" == "$pin" ]]; then
+            cat > "$RUNNER_TEMP/pass-note.md" <<EOF
+          ### Compatible (informational)
+          \`${VERSION}\` is not newer than the pin \`${key}=${pin}\`; nothing to bump.
+          EOF
+          else
+            cat > "$RUNNER_TEMP/pass-note.md" <<EOF
           ### Ready to bump on main
           Both architectures passed with \`${key}=${VERSION}\` and the other axes at their pins. To adopt it, in one commit on \`main\`:
           - \`versions.lock.md\`: table row + machine-readable \`${key}=${VERSION}\`
           - \`scripts/check-pins.sh\` default and \`.github/workflows/ci.yml\` \`env.${key}\`
           - docs that quote the pin (\`docs/*.md\` frontmatter), then let \`ci\` re-run as the gate.
           EOF
+          fi
           ./scripts/ci-report.sh --mode always --title "stable-candidate: ${COMPONENT} ${VERSION}" \
             ${ISSUE:+--issue "$ISSUE"} --pass-note "$RUNNER_TEMP/pass-note.md"
