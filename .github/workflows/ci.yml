@@ -2,7 +2,7 @@ name: ci
 
 # Gate for main (work lands there directly), cursor/** branches, PRs and dispatches.
 #   pin-check                          every run (pins, workflow rules)
-#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build
+#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked)
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   e2e-pin × {x86_64, aarch64}        live suites at the pins; push to main, PRs and
@@ -100,13 +100,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: cargo build -p ext-proc-modsec
-        run: cargo build -p ext-proc-modsec
+        run: cargo build -p ext-proc-modsec --locked
 
   msrv:
     name: msrv (rust-version)
