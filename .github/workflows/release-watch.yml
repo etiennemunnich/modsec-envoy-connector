@@ -42,6 +42,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Public repos disable schedules after 60 days without repo activity, and this
+      # watcher creates none; re-enabling daily keeps all three schedules alive.
+      - name: Keep the scheduled workflows enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for w in release-watch.yml stable-window.yml crs-full.yml; do
+            gh workflow enable "$w" --repo "$GITHUB_REPOSITORY"
+          done
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" -q '.workflows[] | "\(.name): \(.state)"'
       - name: Find new stable releases and dispatch candidates
         env:
           GH_TOKEN: ${{ github.token }}

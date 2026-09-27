@@ -61,6 +61,13 @@ jobs:
         run: ./scripts/check-workflows.sh
       - name: CI helper script tests (offline)
         run: ./scripts/test-ci-scripts.sh
+      - name: checkout left no credentials in the git config
+        run: |
+          if git config --list --show-origin | grep -iE 'extraheader|authorization|includeif\..*\.path'; then
+            echo "::error::git config still carries checkout credentials"
+            exit 1
+          fi
+          echo "no credential entries in git config"
 
   rust-quality:
     name: rust-quality (${{ matrix.arch }})
