@@ -333,16 +333,17 @@ echo "    transcript ${TRANSCRIPT}"
 
 for PROTO in ${PROTOS}; do
   echo "==> PROTO=${PROTO}"
-  enabled proto && run_proto
-  enabled 1 && run_class1
-  enabled 2 && run_class2
-  enabled 3 && run_class3
-  enabled 4 && run_class4
-  enabled 5 && run_class5
-  enabled 6 && run_class6
-  enabled fo && run_fail_open_control
-  enabled cookie && run_cookie
-  enabled body && run_tail_body
+  # `if`, not `enabled X && run_X`: inside an && list errexit is off for the whole function.
+  if enabled proto; then run_proto; fi
+  if enabled 1; then run_class1; fi
+  if enabled 2; then run_class2; fi
+  if enabled 3; then run_class3; fi
+  if enabled 4; then run_class4; fi
+  if enabled 5; then run_class5; fi
+  if enabled 6; then run_class6; fi
+  if enabled fo; then run_fail_open_control; fi
+  if enabled cookie; then run_cookie; fi
+  if enabled body; then run_tail_body; fi
 done
 
 echo

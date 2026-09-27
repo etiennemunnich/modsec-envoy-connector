@@ -12,8 +12,13 @@
 #   CRS_TAG          CRS tag to load (default: lock pin); fetched into demo/.crs-<tag>
 #   E2E_REPORT       markdown report path (default demo/.run/e2e-report.md);
 #                    also appended to $GITHUB_STEP_SUMMARY when set
+#   EXPECT_ARCH      fail unless `uname -m` is this (CI passes the matrix arch)
+#   MIN_*            per-suite floors, see floor() below
 #
 # The demo Envoy config is used unchanged; failure_mode_allow stays false.
+# A suite passes only if it exits 0 AND its summary reports at least the
+# floor of passing checks, so a suite that silently runs fewer checks (or a
+# go-ftw include that selects nothing) is a failure, not a green.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO="${ROOT}/demo/scripts"
@@ -28,6 +33,8 @@ REPORT="${E2E_REPORT:-${ROOT}/demo/.run/e2e-report.md}"
 
 die() { echo "ci-live-e2e: $*" >&2; exit 1; }
 
+arch="$(uname -m)"
+[[ -z "${EXPECT_ARCH:-}" || "${arch}" == "${EXPECT_ARCH}" ]] || die "running on ${arch}, want EXPECT_ARCH=${EXPECT_ARCH}"
 command -v envoy >/dev/null || die "envoy not on PATH"
 envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
 [[ "${envoy_line}" == *"/${ENVOY_VERSION#v}/"* ]] || die "envoy on PATH is not ${ENVOY_VERSION}: ${envoy_line}"
@@ -42,7 +49,6 @@ crs_got="$(git -C "${CRS_DIR}" describe --tags --exact-match 2>/dev/null || true
 cleanup() { "${DEMO}/down.sh" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-arch="$(uname -m)"
 mkdir -p "$(dirname "${REPORT}")"
 {
   echo "### live e2e — $(uname -s) ${arch}"
@@ -52,6 +58,48 @@ mkdir -p "$(dirname "${REPORT}")"
   echo "| Suite | Result | Seconds | Summary |"
   echo "|-------|--------|---------|---------|"
 } >"${REPORT}"
+
+# Floors (measured 2026-09-27 at the pins: go-ftw demo 8, body ids 118, full
+# 5091; fail-modes 59). fail-modes is 57 when the engine refuses to boot with
+# an unwritable audit log (class 6 then records 3 checks per protocol, not 4);
+# body ids leave room for older CRS lines in stable-window cells.
+MIN_FAIL_MODES="${MIN_FAIL_MODES:-57}"
+MIN_FTW_DEMO="${MIN_FTW_DEMO:-8}"
+MIN_FTW_BODY="${MIN_FTW_BODY:-100}"
+MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
+
+# ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
+ftw_success() {
+  local n
+  n="$(grep -E "^$2: +success=[0-9]+" "$1" | tail -1 | sed -E 's/.*success=([0-9]+).*/\1/' || true)"
+  echo "${n:-0}"
+}
+
+# floor <suite> <log> — prints a reason and returns 1 when the suite ran fewer checks than its floor.
+floor() {
+  local n
+  case "$1" in
+    fail-modes)
+      n="$(grep -Eo 'summary: PASS=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_FAIL_MODES}" ]] || { echo "PASS=${n:-0} < ${MIN_FAIL_MODES}"; return 1; }
+      ;;
+    go-ftw-smoke)
+      n="$(ftw_success "$2" 'demo tests')"
+      [[ "${n}" -ge "${MIN_FTW_DEMO}" ]] || { echo "demo tests success=${n} < ${MIN_FTW_DEMO}"; return 1; }
+      n="$(ftw_success "$2" 'CRS body ids')"
+      [[ "${n}" -ge "${MIN_FTW_BODY}" ]] || { echo "CRS body ids success=${n} < ${MIN_FTW_BODY}"; return 1; }
+      ;;
+    go-ftw-body)
+      n="$(ftw_success "$2" 'CRS body ids')"
+      [[ "${n}" -ge "${MIN_FTW_BODY}" ]] || { echo "CRS body ids success=${n} < ${MIN_FTW_BODY}"; return 1; }
+      ;;
+    go-ftw-full)
+      n="$(ftw_success "$2" 'CRS full')"
+      [[ "${n}" -ge "${MIN_FTW_FULL}" ]] || { echo "CRS full success=${n} < ${MIN_FTW_FULL}"; return 1; }
+      ;;
+  esac
+  return 0
+}
 
 rc=0
 record() {
@@ -83,6 +131,11 @@ for suite in ${SUITES}; do
   if "${cmd[@]}" 2>&1 | tee "${log}"; then result=PASS; else result=FAIL; fi
   summary="$(grep -E 'summary: PASS=|^(demo tests|CRS body ids|CRS full):|PASSED$|FAILED$|HOP-TRACE' "${log}" \
     | sed -E 's/ exit=[0-9]+ log=.*//; s/\|/\//g' | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+  if [[ "${result}" == PASS ]] && ! why="$(floor "${suite}" "${log}")"; then
+    result=FAIL
+    summary="below floor (${why}); ${summary}"
+    echo "::error::${suite} below floor: ${why}"
+  fi
   record "${suite}" "${result}" $((SECONDS - t0)) "${summary}"
 done
 
