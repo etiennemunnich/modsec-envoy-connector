@@ -42,7 +42,7 @@ jobs:
           - { arch: x86_64, runner: ubuntu-24.04, ftw_arch: amd64 }
           - { arch: aarch64, runner: ubuntu-24.04-arm, ftw_arch: arm64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve versions
         id: v
@@ -68,7 +68,7 @@ jobs:
         run: . /etc/os-release && echo "id=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -82,7 +82,7 @@ jobs:
           pin: ${{ steps.v.outputs.modsec }}
 
       - name: Cache Envoy ${{ steps.v.outputs.envoy }}
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/envoy-bin
           key: envoy-${{ steps.v.outputs.envoy }}-${{ runner.os }}-${{ runner.arch }}
@@ -119,7 +119,7 @@ jobs:
 
       - name: Upload demo logs (failure only)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-${{ matrix.arch }}-envoy${{ steps.v.outputs.envoy }}-modsec${{ steps.v.outputs.modsec }}-crs${{ steps.v.outputs.crs }}
           path: |
