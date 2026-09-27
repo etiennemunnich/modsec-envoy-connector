@@ -29,7 +29,7 @@ mkdir -p "${RUN}/tmp" "${RUN}/data"
   echo "SecAuditLogType Serial"
   echo "SecAuditLog ${RUN}/modsec-audit.log"
   if [[ "${DEMO_CRS:-1}" == "1" ]]; then
-    [[ -d "${CRS_DIR}/rules" ]] || "${DEMO}/scripts/install-crs.sh"
+    [[ -d "${CRS_DIR}/rules" ]] || "${DEMO}/scripts/install-crs.sh" >&2
     echo "Include ${CRS_DIR}/crs-setup.conf"
     echo "Include ${CRS_DIR}/rules/*.conf"
   fi
