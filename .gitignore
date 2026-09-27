@@ -13,3 +13,6 @@ experiments/lab/logs/
 # Demo CRS checkout (install-crs.sh) and runtime state (up.sh)
 demo/.crs/
 demo/.run/
+
+# CRS checkouts for other tags (scripts/crs-version-probe.sh)
+demo/.crs-*/

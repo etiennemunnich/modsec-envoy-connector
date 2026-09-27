@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Fetch OWASP CRS at the pin in versions.lock.md into demo/.crs and create
-# crs-setup.conf from the shipped example (review it before production use).
+# Fetch OWASP CRS at the pin in versions.lock.md (or CRS_TAG) into demo/.crs
+# (or CRS_DIR) and create crs-setup.conf from the shipped example (review it
+# before production use).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PIN="$(grep -E '^CRS_TAG=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)"
+PIN="${CRS_TAG:-$(grep -E '^CRS_TAG=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)}"
 PIN="${PIN:-v4.29.0}"
 DEST="${CRS_DIR:-$ROOT/demo/.crs}"
 

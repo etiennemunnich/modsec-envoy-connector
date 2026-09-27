@@ -1,0 +1,37 @@
+name: modsec-pin-probe
+
+# Connector build + clippy + tests against one libmodsecurity tag.
+# Manual dispatch only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      modsecurity_pin:
+        description: "libmodsecurity git tag (e.g. v3.0.15)"
+        required: true
+        default: "v3.0.16"
+        type: string
+
+concurrency:
+  group: modsec-pin-probe-${{ inputs.modsecurity_pin }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: libmodsecurity ${{ inputs.modsecurity_pin }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: ./.github/actions/libmodsecurity
+        with:
+          pin: ${{ inputs.modsecurity_pin }}
+
+      - name: Probe connector against ${{ inputs.modsecurity_pin }}
+        env:
+          MODSECURITY_PIN: ${{ inputs.modsecurity_pin }}
+        run: ./scripts/probe-modsec-pin.sh --skip-install

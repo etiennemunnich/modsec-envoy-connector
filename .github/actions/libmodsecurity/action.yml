@@ -1,0 +1,49 @@
+name: libmodsecurity
+description: Build (or restore from cache) libmodsecurity at one tag on Ubuntu and export it for cargo.
+
+inputs:
+  pin:
+    description: libmodsecurity git tag, e.g. v3.0.16
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache libmodsecurity ${{ inputs.pin }}
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.local/modsecurity
+        key: libmodsecurity-${{ inputs.pin }}-${{ runner.os }}-${{ runner.arch }}-pcre2
+
+    # Needed on cache hits too: libmodsecurity.so links against these.
+    - name: libmodsecurity runtime dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libcurl4-openssl-dev libgeoip-dev liblmdb-dev libpcre2-dev \
+          libxml2-dev libyajl-dev pkg-config zlib1g-dev
+
+    - name: Build libmodsecurity ${{ inputs.pin }} from source
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PREFIX: ${{ github.workspace }}/.local/modsecurity
+        MODSECURITY_PIN: ${{ inputs.pin }}
+      run: ./scripts/install-libmodsecurity-ubuntu.sh
+
+    - name: Export libmodsecurity env
+      shell: bash
+      env:
+        PREFIX: ${{ github.workspace }}/.local/modsecurity
+        PIN: ${{ inputs.pin }}
+      run: |
+        {
+          echo "PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig"
+          echo "LD_LIBRARY_PATH=${PREFIX}/lib"
+          echo "LIBRARY_PATH=${PREFIX}/lib"
+        } >> "$GITHUB_ENV"
+        ver="$(PKG_CONFIG_PATH="${PREFIX}/lib/pkgconfig" pkg-config --modversion modsecurity)"
+        echo "libmodsecurity ${ver}"
+        [[ "${ver}" == "${PIN#v}" ]] || { echo "::error::built ${ver}, want ${PIN}"; exit 1; }

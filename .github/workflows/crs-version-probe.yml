@@ -1,0 +1,96 @@
+name: crs-version-probe
+
+# Load each CRS tag in the window into the pinned libmodsecurity behind the
+# pinned Envoy, then run the demo smoke and go-ftw (HTTP/1.x, status codes).
+# Manual dispatch only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      crs_tag:
+        description: "Run only this CRS tag (empty = whole window)"
+        required: false
+        default: ""
+        type: string
+      ftw_mode:
+        description: "go-ftw mode"
+        required: true
+        default: smoke
+        type: choice
+        options: [smoke, body, full]
+
+concurrency:
+  group: crs-version-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: crs ${{ matrix.crs_tag }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crs_tag: [v4.29.0, v4.28.0, v4.27.0]
+    steps:
+      - name: Select cell
+        id: gate
+        env:
+          ONLY: ${{ inputs.crs_tag }}
+          CELL: ${{ matrix.crs_tag }}
+        run: |
+          if [[ -n "$ONLY" && "$ONLY" != "$CELL" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "skipping ${CELL} (only ${ONLY} requested)"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.gate.outputs.run == 'true'
+
+      - uses: actions/setup-go@v5
+        if: steps.gate.outputs.run == 'true'
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Read pins
+        if: steps.gate.outputs.run == 'true'
+        id: pins
+        run: grep -E '^(ENVOY_PIN|MODSECURITY_PIN)=' versions.lock.md >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/libmodsecurity
+        if: steps.gate.outputs.run == 'true'
+        with:
+          pin: ${{ steps.pins.outputs.MODSECURITY_PIN }}
+
+      - name: Install Envoy ${{ steps.pins.outputs.ENVOY_PIN }} and go-ftw
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ENVOY_BIN_DIR: ${{ runner.temp }}/envoy-bin
+        run: |
+          command -v lsof >/dev/null || sudo apt-get install -y --no-install-recommends lsof
+          ./demo/scripts/install-envoy.sh
+          echo "${ENVOY_BIN_DIR}" >> "$GITHUB_PATH"
+          go install github.com/coreruleset/go-ftw/v2@v2.6.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Probe CRS ${{ matrix.crs_tag }}
+        if: steps.gate.outputs.run == 'true'
+        env:
+          CRS_TAG: ${{ matrix.crs_tag }}
+          FTW_MODE: ${{ inputs.ftw_mode }}
+        run: ./scripts/crs-version-probe.sh
+
+      - name: Upload go-ftw results
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crs-${{ matrix.crs_tag }}-go-ftw
+          path: |
+            demo/.run/go-ftw/
+            demo/.run/*.log
+          if-no-files-found: ignore
