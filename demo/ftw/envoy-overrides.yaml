@@ -1,0 +1,143 @@
+# go-ftw overrides for Envoy v1.39.1 + ext_proc + libmodsecurity v3.0.16,
+# same pattern as CRS tests/regression/nginx-overrides.yaml. Every entry was
+# measured against the demo; reasons say what Envoy/ModSecurity actually did.
+#
+# expect_error: Envoy's HTTP/1 codec drops the malformed request and, with
+#   ext_proc in the chain, the client sees an empty reply (envoy#29440) — the
+#   request never reaches ModSecurity or the origin.
+# status: CRS expectations written for Apache's parser; the outcome here is
+#   still a block (403) or matches CRS's nginx override.
+version: v0.0.0
+meta:
+  engine: libmodsecurity3
+  platform: envoy
+  annotations:
+  - purpose: CRS regression via go-ftw cloud mode against demo/envoy/envoy.yaml
+test_overrides:
+- rule_id: 920100
+  test_ids:
+  - 2
+  - 5
+  - 11
+  - 12
+  - 13
+  - 15
+  reason: Invalid request-line → Envoy unexpected EOF (envoy#29440).
+  output:
+    expect_error: true
+- rule_id: 920100
+  test_ids:
+  - 4
+  reason: CONNECT is answered 403 by the Envoy route (direct_response); CRS expects Apache's 200.
+  output:
+    status: 403
+- rule_id: 920160
+  test_ids:
+  - 1
+  - 2
+  - 3
+  - 5
+  reason: Non-numeric Content-Length → Envoy unexpected EOF (Apache/nginx 400).
+  output:
+    expect_error: true
+- rule_id: 920181
+  test_ids:
+  - 1
+  reason: Content-Length + Transfer-Encoding → Envoy unexpected EOF.
+  output:
+    expect_error: true
+- rule_id: 920270
+  test_ids:
+  - 4
+  reason: Host with NUL → CRS anomaly block 403 (Apache parser answers 400).
+  output:
+    status: 403
+- rule_id: 920274
+  test_ids:
+  - 1
+  reason: Host with literal %1F → 200 at PL1; 920274 is PL4 (CRS nginx override also expects no 400).
+  output:
+    status: 200
+- rule_id: 920280
+  test_ids:
+  - 1
+  - 3
+  reason: HTTP/0.9 → Envoy unexpected EOF.
+  output:
+    expect_error: true
+- rule_id: 920290
+  test_ids:
+  - 1
+  reason: Empty Host → CRS anomaly block 403 (Apache parser answers 400).
+  output:
+    status: 403
+- rule_id: 920430
+  test_ids:
+  - 3
+  - 4
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  reason: Invalid HTTP version → Envoy unexpected EOF.
+  output:
+    expect_error: true
+- rule_id: 920620
+  test_ids:
+  - 1
+  reason: Duplicate Content-Type → CRS anomaly block 403 (CRS expects Apache's 200).
+  output:
+    status: 403
+- rule_id: 920640
+  test_ids:
+  - 4
+  reason: SQLi body under SecRuleEngine On → 403 (CRS expects 200 in detection-only runs).
+  output:
+    status: 403
+- rule_id: 920180
+  test_ids:
+  - 4
+  reason: Envoy unexpected EOF on 920180-4 (measured).
+  output:
+    expect_error: true
+- rule_id: 920290
+  test_ids:
+  - 4
+  reason: Envoy unexpected EOF on 920290-4 (measured).
+  output:
+    expect_error: true
+- rule_id: 932207
+  test_ids:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  reason: 932207 multipart/invalid payloads → Envoy unexpected EOF (all measured ids).
+  output:
+    expect_error: true
+- rule_id: 934120
+  test_ids:
+  - 23
+  - 24
+  - 25
+  - 26
+  - 39
+  reason: Envoy+ext_proc unexpected EOF for 934120 (measured).
+  output:
+    expect_error: true
+- rule_id: 941210
+  test_ids:
+  - 6
+  reason: Envoy+ext_proc unexpected EOF for 941210 (measured).
+  output:
+    expect_error: true
+- rule_id: 944200
+  test_ids:
+  - 1
+  reason: Envoy+ext_proc unexpected EOF for 944200 (measured).
+  output:
+    expect_error: true

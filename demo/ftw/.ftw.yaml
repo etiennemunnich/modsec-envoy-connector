@@ -1,0 +1,17 @@
+# go-ftw config for the demo: Envoy :18080 → connector → libmodsecurity + CRS.
+#
+# Cloud mode judges tests by HTTP status only. CRS regression tests that assert
+# specific rule ids (log_contains / expect_ids) are therefore judged by the
+# overall block/allow outcome, not by which rule fired.
+#
+# go-ftw: https://github.com/coreruleset/go-ftw
+---
+mode: cloud
+logmarkerheadername: X-CRS-Test
+testoverride:
+  input:
+    dest_addr: "127.0.0.1"
+    port: 18080
+    protocol: "http"
+    # Many CRS regression tests omit Host; send dest_addr instead of an empty one.
+    override_empty_host_header: true
