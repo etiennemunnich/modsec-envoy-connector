@@ -18,6 +18,8 @@ brew install envoy modsecurity pkg-config     # or the install scripts below
 ./demo/scripts/up.sh                           # builds + starts origin, connector, Envoy
 ./demo/scripts/smoke.sh                        # allow / deny / body / response checks
 ./demo/scripts/fail-closed.sh                  # kill → 500, hang → 504, bad rules → 500
+./demo/scripts/fail-modes.sh                   # the wider failure matrix, HTTP/1.1 + HTTP/2
+./demo/scripts/go-ftw.sh smoke                 # OWASP CRS regression tests (needs go-ftw)
 ./demo/scripts/down.sh
 ```
 
@@ -36,14 +38,18 @@ curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # c
 
 | Script | What it does |
 |--------|--------------|
-| [`install-envoy.sh`](./scripts/install-envoy.sh) | Checks `envoy --version` against the pin (or pulls `envoyproxy/envoy:v1.39.1`). |
+| [`install-envoy.sh`](./scripts/install-envoy.sh) | Checks `envoy --version` against the pin. On Linux, downloads the official release binary into `~/.local/bin` and checks its sha256 against the release checksums. `ENVOY_VERSION=vX.Y.Z` selects another release. |
 | [`install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh) | macOS: Homebrew. Linux: builds v3.0.16 from source via [`scripts/install-libmodsecurity-ubuntu.sh`](../scripts/install-libmodsecurity-ubuntu.sh). |
-| [`install-crs.sh`](./scripts/install-crs.sh) | Shallow-clones CRS at the pin into `demo/.crs` and creates `crs-setup.conf` from the example. |
+| [`install-crs.sh`](./scripts/install-crs.sh) | Shallow-clones CRS at the pin into `demo/.crs` and creates `crs-setup.conf` from the example. `CRS_TAG` / `CRS_DIR` select another tag and directory. |
 | [`up.sh`](./scripts/up.sh) | Generates `demo/.run/modsec.conf` (engine directives → CRS → demo rules), builds the connector, starts the origin, connector and Envoy detached, and waits for `/healthz` and Envoy `/ready`. `DEMO_CRS=0` skips CRS. |
 | [`smoke.sh`](./scripts/smoke.sh) | Live assertions: benign GET/POST/JSON → **200**; SQLi/XSS/traversal in the URL → **403**; SQLi/XSS in form and JSON bodies → **403**; response-body leak → **403**. Checks the origin hit count for every request (denied requests must not reach it). |
 | [`fail-closed.sh`](./scripts/fail-closed.sh) | Kills the connector (**500**), freezes it with SIGSTOP (**504** after 2s), restarts it with broken rules (process exits, **500**), then restores (**200**). The origin must receive nothing during any failure. |
+| [`fail-modes.sh`](./scripts/fail-modes.sh) | The wider failure matrix over **HTTP/1.1 and HTTP/2**: connector kill, bad-rules boot, rule deny, hang, unwritable audit log, split `Cookie` headers, an attack only in the last chunk / DATA frames, and a negative control that temporarily sets `failure_mode_allow: true` to prove the checks can see fail-open. Every check asserts status and origin hits. `--proto h1\|h2`, `--class 1,4,5`. |
+| [`go-ftw.sh`](./scripts/go-ftw.sh) | Runs the OWASP CRS regression tests with [go-ftw](https://github.com/coreruleset/go-ftw) against the demo (HTTP/1.x, status codes only). `smoke` (demo tests + body-heavy CRS SQLi/XSS tests), `body`, or `full`. Results in `demo/.run/go-ftw/`. |
+| [`install-go-ftw.sh`](./scripts/install-go-ftw.sh) | Installs go-ftw (Homebrew tap, or `go install`). |
+| [`hop-trace.sh`](./scripts/hop-trace.sh) | Sends one request and shows every hop by request id: Envoy access log, connector phase decisions, CRS rule matches, and whether the origin received it. `--expect-status`, `--expect-origin yes\|no`, `--proto h2`. |
 | [`down.sh`](./scripts/down.sh) | Stops everything the demo started. |
-| [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit), a detach helper, and shared settings. |
+| [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit with its request id), a detach helper, and shared settings. |
 
 Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `demo/.run/`.
 
@@ -54,6 +60,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, BUFFERED request and response bodies, `request_attributes` for real client IP / protocol, CONNECT answered locally. |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
 | [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `CONNEX-LEAK-MARKER`, to show the response path. |
+| [`ftw/`](./ftw/) | go-ftw config, demo test cases, and `envoy-overrides.yaml` — measured Envoy platform differences, same pattern as CRS's own nginx overrides. |
 
 ## Ports
 
@@ -69,9 +76,10 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 
 ## Linux
 
-Install Envoy v1.39.1 from the [release assets](https://github.com/envoyproxy/envoy/releases/tag/v1.39.1) (the apt repo is unmaintained), then:
+Envoy's apt repo is unmaintained; `install-envoy.sh` fetches the [release binary](https://github.com/envoyproxy/envoy/releases/tag/v1.39.1) instead:
 
 ```bash
+./demo/scripts/install-envoy.sh && export PATH=$HOME/.local/bin:$PATH
 PREFIX=$HOME/.local ./scripts/install-libmodsecurity-ubuntu.sh
 export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib
 ./demo/scripts/up.sh

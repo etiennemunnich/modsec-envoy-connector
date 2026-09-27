@@ -36,7 +36,8 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 | Gate | Where | What |
 |------|-------|------|
 | **PR thin** | GitHub Actions | `rust-quality` + `pin-check` (see `.github/workflows/ci.yml`) |
-| **Mac / dispatch** | Lab or self-hosted | Full CRS go-ftw, fail-mode / fail-closed live proofs, H2 custom suite, version-matrix cells |
+| **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh` |
+| **Dispatch** | GitHub Actions (manual) | version window: `modsec-window-matrix`, `modsec-pin-probe`, `envoy-candidate-smoke`, `crs-version-probe` (see `versions.window.md`) |
 | **CRS** | go-ftw | **H1** rule fidelity — never full ~5k on free-tier PR |
 | **Fail-closed** | `demo/scripts/fail-closed.sh` | absolute gate: kill → 500, hang → 504, bad rules → 500, origin untouched |
 
@@ -59,4 +60,4 @@ After a **validated** moderate slice: `git commit` + `git push` on the working t
 - `crates/ext-proc-modsec` — tonic ExternalProcessor binary (product name).
 - `crates/modsec-engine` — safe façade over libmodsecurity; keep `unsafe` / FFI here only.
 
-Live demo + drills: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`). go-ftw, H2 protocol suite and version matrix still live in `modsec-envoy-experiement` — port deliberately; do not dump experiment history wholesale.
+Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `scripts/probe-modsec-pin.sh`, `scripts/envoy-candidate-smoke.sh`, `scripts/crs-version-probe.sh`. Anything else from `modsec-envoy-experiement` (perf harness, WebSocket / gRPC hop tracing) — port deliberately; do not dump experiment history wholesale.

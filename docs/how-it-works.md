@@ -24,7 +24,9 @@ Pins: [`versions.lock.md`](../versions.lock.md). Failure model: [fail-closed.md]
 | — | connector → **libmodsecurity** | in-process FFI (`msc_*` via the `modsecurity` crate) | No |
 | 3 | **Envoy → origin** | HTTP | **Yes — Envoy only**, after Continue |
 
-With `request_body_mode: BUFFERED` Envoy holds the whole request until the connector has inspected the body, so a request-body deny happens before the origin sees anything. The demo's origin records every hit, and the smoke and fail-closed scripts assert it stays untouched for denied and failed requests.
+With `request_body_mode: BUFFERED` Envoy holds the whole request until the connector has inspected the body, so a request-body deny happens before the origin sees anything — including when the attack sits only in the last HTTP/1.1 chunk or the last HTTP/2 DATA frames. The demo's origin records every hit with its `x-request-id`, and the demo suites assert it stays untouched for denied and failed requests. `demo/scripts/hop-trace.sh` shows all hops for one request.
+
+HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) both go through the same path; Envoy reassembles split HTTP/2 `Cookie` headers before the connector sees them. Envoy's HTTP/1 codec accepts non-standard methods in the demo config (`allow_custom_methods`) so CRS rule 911100 enforces the method policy instead of the codec dropping the request.
 
 ---
 
@@ -105,6 +107,7 @@ Logging uses `RUST_LOG` (default `info`); ModSecurity's own messages are under t
 Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/envoy/envoy.yaml)):
 
 - `failure_mode_allow: false` and `message_timeout: 2s`.
+- `http_protocol_options.allow_custom_methods: true`, so CRS sees methods like `TEST` (a work-in-progress field in Envoy v1.39; without CRS loaded, custom methods reach the origin).
 - `processing_mode`: headers `SEND`, bodies `BUFFERED`, trailers `SKIP`.
 - `request_attributes`: `source.address`, `source.port`, `destination.address`, `destination.port`, `request.protocol`. Without them, ModSecurity sees `127.0.0.1` as `REMOTE_ADDR` (logged as `conn_source=fallback`) and IP-based rules are wrong.
 - Never enable `observability_mode` on an enforcing filter: Envoy does not wait for answers there, so the connector ignores those messages.
@@ -116,7 +119,7 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 - **Logs** (structured, `tracing`): one line per phase with `request_id`, `phase`, `action` (`allow`/`deny`/`redirect`/`drop`), `latency_ms`, `body_bytes`, and for request headers the client/server endpoints and their source. Fail-closed lines carry `action="fail_closed"` and the error.
 - **Metrics** (`GET /metrics`, Prometheus text): `ext_proc_requests_total`, `ext_proc_allow_total`, `ext_proc_deny_total`, `ext_proc_fail_closed_total`, `ext_proc_stream_errors_total`, `ext_proc_{request,response}_body_bytes_total`, and `ext_proc_phase_{request_headers,request_body,response_headers,response_body}_seconds` histograms.
 - **Readiness** (`GET /healthz`): runs a real `Process` call against this process (headers-only `GET /__connex_healthz`) and returns 200 only if it gets Continue within 2s. Rules are always loaded before the server starts.
-- **Envoy side**: `%RESPONSE_CODE_DETAILS%` shows `modsecurity_intervention` / `modsec_fail_closed`; ext_proc stats live under `http.<prefix>.ext_proc.modsec_ext_proc.*` (`streams_failed`, `message_timeouts`, `failure_mode_allowed` must stay 0).
+- **Envoy side**: `%RESPONSE_CODE_DETAILS%` shows `modsecurity_intervention` / `modsec_fail_closed` (and `ext_proc_error_*` when Envoy itself fails the call, e.g. connector down or timed out); ext_proc stats live under `http.<prefix>.ext_proc.modsec_ext_proc.*` (`streams_failed`, `message_timeouts`, `failure_mode_allowed` must stay 0).
 
 ---
 
@@ -127,4 +130,5 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 - **Pause** interventions are logged and ignored (ext_proc has no delay primitive).
 - **Drop** cannot close the TCP connection through ext_proc; it maps to a stream abort → Envoy 500.
 - `/healthz` probes run through the rules and are counted in `ext_proc_requests_total` / `ext_proc_allow_total`.
+- **Envoy local replies before the request phase become 500.** When Envoy rejects a request itself before ext_proc sees its headers (for example a URI with a `#fragment`, which Envoy answers 400), ext_proc still receives that local reply's response headers. The connector has no request on the stream, fails closed, and the client gets 500 instead of 400. Nothing reaches the origin. This is why CRS go-ftw tests `920100-8` and `920610-2` fail.
 - HTTP/3 and WebSocket frame inspection are not supported.
