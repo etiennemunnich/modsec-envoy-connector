@@ -1,8 +1,8 @@
 name: ci
 
-# Thin PR gate: pin-check + rust-quality on Ubuntu.
-# Full CRS go-ftw, fail-mode live proofs, H2 protocol suite, ModSec-linked
-# builds stay Mac lab / dispatch — never free-tier PR (see AGENTS.md).
+# Thin PR gate: pin-check + rust-quality on Ubuntu (libmodsecurity linked).
+# Live Envoy demo, fail-closed drills and full CRS go-ftw run on a Mac or
+# self-hosted runner — not on free-tier PR CI (see AGENTS.md).
 
 on:
   push:
@@ -20,6 +20,7 @@ env:
   ENVOY_PIN: v1.39.1
   MODSECURITY_PIN: v3.0.16
   CRS_TAG: v4.29.0
+  MODSECURITY_PREFIX: ${{ github.workspace }}/.local/modsecurity
 
 jobs:
   pin-check:
@@ -28,9 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Assert versions.lock.md pins
-        run: |
-          chmod +x scripts/check-pins.sh
-          ./scripts/check-pins.sh
+        run: ./scripts/check-pins.sh
 
   rust-quality:
     name: rust-quality (ubuntu)
@@ -43,17 +42,44 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: "[BUILD] cargo check"
-        run: cargo check --workspace
+      - name: Cache libmodsecurity ${{ env.MODSECURITY_PIN }}
+        id: cache-modsec
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MODSECURITY_PREFIX }}
+          key: libmodsecurity-${{ env.MODSECURITY_PIN }}-${{ runner.os }}-${{ runner.arch }}-pcre2
 
-      - name: "[BUILD TEST] cargo fmt"
+      # Needed on cache hits too: libmodsecurity.so links against these at build time.
+      - name: libmodsecurity dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libgeoip-dev liblmdb-dev libpcre2-dev \
+            libxml2-dev libyajl-dev pkg-config zlib1g-dev
+
+      - name: Build libmodsecurity ${{ env.MODSECURITY_PIN }} from source
+        if: steps.cache-modsec.outputs.cache-hit != 'true'
+        env:
+          PREFIX: ${{ env.MODSECURITY_PREFIX }}
+        run: ./scripts/install-libmodsecurity-ubuntu.sh
+
+      - name: Export libmodsecurity env
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=${MODSECURITY_PREFIX}/lib/pkgconfig"
+            echo "LD_LIBRARY_PATH=${MODSECURITY_PREFIX}/lib"
+            echo "LIBRARY_PATH=${MODSECURITY_PREFIX}/lib"
+          } >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH="${MODSECURITY_PREFIX}/lib/pkgconfig" pkg-config --modversion modsecurity
+
+      - name: cargo fmt
         run: cargo fmt --all -- --check
 
-      - name: "[BUILD TEST] cargo clippy -D warnings"
+      - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: "[BUILD TEST] cargo test"
+      - name: cargo test
         run: cargo test --workspace
 
-      - name: "[BUILD] cargo build -p ext-proc-modsec"
+      - name: cargo build -p ext-proc-modsec
         run: cargo build -p ext-proc-modsec

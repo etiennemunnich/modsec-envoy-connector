@@ -1,0 +1,103 @@
+# Demo Envoy (v1.39.1): client → Envoy :18080 → ext_proc side-call to the
+# connector on :18081 → origin :18098 (only after Continue).
+#
+# Enforcement settings that must not be relaxed:
+#   failure_mode_allow: false  — connector down / stream error → local 500
+#   message_timeout: 2s        — connector hang → local 504
+#   BUFFERED bodies            — full entity inspected before it moves on
+
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 18089 }
+
+static_resources:
+  listeners:
+  - name: ingress
+    address:
+      socket_address: { address: 127.0.0.1, port_value: 18080 }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          generate_request_id: true
+          stream_error_on_invalid_http_message: true
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                text_format_source:
+                  inline_string: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% details=%RESPONSE_CODE_DETAILS% flags=%RESPONSE_FLAGS% rid=%REQ(X-REQUEST-ID)% upstream=%UPSTREAM_HOST% dur=%DURATION%\n"
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: app
+              domains: ["*"]
+              routes:
+              # CONNECT never reaches end_of_stream; keep it out of BUFFERED ext_proc.
+              - match: { connect_matcher: {} }
+                direct_response:
+                  status: 403
+                  body: { inline_string: "CONNECT not supported\n" }
+                typed_per_filter_config:
+                  envoy.filters.http.ext_proc:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute
+                    disabled: true
+              - match: { prefix: "/" }
+                route: { cluster: origin }
+          http_filters:
+          - name: envoy.filters.http.ext_proc
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+              stat_prefix: modsec_ext_proc
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: modsec_ext_proc
+              failure_mode_allow: false
+              message_timeout: 2s
+              processing_mode:
+                request_header_mode: SEND
+                response_header_mode: SEND
+                request_body_mode: BUFFERED
+                response_body_mode: BUFFERED
+                request_trailer_mode: SKIP
+                response_trailer_mode: SKIP
+              # Real peer/local/protocol for ModSecurity REMOTE_ADDR etc.
+              request_attributes:
+              - source.address
+              - source.port
+              - destination.address
+              - destination.port
+              - request.protocol
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  - name: modsec_ext_proc
+    type: STATIC
+    connect_timeout: 1s
+    typed_extension_protocol_options:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        explicit_http_config:
+          http2_protocol_options: {}
+    load_assignment:
+      cluster_name: modsec_ext_proc
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18081 }
+  - name: origin
+    type: STATIC
+    connect_timeout: 1s
+    load_assignment:
+      cluster_name: origin
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18098 }

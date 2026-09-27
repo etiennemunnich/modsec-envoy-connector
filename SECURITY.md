@@ -10,7 +10,7 @@ For any route that claims protection:
 - Never redefine a failing mode as “out of scope.”
 - Body delivery mode (BUFFERED vs STREAMED) does **not** relax this.
 
-Live proof today lives in the experiment lab (`./scripts/lab-fail-closed.sh`).
+Live drills: `demo/scripts/fail-closed.sh` (kill → 500, hang → 504, bad rules → 500, origin untouched).
 
 ## Why `ext_proc` (not in-process dynamic module)
 

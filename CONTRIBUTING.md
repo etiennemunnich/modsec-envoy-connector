@@ -4,9 +4,9 @@ Short guide for humans and agents. Standards for agents: **[AGENTS.md](./AGENTS.
 
 ## Setup
 
-1. Rust **1.83+** (MSRV in crate `Cargo.toml`; CI uses `stable`).
-2. Clone this repo; `cargo check --workspace` should pass on the scaffold (no system libmodsecurity required until the native engine feature lands).
-3. For a full lab (Envoy + libmodsecurity + CRS + go-ftw), use the experiment lab until migrate is complete, or follow Mac install notes when they land here.
+1. Rust **1.88+** (MSRV in crate `Cargo.toml`; CI uses `stable`).
+2. libmodsecurity **v3.0.16** discoverable via `pkg-config modsecurity` (`./demo/scripts/install-libmodsecurity.sh`: Homebrew on macOS, source build on Ubuntu).
+3. For the live Envoy demo and fail-closed drills, follow [`demo/README.md`](./demo/README.md).
 
 ```bash
 cargo fmt --all -- --check
@@ -35,9 +35,9 @@ cargo test --workspace
 |-------|---------|-------------|
 | `pin-check` | **Yes** | `./scripts/check-pins.sh` |
 | `rust-quality` (fmt, clippy, test, build) | **Yes** | same cargo commands |
-| libmodsecurity-linked build | Later (when native port lands) | Mac / Ubuntu pin install |
+| libmodsecurity-linked build + gRPC integration tests | **Yes** (source-built v3.0.16, cached) | `cargo test --workspace` |
 | go-ftw CRS (H1) | **No** full suite on free-tier PR | Mac lab / dispatch |
-| Fail-closed / fail-mode | **No** live drills on PR | `lab-fail-closed.sh` / `lab-fail-modes.sh` |
+| Fail-closed / live demo | **No** live drills on PR | `demo/scripts/smoke.sh` / `demo/scripts/fail-closed.sh` |
 | H2 protocol delivery | **No** | Custom lab scripts |
 | Version-matrix cells | Dispatch / self-hosted when present | Mac |
 

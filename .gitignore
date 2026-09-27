@@ -1,7 +1,6 @@
 # .gitignore
 /target/
 **/*.rs.bk
-Cargo.lock
 .DS_Store
 *.swp
 .env
@@ -11,5 +10,6 @@ experiments/lab/logs/
 *.log
 /refs/
 
-# Demo CRS checkout (install-crs.sh)
+# Demo CRS checkout (install-crs.sh) and runtime state (up.sh)
 demo/.crs/
+demo/.run/

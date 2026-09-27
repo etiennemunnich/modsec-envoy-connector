@@ -1,0 +1,454 @@
+//! End-to-end tests of the ExternalProcessor over real gRPC, with libmodsecurity
+//! linked. Each test drives one `Process` stream the way Envoy does: send a
+//! message, wait for its answer, send the next.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use envoy_types::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
+use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
+use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
+use envoy_types::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
+use envoy_types::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
+use envoy_types::pb::envoy::service::ext_proc::v3::{
+    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
+};
+use envoy_types::pb::google::protobuf::{value::Kind, Struct, Value};
+use ext_proc_modsec::connection_meta::EXT_PROC_ATTR_NAMESPACE;
+use ext_proc_modsec::metrics::ConnectorMetrics;
+use ext_proc_modsec::{metrics_server, ModSecProcessor};
+use modsec_engine::Engine;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio_stream::StreamExt;
+use tonic::transport::{Channel, Server};
+use tonic::Streaming;
+
+fn rules_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/rules")
+        .join(name)
+}
+
+struct Harness {
+    addr: SocketAddr,
+    metrics: Arc<ConnectorMetrics>,
+}
+
+async fn start() -> Harness {
+    let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
+    let metrics = Arc::new(ConnectorMetrics::default());
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let svc = ExternalProcessorServer::new(ModSecProcessor::new(engine, Arc::clone(&metrics)));
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(svc)
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .expect("serve");
+    });
+    Harness { addr, metrics }
+}
+
+/// One Envoy-like `Process` stream.
+struct Stream {
+    tx: mpsc::Sender<ProcessingRequest>,
+    rx: Streaming<ProcessingResponse>,
+}
+
+impl Stream {
+    async fn open(addr: SocketAddr) -> Self {
+        let mut client: ExternalProcessorClient<Channel> =
+            ExternalProcessorClient::connect(format!("http://{addr}"))
+                .await
+                .expect("connect");
+        let (tx, rx) = mpsc::channel(8);
+        let rx = client
+            .process(ReceiverStream::new(rx))
+            .await
+            .expect("process")
+            .into_inner();
+        Self { tx, rx }
+    }
+
+    async fn send(&mut self, req: ProcessingRequest) -> Result<ProcessingResponse, tonic::Status> {
+        self.tx.send(req).await.expect("send");
+        tokio::time::timeout(Duration::from_secs(5), self.rx.next())
+            .await
+            .expect("answer within 5s")
+            .expect("stream answered")
+    }
+
+    async fn expect_closed(&mut self) {
+        let next = tokio::time::timeout(Duration::from_secs(5), self.rx.next())
+            .await
+            .expect("close within 5s");
+        assert!(next.is_none(), "stream must close after a terminal reply");
+    }
+}
+
+fn hv(k: &str, v: &str) -> HeaderValue {
+    HeaderValue {
+        key: k.into(),
+        raw_value: v.as_bytes().to_vec(),
+        ..Default::default()
+    }
+}
+
+fn req_headers(method: &str, path: &str, extra: &[(&str, &str)], eos: bool) -> ProcessingRequest {
+    let mut headers = vec![
+        hv(":method", method),
+        hv(":path", path),
+        hv(":authority", "app.test"),
+        hv(":scheme", "http"),
+        hv("user-agent", "connex-test"),
+        hv("accept", "*/*"),
+        hv("x-request-id", "rid-test"),
+    ];
+    headers.extend(extra.iter().map(|(k, v)| hv(k, v)));
+    ProcessingRequest {
+        request: Some(ProcRequest::RequestHeaders(HttpHeaders {
+            headers: Some(HeaderMap { headers }),
+            end_of_stream: eos,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn resp_headers(status: &str, extra: &[(&str, &str)], eos: bool) -> ProcessingRequest {
+    let mut headers = vec![hv(":status", status), hv("content-type", "text/plain")];
+    headers.extend(extra.iter().map(|(k, v)| hv(k, v)));
+    ProcessingRequest {
+        request: Some(ProcRequest::ResponseHeaders(HttpHeaders {
+            headers: Some(HeaderMap { headers }),
+            end_of_stream: eos,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn req_body(body: &[u8], eos: bool) -> ProcessingRequest {
+    ProcessingRequest {
+        request: Some(ProcRequest::RequestBody(HttpBody {
+            body: body.to_vec(),
+            end_of_stream: eos,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn resp_body(body: &[u8], eos: bool) -> ProcessingRequest {
+    ProcessingRequest {
+        request: Some(ProcRequest::ResponseBody(HttpBody {
+            body: body.to_vec(),
+            end_of_stream: eos,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn immediate(r: &ProcessingResponse) -> Option<(i32, String, Vec<u8>)> {
+    match r.response.as_ref()? {
+        ProcResponse::ImmediateResponse(ir) => Some((
+            ir.status.as_ref().map(|s| s.code).unwrap_or(0),
+            ir.details.clone(),
+            ir.body.clone(),
+        )),
+        _ => None,
+    }
+}
+
+fn assert_continue(r: &ProcessingResponse, what: &str) {
+    let ok = matches!(
+        r.response,
+        Some(ProcResponse::RequestHeaders(_))
+            | Some(ProcResponse::RequestBody(_))
+            | Some(ProcResponse::ResponseHeaders(_))
+            | Some(ProcResponse::ResponseBody(_))
+    );
+    assert!(ok, "{what}: expected Continue, got {:?}", r.response);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn benign_exchange_continues_every_phase() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s.send(req_headers("GET", "/", &[], true)).await.unwrap();
+    assert!(matches!(r.response, Some(ProcResponse::RequestHeaders(_))));
+    let r = s.send(resp_headers("200", &[], false)).await.unwrap();
+    assert!(matches!(r.response, Some(ProcResponse::ResponseHeaders(_))));
+    let r = s.send(resp_body(b"hello world\n", true)).await.unwrap();
+    assert!(matches!(r.response, Some(ProcResponse::ResponseBody(_))));
+    assert_eq!(h.metrics.allow_total(), 1);
+    assert_eq!(h.metrics.deny_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase1_deny_is_403_with_generic_body() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers("GET", "/admin", &[], true))
+        .await
+        .unwrap();
+    let (code, details, body) = immediate(&r).expect("immediate");
+    assert_eq!(code, 403);
+    assert_eq!(details, "modsecurity_intervention");
+    assert_eq!(
+        body, b"Forbidden\n",
+        "rule details must not leak to clients"
+    );
+    s.expect_closed().await;
+    assert_eq!(h.metrics.deny_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rule_status_is_honoured() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers("GET", "/teapot", &[], true))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 406);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redirect_sets_location() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers("GET", "/go-away", &[], true))
+        .await
+        .unwrap();
+    let Some(ProcResponse::ImmediateResponse(ir)) = r.response else {
+        panic!("expected immediate redirect")
+    };
+    assert_eq!(ir.status.unwrap().code, 302);
+    let loc = &ir.headers.unwrap().set_headers[0];
+    let loc = loc.header.as_ref().unwrap();
+    assert_eq!(loc.key, "location");
+    assert_eq!(loc.raw_value, b"https://example.test/bye");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_body_sqli_is_denied_after_headers_continue() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap();
+    assert_continue(&r, "request headers");
+    let r = s
+        .send(req_body(b"q=1 UNION SELECT password FROM users", true))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 403);
+    s.expect_closed().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn benign_request_body_continues() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap();
+    assert_continue(&r, "request headers");
+    let r = s.send(req_body(b"name=alice", true)).await.unwrap();
+    assert!(matches!(r.response, Some(ProcResponse::RequestBody(_))));
+    assert_eq!(h.metrics.allow_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_header_rule_denies() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    let r = s
+        .send(resp_headers("200", &[("x-leak", "yes")], false))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 403);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_body_rule_denies() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/leak", &[], true))
+            .await
+            .unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp headers",
+    );
+    let r = s
+        .send(resp_body(b"token=CONNEX-LEAK-MARKER\n", true))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 403);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_addr_comes_from_ext_proc_attributes() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let mut req = req_headers("GET", "/", &[], true);
+    let str_val = |v: &str| Value {
+        kind: Some(Kind::StringValue(v.into())),
+    };
+    let fields = HashMap::from([
+        ("source.address".to_owned(), str_val("192.0.2.66:40000")),
+        (
+            "destination.address".to_owned(),
+            str_val("198.51.100.1:443"),
+        ),
+        ("request.protocol".to_owned(), str_val("HTTP/2")),
+    ]);
+    req.attributes = HashMap::from([(EXT_PROC_ATTR_NAMESPACE.to_owned(), Struct { fields })]);
+    let r = s.send(req).await.unwrap();
+    assert_eq!(
+        immediate(&r).expect("REMOTE_ADDR rule must fire").0,
+        403,
+        "REMOTE_ADDR must be the Envoy-supplied peer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn body_before_headers_fails_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s.send(req_body(b"x", true)).await.unwrap();
+    let (code, details, _) = immediate(&r).expect("immediate");
+    assert_eq!(code, 500);
+    assert_eq!(details, "modsec_fail_closed");
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_before_request_fails_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s.send(resp_headers("200", &[], true)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_request_headers_fail_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("POST", "/", &[], false)).await.unwrap(),
+        "first headers",
+    );
+    let r = s.send(req_headers("POST", "/", &[], false)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_request_oneof_fails_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s.send(ProcessingRequest::default()).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_response_status_fails_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    let r = s.send(resp_headers("abc", &[], true)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connect_is_rejected() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers("CONNECT", "app.test:443", &[], false))
+        .await
+        .unwrap();
+    let (code, details, _) = immediate(&r).expect("immediate");
+    assert_eq!(code, 403);
+    assert_eq!(details, "connect_rejected");
+}
+
+async fn http_get(addr: SocketAddr, path: &str) -> String {
+    let mut sock = TcpStream::connect(addr).await.expect("connect");
+    sock.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+        .await
+        .expect("write");
+    let mut out = String::new();
+    sock.read_to_string(&mut out).await.expect("read");
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthz_exercises_process_and_metrics_render() {
+    let h = start().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let maddr = listener.local_addr().unwrap();
+    tokio::spawn(metrics_server::serve(
+        listener,
+        Arc::clone(&h.metrics),
+        h.addr,
+    ));
+
+    let health = http_get(maddr, "/healthz").await;
+    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+
+    let metrics = http_get(maddr, "/metrics").await;
+    assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
+    assert!(metrics.contains("ext_proc_requests_total 1"), "{metrics}");
+    assert!(metrics.contains("ext_proc_phase_request_headers_seconds_bucket"));
+
+    let missing = http_get(maddr, "/nope").await;
+    assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthz_is_503_when_grpc_is_down() {
+    let metrics = Arc::new(ConnectorMetrics::default());
+    let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_addr = dead.local_addr().unwrap();
+    drop(dead);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let maddr = listener.local_addr().unwrap();
+    tokio::spawn(metrics_server::serve(listener, metrics, dead_addr));
+    let health = http_get(maddr, "/healthz").await;
+    assert!(health.starts_with("HTTP/1.1 503"), "{health}");
+}

@@ -38,7 +38,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 | **PR thin** | GitHub Actions | `rust-quality` + `pin-check` (see `.github/workflows/ci.yml`) |
 | **Mac / dispatch** | Lab or self-hosted | Full CRS go-ftw, fail-mode / fail-closed live proofs, H2 custom suite, version-matrix cells |
 | **CRS** | go-ftw | **H1** rule fidelity — never full ~5k on free-tier PR |
-| **Fail-mode / H2** | Custom scripts | `lab-fail-closed.sh` absolute; `lab-fail-modes.sh` + protocol delivery — not go-ftw |
+| **Fail-closed** | `demo/scripts/fail-closed.sh` | absolute gate: kill → 500, hang → 504, bad rules → 500, origin untouched |
 
 Do not claim Mac-only proofs from cloud CI.
 
@@ -59,4 +59,4 @@ After a **validated** moderate slice: `git commit` + `git push` on the working t
 - `crates/ext-proc-modsec` — tonic ExternalProcessor binary (product name).
 - `crates/modsec-engine` — safe façade over libmodsecurity; keep `unsafe` / FFI here only.
 
-Runnable lab history may still live in `modsec-envoy-experiement` until migrate completes — port product surface deliberately; do not dump experiment history wholesale.
+Live demo + drills: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`). go-ftw, H2 protocol suite and version matrix still live in `modsec-envoy-experiement` — port deliberately; do not dump experiment history wholesale.

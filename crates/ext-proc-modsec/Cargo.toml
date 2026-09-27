@@ -2,15 +2,28 @@
 name = "ext-proc-modsec"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Etienne Munnich"]
-description = "Envoy ExternalProcessor (ext_proc) → libmodsecurity connector (scaffold until migrate)."
+description = "Envoy ExternalProcessor (ext_proc) gRPC server that inspects request and response headers and bodies with libmodsecurity, fail-closed."
 publish = false
+
+[lib]
+name = "ext_proc_modsec"
+path = "src/lib.rs"
 
 [[bin]]
 name = "ext-proc-modsec"
 path = "src/main.rs"
 
 [dependencies]
+async-stream = "0.3"
+clap = { version = "4", features = ["derive", "env"] }
+envoy-types = "0.7.6"
+futures = "0.3"
 modsec-engine = { path = "../modsec-engine" }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "io-util"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = "0.14"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

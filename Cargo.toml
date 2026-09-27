@@ -1,10 +1,7 @@
-# Workspace for Envoy ext_proc → libmodsecurity connector (connex).
+# envoy-modsec-connex — Envoy ext_proc → libmodsecurity connector.
 #
-# Not a Built on Envoy Rust dynamic-module crate (cdylib / HttpFilter).
-# Product is an out-of-process ExternalProcessor gRPC server — see docs/boe/.
-#
-# Scaffold aligned with experiment layout (ext-proc binary + modsec-engine).
-# Native FFI / full connector migrate from modsec-envoy-experiement deliberately.
+# Out-of-process ExternalProcessor gRPC server (not an Envoy dynamic module).
+# `modsec-engine` owns all FFI; `ext-proc-modsec` is the product binary.
 
 [workspace]
 resolver = "2"

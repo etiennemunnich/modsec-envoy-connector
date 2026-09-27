@@ -2,7 +2,7 @@
 
 Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and the **OWASP Core Rule Set (CRS)**.
 
-Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests with **libmodsecurity** (and optionally CRS), and lets Envoy allow or block traffic before it reaches your origin.
+Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and lets Envoy allow or block traffic before it reaches your origin.
 
 **Author:** Etienne Munnich  
 **License:** [Apache License 2.0](./LICENSE)

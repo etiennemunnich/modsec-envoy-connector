@@ -1,0 +1,451 @@
+//! `envoy.service.ext_proc.v3.ExternalProcessor` implementation.
+//!
+//! One bidi `Process` stream = one HTTP exchange = one ModSecurity
+//! transaction. Every message is answered with exactly one of:
+//!
+//! - a Continue for the phase Envoy sent (no mutation), or
+//! - an `ImmediateResponse` (deny / redirect → rule status; engine error or
+//!   protocol violation → **500**), after which the stream is closed, or
+//! - a gRPC error (ModSecurity `drop`), which Envoy with
+//!   `failure_mode_allow: false` turns into a local 500 without contacting
+//!   the origin.
+//!
+//! There is no code path that answers Continue after an engine error.
+
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use envoy_types::pb::envoy::config::core::v3::HeaderValue;
+use envoy_types::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessor;
+use envoy_types::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
+use envoy_types::pb::envoy::service::ext_proc::v3::{
+    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
+};
+use envoy_types::pb::google::protobuf::Struct;
+use futures::Stream;
+use modsec_engine::{Decision, Engine, InspectionSession};
+use tokio::runtime::{Handle, RuntimeFlavor};
+use tonic::{Request, Response, Status, Streaming};
+use tracing::{info, warn};
+
+use crate::connection_meta::ConnectionEndpoints;
+use crate::metrics::{ConnectorMetrics, Phase};
+use crate::responses::{self, Direction};
+
+const DENY_BODY: &[u8] = b"Forbidden\n";
+const REDIRECT_BODY: &[u8] = b"Redirect\n";
+
+/// The gRPC service Envoy's `ext_proc` filter calls.
+#[derive(Clone)]
+pub struct ModSecProcessor {
+    engine: Arc<Engine>,
+    metrics: Arc<ConnectorMetrics>,
+}
+
+impl ModSecProcessor {
+    pub fn new(engine: Arc<Engine>, metrics: Arc<ConnectorMetrics>) -> Self {
+        Self { engine, metrics }
+    }
+}
+
+type ProcessStream =
+    Pin<Box<dyn Stream<Item = Result<ProcessingResponse, Status>> + Send + 'static>>;
+
+#[tonic::async_trait]
+impl ExternalProcessor for ModSecProcessor {
+    type ProcessStream = ProcessStream;
+
+    async fn process(
+        &self,
+        request: Request<Streaming<ProcessingRequest>>,
+    ) -> Result<Response<Self::ProcessStream>, Status> {
+        let mut inbound = request.into_inner();
+        let mut exchange = Exchange::new(Arc::clone(&self.engine), Arc::clone(&self.metrics));
+
+        let outbound = async_stream::stream! {
+            while let Some(msg) = inbound.message().await.transpose() {
+                let msg = match msg {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(
+                            request_id = exchange.rid(),
+                            error = %e,
+                            "ext_proc stream read error"
+                        );
+                        exchange.metrics.inc_stream_errors();
+                        break;
+                    }
+                };
+                match run_blocking(|| exchange.on_message(msg)) {
+                    Step::Reply(r) => yield Ok(r),
+                    Step::Silent => {}
+                    Step::Final(r) => {
+                        yield Ok(r);
+                        break;
+                    }
+                    Step::Abort(status) => {
+                        yield Err(status);
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(outbound) as ProcessStream))
+    }
+}
+
+/// libmodsecurity evaluation is synchronous CPU work (CRS on large bodies can
+/// take milliseconds). On the multi-threaded runtime, move it off the async
+/// worker so other streams keep making progress.
+fn run_blocking<T>(f: impl FnOnce() -> T) -> T {
+    match Handle::try_current().map(|h| h.runtime_flavor()) {
+        Ok(RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
+        _ => f(),
+    }
+}
+
+/// What to send back for one inbound message.
+#[derive(Debug)]
+pub enum Step {
+    /// Answer and keep the stream open.
+    Reply(ProcessingResponse),
+    /// Observability-mode message: Envoy expects no answer.
+    Silent,
+    /// Answer with a terminal `ImmediateResponse` and close the stream.
+    Final(ProcessingResponse),
+    /// Terminate the stream with a gRPC error.
+    Abort(Status),
+}
+
+/// Per-stream state: one ModSecurity transaction plus correlation data.
+pub struct Exchange {
+    engine: Arc<Engine>,
+    metrics: Arc<ConnectorMetrics>,
+    session: Option<InspectionSession>,
+    request_id: Option<String>,
+    endpoints: ConnectionEndpoints,
+    request_settled: bool,
+}
+
+impl Exchange {
+    pub fn new(engine: Arc<Engine>, metrics: Arc<ConnectorMetrics>) -> Self {
+        Self {
+            engine,
+            metrics,
+            session: None,
+            request_id: None,
+            endpoints: ConnectionEndpoints::fallback(),
+            request_settled: false,
+        }
+    }
+
+    fn rid(&self) -> &str {
+        self.request_id.as_deref().unwrap_or("-")
+    }
+
+    /// Handle one `ProcessingRequest` from Envoy.
+    pub fn on_message(&mut self, msg: ProcessingRequest) -> Step {
+        if msg.observability_mode {
+            // Envoy does not wait for answers in observability mode, so the
+            // connector cannot enforce anything; enforcement configs must not
+            // enable it.
+            warn!(
+                request_id = self.rid(),
+                "observability_mode message ignored (cannot enforce)"
+            );
+            return Step::Silent;
+        }
+        match msg.request {
+            Some(ProcRequest::RequestHeaders(h)) => self.request_headers(&h, &msg.attributes),
+            Some(ProcRequest::RequestBody(b)) => self.body(Phase::RequestBody, &b),
+            Some(ProcRequest::ResponseHeaders(h)) => self.response_headers(&h),
+            Some(ProcRequest::ResponseBody(b)) => self.body(Phase::ResponseBody, &b),
+            Some(ProcRequest::RequestTrailers(_)) => {
+                Step::Reply(responses::trailers_continue(Direction::Request))
+            }
+            Some(ProcRequest::ResponseTrailers(_)) => {
+                Step::Reply(responses::trailers_continue(Direction::Response))
+            }
+            None => self.fail_closed(Phase::RequestHeaders, "ProcessingRequest without a request"),
+        }
+    }
+
+    fn request_headers(
+        &mut self,
+        headers: &HttpHeaders,
+        attributes: &HashMap<String, Struct>,
+    ) -> Step {
+        let phase = Phase::RequestHeaders;
+        self.metrics.inc_requests();
+        if self.session.is_some() {
+            return self.fail_closed(phase, "request_headers received twice on one stream");
+        }
+        self.request_id = header(headers, "x-request-id");
+        let method = header(headers, ":method").unwrap_or_else(|| "GET".into());
+        let path = header(headers, ":path").unwrap_or_else(|| "/".into());
+
+        // A CONNECT tunnel never reaches end_of_stream, so BUFFERED body mode
+        // would hold it until message_timeout. Reverse-proxy deployments have
+        // no CONNECT targets; reject explicitly.
+        if method.eq_ignore_ascii_case("CONNECT") {
+            info!(
+                request_id = self.rid(),
+                phase = phase.as_str(),
+                action = "deny",
+                "CONNECT rejected"
+            );
+            self.metrics.inc_deny();
+            return Step::Final(responses::block(403, DENY_BODY, "connect_rejected"));
+        }
+
+        let t0 = Instant::now();
+        let mut session = match self.engine.open_transaction(self.request_id.as_deref()) {
+            Ok(s) => s,
+            Err(e) => return self.fail_closed(phase, &e),
+        };
+
+        let mut hdrs: Vec<(String, String)> = regular_headers(headers).collect();
+        if !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+            if let Some(authority) = header(headers, ":authority") {
+                hdrs.push(("host".into(), authority));
+            }
+        }
+
+        self.endpoints = ConnectionEndpoints::from_ext_proc_attributes(attributes);
+        let ep = &self.endpoints;
+        let decision = match session.process_request_headers(
+            &ep.client_ip,
+            ep.client_port,
+            &ep.server_ip,
+            ep.server_port,
+            &method,
+            &path,
+            ep.http_version,
+            &hdrs,
+        ) {
+            Ok(d) => d,
+            Err(e) => return self.fail_closed(phase, &e),
+        };
+        info!(
+            request_id = self.rid(),
+            phase = phase.as_str(),
+            conn_source = self.endpoints.source,
+            client = %format!("{}:{}", self.endpoints.client_ip, self.endpoints.client_port),
+            server = %format!("{}:{}", self.endpoints.server_ip, self.endpoints.server_port),
+            http_version = self.endpoints.http_version,
+            method = %method,
+            "request headers inspected"
+        );
+        if let Some(step) = self.settle(phase, decision, t0.elapsed(), None) {
+            return step;
+        }
+
+        if headers.end_of_stream {
+            let t1 = Instant::now();
+            match session.finish_request_body() {
+                Ok(d) => {
+                    if let Some(step) = self.settle(Phase::RequestBody, d, t1.elapsed(), Some(0)) {
+                        return step;
+                    }
+                    self.mark_request_allowed();
+                }
+                Err(e) => return self.fail_closed(Phase::RequestBody, &e),
+            }
+        }
+
+        self.session = Some(session);
+        Step::Reply(responses::headers_continue(Direction::Request))
+    }
+
+    fn body(&mut self, phase: Phase, body: &HttpBody) -> Step {
+        let dir = match phase {
+            Phase::RequestBody => Direction::Request,
+            Phase::ResponseBody => Direction::Response,
+            Phase::RequestHeaders | Phase::ResponseHeaders => {
+                return self.fail_closed(phase, "body handler called for a headers phase")
+            }
+        };
+        let Some(mut session) = self.session.take() else {
+            return self.fail_closed(phase, "body received before headers");
+        };
+        let t0 = Instant::now();
+        let nbytes = body.body.len() as u64;
+        self.metrics.add_body_bytes(phase, nbytes);
+
+        let appended = match dir {
+            Direction::Request => session.append_request_body(&body.body),
+            Direction::Response => session.append_response_body(&body.body),
+        };
+        match appended {
+            Ok(d) if d.is_disruptive() => {
+                if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(nbytes)) {
+                    return step;
+                }
+            }
+            Ok(_) => {}
+            Err(e) => return self.fail_closed(phase, &e),
+        }
+
+        if body.end_of_stream {
+            let finished = match dir {
+                Direction::Request => session.finish_request_body(),
+                Direction::Response => session.finish_response_body(),
+            };
+            match finished {
+                Ok(d) => {
+                    if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(nbytes)) {
+                        return step;
+                    }
+                    if dir == Direction::Request {
+                        self.mark_request_allowed();
+                    }
+                }
+                Err(e) => return self.fail_closed(phase, &e),
+            }
+        }
+
+        self.session = Some(session);
+        Step::Reply(responses::body_continue(dir))
+    }
+
+    fn response_headers(&mut self, headers: &HttpHeaders) -> Step {
+        let phase = Phase::ResponseHeaders;
+        let Some(mut session) = self.session.take() else {
+            return self.fail_closed(phase, "response_headers received before request_headers");
+        };
+        let Some(status) = header(headers, ":status").and_then(|s| s.parse::<i32>().ok()) else {
+            return self.fail_closed(phase, "response_headers without a valid :status");
+        };
+        let t0 = Instant::now();
+        let hdrs: Vec<(String, String)> = regular_headers(headers).collect();
+        let protocol = self.endpoints.response_protocol();
+        let decision = match session.process_response_headers(status, &protocol, &hdrs) {
+            Ok(d) => d,
+            Err(e) => return self.fail_closed(phase, &e),
+        };
+        if let Some(step) = self.settle(phase, decision, t0.elapsed(), None) {
+            return step;
+        }
+        // The engine closes an unfinished request body before response
+        // headers; reaching here means the request path was allowed.
+        self.mark_request_allowed();
+
+        if headers.end_of_stream {
+            let t1 = Instant::now();
+            match session.finish_response_body() {
+                Ok(d) => {
+                    if let Some(step) = self.settle(Phase::ResponseBody, d, t1.elapsed(), Some(0)) {
+                        return step;
+                    }
+                }
+                Err(e) => return self.fail_closed(Phase::ResponseBody, &e),
+            }
+        }
+
+        self.session = Some(session);
+        Step::Reply(responses::headers_continue(Direction::Response))
+    }
+
+    fn mark_request_allowed(&mut self) {
+        if !self.request_settled {
+            self.request_settled = true;
+            self.metrics.inc_allow();
+        }
+    }
+
+    /// Record phase latency, log the decision, and map disruptive decisions
+    /// to a terminal step.
+    fn settle(
+        &self,
+        phase: Phase,
+        decision: Decision,
+        elapsed: Duration,
+        body_bytes: Option<u64>,
+    ) -> Option<Step> {
+        self.metrics.observe_phase(phase, elapsed);
+        let redirect_url = match &decision {
+            Decision::Redirect { url, .. } => url.as_str(),
+            _ => "-",
+        };
+        info!(
+            request_id = self.rid(),
+            phase = phase.as_str(),
+            action = decision.action_label(),
+            latency_ms = elapsed.as_secs_f64() * 1000.0,
+            body_bytes = body_bytes.unwrap_or(0),
+            redirect_url,
+            "modsec phase complete"
+        );
+        match decision {
+            Decision::Allow => None,
+            Decision::Block { status, .. } => {
+                self.metrics.inc_deny();
+                Some(Step::Final(responses::block(
+                    status,
+                    DENY_BODY,
+                    "modsecurity_intervention",
+                )))
+            }
+            Decision::Redirect { status, url, .. } => {
+                self.metrics.inc_deny();
+                Some(Step::Final(responses::redirect(
+                    status,
+                    &url,
+                    REDIRECT_BODY,
+                )))
+            }
+            Decision::Drop { .. } => {
+                // ImmediateResponse cannot close a connection, and status 0
+                // would be sent as 200. Abort the stream instead: Envoy
+                // (failure_mode_allow: false) answers 500 without the origin.
+                self.metrics.inc_deny();
+                Some(Step::Abort(Status::aborted(
+                    "modsecurity drop intervention",
+                )))
+            }
+        }
+    }
+
+    fn fail_closed(&self, phase: Phase, err: impl std::fmt::Display) -> Step {
+        warn!(
+            request_id = self.rid(),
+            phase = phase.as_str(),
+            action = "fail_closed",
+            error = %err,
+            "fail-closed ImmediateResponse 500"
+        );
+        self.metrics.inc_fail_closed();
+        Step::Final(responses::fail_closed())
+    }
+}
+
+fn header_value(hv: &HeaderValue) -> String {
+    if hv.raw_value.is_empty() {
+        hv.value.clone()
+    } else {
+        String::from_utf8_lossy(&hv.raw_value).into_owned()
+    }
+}
+
+fn header(headers: &HttpHeaders, name: &str) -> Option<String> {
+    headers
+        .headers
+        .as_ref()?
+        .headers
+        .iter()
+        .find(|h| h.key.eq_ignore_ascii_case(name))
+        .map(header_value)
+}
+
+/// Non-pseudo headers, in order (duplicates preserved).
+fn regular_headers(headers: &HttpHeaders) -> impl Iterator<Item = (String, String)> + '_ {
+    headers
+        .headers
+        .iter()
+        .flat_map(|m| m.headers.iter())
+        .filter(|h| !h.key.starts_with(':'))
+        .map(|h| (h.key.clone(), header_value(h)))
+}

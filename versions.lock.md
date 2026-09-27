@@ -9,7 +9,7 @@ Product releases use git tags `vX.Y.Z` + Release notes that quote these axes —
 | **A. Engine / ABI** | `MODSECURITY_PIN` | `v3.0.16` | libmodsecurity latest stable v3 |
 | **B. CRS pack** | `CRS_TAG` | `v4.29.0` | Optional LTS: `v4.25.1` |
 | **D. Connector** | git SHA / OCI | *(tip SHA)* | Fill at release / image publish |
-| **P. Product** | git tag | `v0.1.0` *(pre-migrate)* | Semver when connector ships |
+| **P. Product** | git tag | `v0.1.0` | Semver from here |
 
 ## Machine-readable pins
 

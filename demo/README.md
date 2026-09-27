@@ -1,93 +1,87 @@
 # Demo — Envoy + ModSecurity + CRS
 
-Local setup for **envoy-modsec-connex**: install the pinned Envoy, optionally libmodsecurity and OWASP CRS, build this repo’s connector, and wire Envoy’s `ext_proc` filter to it.
+Run the connector locally behind Envoy with libmodsecurity and the OWASP Core Rule Set, then watch it allow, block and fail closed.
 
-Versions used in this tree are listed in [`versions.lock.md`](../versions.lock.md) (Envoy **v1.39.1**, libmodsecurity **v3.0.16**, CRS **v4.29.0**). Confirm those tags before you install.
+Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.1**, libmodsecurity **v3.0.16**, CRS **v4.29.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
 
-Architecture and outcomes: [`docs/how-it-works.md`](../docs/how-it-works.md).
+```text
+curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 ──FFI──► libmodsecurity + CRS
+            │                                  (metrics / healthz :18082)
+            └──► demo origin :18098   (only after the connector says Continue)
+```
+
+## Quick start (macOS)
+
+```bash
+brew install envoy modsecurity pkg-config     # or the install scripts below
+./demo/scripts/install-crs.sh                  # CRS v4.29.0 → demo/.crs
+./demo/scripts/up.sh                           # builds + starts origin, connector, Envoy
+./demo/scripts/smoke.sh                        # allow / deny / body / response checks
+./demo/scripts/fail-closed.sh                  # kill → 500, hang → 504, bad rules → 500
+./demo/scripts/down.sh
+```
+
+Try it by hand once it is up:
+
+```bash
+curl -i http://127.0.0.1:18080/                                              # 200 from origin
+curl -i "http://127.0.0.1:18080/search?q=1'%20UNION%20SELECT%201,2--"       # 403 (CRS SQLi)
+curl -i -X POST --data "comment=<script>alert(1)</script>" \
+     http://127.0.0.1:18080/comment                                          # 403 (CRS XSS, body)
+curl -i http://127.0.0.1:18080/leak                                          # 403 (response-body rule)
+curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # connector counters
+```
 
 ## Scripts
 
-| Script | Role |
-|--------|------|
-| [`scripts/install-envoy.sh`](./scripts/install-envoy.sh) | Verify / pull Envoy **v1.39.1** |
-| [`scripts/install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh) | Verify libmodsecurity **v3.0.16** |
-| [`scripts/install-crs.sh`](./scripts/install-crs.sh) | Clone CRS **v4.29.0** into `demo/.crs` |
-| [`scripts/smoke.sh`](./scripts/smoke.sh) | Pin check + `cargo build` / `cargo test` |
+| Script | What it does |
+|--------|--------------|
+| [`install-envoy.sh`](./scripts/install-envoy.sh) | Checks `envoy --version` against the pin (or pulls `envoyproxy/envoy:v1.39.1`). |
+| [`install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh) | macOS: Homebrew. Linux: builds v3.0.16 from source via [`scripts/install-libmodsecurity-ubuntu.sh`](../scripts/install-libmodsecurity-ubuntu.sh). |
+| [`install-crs.sh`](./scripts/install-crs.sh) | Shallow-clones CRS at the pin into `demo/.crs` and creates `crs-setup.conf` from the example. |
+| [`up.sh`](./scripts/up.sh) | Generates `demo/.run/modsec.conf` (engine directives → CRS → demo rules), builds the connector, starts the origin, connector and Envoy detached, and waits for `/healthz` and Envoy `/ready`. `DEMO_CRS=0` skips CRS. |
+| [`smoke.sh`](./scripts/smoke.sh) | Live assertions: benign GET/POST/JSON → **200**; SQLi/XSS/traversal in the URL → **403**; SQLi/XSS in form and JSON bodies → **403**; response-body leak → **403**. Checks the origin hit count for every request (denied requests must not reach it). |
+| [`fail-closed.sh`](./scripts/fail-closed.sh) | Kills the connector (**500**), freezes it with SIGSTOP (**504** after 2s), restarts it with broken rules (process exits, **500**), then restores (**200**). The origin must receive nothing during any failure. |
+| [`down.sh`](./scripts/down.sh) | Stops everything the demo started. |
+| [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit), a detach helper, and shared settings. |
 
----
+Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `demo/.run/`.
 
-## 1. Envoy Proxy v1.39.1
+## Configuration files
 
-Official install guide: [Installing Envoy (v1.39.1)](https://www.envoyproxy.io/docs/envoy/v1.39.1/start/install).  
-Release: [envoyproxy/envoy v1.39.1](https://github.com/envoyproxy/envoy/releases/tag/v1.39.1).
+| File | Role |
+|------|------|
+| [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, BUFFERED request and response bodies, `request_attributes` for real client IP / protocol, CONNECT answered locally. |
+| [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
+| [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `CONNEX-LEAK-MARKER`, to show the response path. |
 
-### macOS (Homebrew)
+## Ports
 
-Homebrew currently bottles **1.39.1**:
+| Port | Process |
+|------|---------|
+| 18080 | Envoy listener |
+| 18089 | Envoy admin (`/ready`, `/stats`) |
+| 18081 | Connector gRPC |
+| 18082 | Connector `/metrics`, `/healthz` |
+| 18098 | Demo origin |
 
-```bash
-brew update
-brew install envoy
-envoy --version
-```
+`up.sh` refuses to start if any of these are taken and tells you by what.
 
-Expect a version string that includes `1.39.1`. If brew drifts to a newer formula, install from the Docker image or a matching release asset instead of staying on an unpinned `brew upgrade`.
+## Linux
 
-### Linux
-
-The Envoy apt repository is **not** maintained. Prefer one of:
-
-**Docker (amd64 / arm64)**
-
-```bash
-docker pull envoyproxy/envoy:v1.39.1
-docker run --rm envoyproxy/envoy:v1.39.1 --version
-```
-
-**Static binary from GitHub Releases**
-
-Download the asset for your arch from the [v1.39.1 release](https://github.com/envoyproxy/envoy/releases/tag/v1.39.1), for example:
-
-- `envoy-1.39.1-linux-x86_64`
-- `envoy-1.39.1-linux-aarch_64`
+Install Envoy v1.39.1 from the [release assets](https://github.com/envoyproxy/envoy/releases/tag/v1.39.1) (the apt repo is unmaintained), then:
 
 ```bash
-chmod +x envoy-1.39.1-linux-x86_64
-sudo mv envoy-1.39.1-linux-x86_64 /usr/local/bin/envoy
-envoy --version
+PREFIX=$HOME/.local ./scripts/install-libmodsecurity-ubuntu.sh
+export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib
+./demo/scripts/up.sh
 ```
 
-### Version check
+The scripts use `lsof`, `curl` and `python3`.
 
-```bash
-envoy --version
-# or
-docker run --rm envoyproxy/envoy:v1.39.1 --version
-```
+## Wiring your own Envoy
 
-Match **v1.39.1** to [`versions.lock.md`](../versions.lock.md).
-
----
-
-## 2. Connector (this repo)
-
-Rust toolchain required. From the repository root:
-
-```bash
-cargo build -p ext-proc-modsec
-cargo test --workspace
-```
-
-The product binary is `ext-proc-modsec`. Contributor build notes: [`CONTRIBUTING.md`](../CONTRIBUTING.md).
-
-A full listening connector (gRPC `ext_proc` + FFI) is still landing here. Until then, end-to-end compose proofs live in the private lab [`modsec-envoy-experiement`](https://github.com/etiennemunnich/modsec-envoy-experiement).
-
----
-
-## 3. Wire Envoy → connector
-
-Envoy must call the connector over `ext_proc` and **not** allow traffic through if that call fails. Minimal filter shape:
+Point a cluster (HTTP/2) at the connector's `--listen` address and add the filter before the router. Keep `failure_mode_allow: false`:
 
 ```yaml
 http_filters:
@@ -99,36 +93,25 @@ http_filters:
           cluster_name: modsec_ext_proc
       failure_mode_allow: false
       message_timeout: 2s
+      processing_mode:
+        request_header_mode: SEND
+        response_header_mode: SEND
+        request_body_mode: BUFFERED
+        response_body_mode: BUFFERED
+        request_trailer_mode: SKIP
+        response_trailer_mode: SKIP
+      request_attributes: [source.address, source.port, destination.address, destination.port, request.protocol]
   - name: envoy.filters.http.router
     typed_config:
       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 ```
 
-Point cluster `modsec_ext_proc` at the connector’s gRPC listen address. Hop model and outcomes: [`docs/how-it-works.md`](../docs/how-it-works.md). Runnable compose until migrate: experiment lab above.
+Run the connector with your rules, in load order:
 
----
-
-## 4. libmodsecurity and CRS (optional for native inspection)
-
-Needed when you link or run against a real ModSecurity engine and rule pack.
-
-| Component | Pin | Where to get it |
-|-----------|-----|-----------------|
-| libmodsecurity | **v3.0.16** | [ModSecurity releases](https://github.com/owasp-modsecurity/ModSecurity/releases/tag/v3.0.16) · macOS: `brew install modsecurity` then `pkg-config --modversion modsecurity` |
-| OWASP CRS | **v4.29.0** | [coreruleset v4.29.0](https://github.com/coreruleset/coreruleset/releases/tag/v4.29.0) (optional LTS **v4.25.1**) |
-
-Stub helpers in this tree: [`scripts/install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh), [`scripts/install-crs.sh`](./scripts/install-crs.sh). Full lab scripts remain in the experiment repo until migrate. Ubuntu/CI builds often compile **v3.0.16** from source because distro packages can lag.
-
-Workspace crates build without a system libmodsecurity until the connector’s native engine feature is enabled.
-
----
-
-## Smoke path
-
-1. Install Envoy **v1.39.1** (`./scripts/install-envoy.sh` or manual steps above) and confirm `envoy --version`.
-2. `cargo build -p ext-proc-modsec` in this repo.
-3. Configure Envoy `ext_proc` as above (`failure_mode_allow: false`).
-4. For ModSec + CRS end-to-end today, use the experiment lab compose; migrate those scripts here when the connector lands.
+```bash
+ext-proc-modsec --listen 0.0.0.0:18081 --metrics-listen 127.0.0.1:18082 \
+  --modsec-rules /etc/modsecurity/engine.conf,/etc/crs/crs-setup.conf,/etc/crs/rules.conf
+```
 
 ---
 

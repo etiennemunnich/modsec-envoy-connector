@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stub: install / verify Envoy Proxy at the pin in versions.lock.md (v1.39.1).
+# Install / verify Envoy Proxy at the pin in versions.lock.md (v1.39.1).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PIN="$(grep -E '^ENVOY_PIN=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)"
