@@ -22,7 +22,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _record(self):
         with HITS_LOCK, open(self.server.hits_path, "a", encoding="utf-8") as f:
-            f.write(f"{self.command} {self.path}\n")
+            rid = self.headers.get("x-request-id", "-")
+            f.write(f"{self.command} {self.path} rid={rid}\n")
 
     def _reply(self, body: bytes, status: int = 200):
         self.send_response(status)
