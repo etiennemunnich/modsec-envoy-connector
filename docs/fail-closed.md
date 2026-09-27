@@ -56,7 +56,7 @@ libmodsecurity (in-process FFI)
 |-------|-----------|-----|
 | **1** connector killed | live drill, H1 + H2 | `fail-closed.sh`, `fail-modes.sh` — SIGKILL → Envoy **500** for GET, POST and attack requests; origin hit count unchanged; `failure_mode_allowed` stays 0 |
 | **2** bad rules at boot | live drill + unit test | invalid SecLang or a missing `Include` → connector exits non-zero, nothing listens, healthz down, Envoy **500**; `invalid_seclang_is_rejected`, `rules_are_required` |
-| **3** per-request engine error / protocol violation | gRPC integration tests | body-before-headers, duplicate headers, missing `:status`, empty message → `ImmediateResponse` **500** (`crates/ext-proc-modsec/tests/grpc.rs`) |
+| **3** per-request engine error / protocol violation | gRPC integration tests | body-before-headers, duplicate headers, missing `:status`, empty message, response headers with no request and a non-4xx/5xx status → `ImmediateResponse` **500** (`crates/ext-proc-modsec/tests/grpc.rs`) |
 | **4** rule deny | live, H1 + H2 + tests | `smoke.sh`, `fail-modes.sh` — SQLi/XSS (URL + body) → **403**, response-body rule → **403**, attack only in the last chunk / DATA frames → **403** |
 | **5** connector hung | live drill, H1 + H2 | SIGSTOP → Envoy **504** after `message_timeout` 2s; origin unchanged |
 | **6** audit | live drill, H1 + H2 | `SecAuditLog` on an unwritable path: libmodsecurity v3.0.16 still loads; attack **403** with origin untouched, benign **200** |
@@ -64,5 +64,19 @@ libmodsecurity (in-process FFI)
 Class 3 has no live injection hook: a real libmodsecurity transaction error cannot be forced from outside, so it is covered by the in-process gRPC tests that exercise the same code path (`fail_closed` → 500); `fail-modes.sh` runs them as its class-3 step.
 
 **Negative control:** `fail-modes.sh` temporarily restarts Envoy with `failure_mode_allow: true` and repeats the kill and hang drills. Traffic then reaches the origin (**200**) and `failure_mode_allowed` rises, which shows the drills would catch a fail-open configuration. The product config is restored and re-checked (**500**) before the suite continues.
+
+---
+
+## Envoy's own local replies (not a failure class)
+
+Envoy can reject a request itself before the request phase reaches ext_proc — for example a URI with a `#fragment` (400 `path_normalization_failed`) or `OPTIONS *` (404 `absolute_path_rejected`). ext_proc then sees only the response headers of that local reply, on a stream with no request headers. The origin was never contacted and never can be, so the request is already closed.
+
+| Stream state when response headers arrive | Connector answer | Client |
+|-------------------------------------------|------------------|--------|
+| No request on the stream, `:status` 4xx/5xx | Continue (headers and the local reply's body; not inspected) | Envoy's status, e.g. **400** |
+| No request on the stream, any other status (1xx–3xx, missing, invalid) | `ImmediateResponse` **500** | **500** |
+| After such a pass-through: request headers/body or a second response headers | `ImmediateResponse` **500** | **500** |
+
+This relies on `request_header_mode: SEND`: Envoy never sends a request to the origin without first sending its headers to ext_proc, so a 2xx/3xx on a stream with no request cannot be trusted and stays fail-closed. gRPC tests: `envoy_local_reply_without_request_passes_through`, `response_without_request_below_400_fails_closed`, `local_reply_does_not_open_the_request_path`. Metric: `ext_proc_local_reply_passthrough_total`.
 
 Drop interventions (status 0) are mapped to a gRPC stream abort, which Envoy fails closed as **500**; an `ImmediateResponse` with status 0 would be sent by Envoy v1.39 as **200**. See [how-it-works.md](./how-it-works.md#decisions--what-the-client-sees).

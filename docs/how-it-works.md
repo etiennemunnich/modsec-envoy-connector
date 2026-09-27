@@ -54,6 +54,7 @@ One `Process` stream = one HTTP request/response = one ModSecurity transaction.
 | `response_headers` | Closes the request body if still open, adds headers, `process_response_headers(:status, protocol)` (phase 3). If `end_of_stream`, also runs the response-body phase. | Continue, or terminal reply |
 | `response_body` | `append_response_body`; at `end_of_stream` runs `process_response_body` (phase 4). | Continue, or terminal reply |
 | trailers | Not inspected (the demo config sets trailer modes to `SKIP`). | Continue |
+| `response_headers` **with no `request_headers` on the stream** | Envoy rejected the request itself before the request phase (e.g. a `#fragment` URI → 400, `OPTIONS *` → 404) and ext_proc only sees its local reply. The origin was never contacted. If `:status` is 4xx/5xx it is passed through; anything else fails closed. | Continue (status 4xx/5xx), else **500** |
 
 Stream end drops the session, which runs ModSecurity's logging phase (audit log) and frees the transaction.
 
@@ -70,6 +71,8 @@ Stream end drops the session, which runs ModSecurity's logging phase (audit log)
 | Drop (intervention status 0) | Stream aborted with gRPC `ABORTED` | Envoy local **500** |
 | Engine error / phase-order violation / malformed message | `ImmediateResponse` **500**, details `modsec_fail_closed` | **500** |
 | `CONNECT` | `ImmediateResponse` **403**, details `connect_rejected` | **403** |
+| Envoy local reply 4xx/5xx with no request on the stream | Continue for its headers and body (not inspected; counted in `ext_proc_local_reply_passthrough_total`) | Envoy's own status, e.g. **400** |
+| Response headers with no request on the stream and any other status | `ImmediateResponse` **500**, details `modsec_fail_closed` | **500** |
 
 Why statuses are validated: Envoy v1.39 sends an `ImmediateResponse` whose status is missing or invalid (including 0) as **HTTP 200** (`DefaultImmediateStatus` in `ext_proc.cc`). The connector therefore never passes through an unchecked status. That is also why a drop becomes a stream abort (which Envoy fails closed) rather than status 0.
 
@@ -117,7 +120,7 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 ## Observability
 
 - **Logs** (structured, `tracing`): one line per phase with `request_id`, `phase`, `action` (`allow`/`deny`/`redirect`/`drop`), `latency_ms`, `body_bytes`, and for request headers the client/server endpoints and their source. Fail-closed lines carry `action="fail_closed"` and the error.
-- **Metrics** (`GET /metrics`, Prometheus text): `ext_proc_requests_total`, `ext_proc_allow_total`, `ext_proc_deny_total`, `ext_proc_fail_closed_total`, `ext_proc_stream_errors_total`, `ext_proc_{request,response}_body_bytes_total`, and `ext_proc_phase_{request_headers,request_body,response_headers,response_body}_seconds` histograms.
+- **Metrics** (`GET /metrics`, Prometheus text): `ext_proc_requests_total`, `ext_proc_allow_total`, `ext_proc_deny_total`, `ext_proc_fail_closed_total`, `ext_proc_stream_errors_total`, `ext_proc_local_reply_passthrough_total`, `ext_proc_{request,response}_body_bytes_total`, and `ext_proc_phase_{request_headers,request_body,response_headers,response_body}_seconds` histograms.
 - **Readiness** (`GET /healthz`): runs a real `Process` call against this process (headers-only `GET /__connex_healthz`) and returns 200 only if it gets Continue within 2s. Rules are always loaded before the server starts.
 - **Envoy side**: `%RESPONSE_CODE_DETAILS%` shows `modsecurity_intervention` / `modsec_fail_closed` (and `ext_proc_error_*` when Envoy itself fails the call, e.g. connector down or timed out); ext_proc stats live under `http.<prefix>.ext_proc.modsec_ext_proc.*` (`streams_failed`, `message_timeouts`, `failure_mode_allowed` must stay 0).
 
@@ -130,5 +133,5 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 - **Pause** interventions are logged and ignored (ext_proc has no delay primitive).
 - **Drop** cannot close the TCP connection through ext_proc; it maps to a stream abort → Envoy 500.
 - `/healthz` probes run through the rules and are counted in `ext_proc_requests_total` / `ext_proc_allow_total`.
-- **Envoy local replies before the request phase become 500.** When Envoy rejects a request itself before ext_proc sees its headers (for example a URI with a `#fragment`, which Envoy answers 400), ext_proc still receives that local reply's response headers. The connector has no request on the stream, fails closed, and the client gets 500 instead of 400. Nothing reaches the origin. This is why CRS go-ftw tests `920100-8` and `920610-2` fail.
+- **Envoy local replies before the request phase are not inspected.** When Envoy rejects a request itself before ext_proc sees its headers, the connector only sees the local reply. A 4xx/5xx passes through with Envoy's status; the request never reached ModSecurity or the origin, so there is nothing to decide. The pass-through relies on `request_header_mode: SEND` (Envoy never forwards a request to the origin without a request-headers message first). A stream-level 1xx–3xx without a request is still failed closed.
 - HTTP/3 and WebSocket frame inspection are not supported.

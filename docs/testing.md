@@ -57,16 +57,16 @@ macOS (arm64), Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, go-ftw v2.6.0
 
 | Suite | Result |
 |-------|--------|
-| `cargo test --workspace` | 44 passed, 0 failed |
+| `cargo test --workspace` | 47 passed, 0 failed |
 | `smoke.sh` | passed |
 | `fail-closed.sh` | passed |
 | `fail-modes.sh` (H1 + H2) | 59 passed, 0 failed |
 | `go-ftw.sh smoke` | demo tests 8/8; CRS body-heavy tests 118/118 |
-| `go-ftw.sh full` | **5089 passed, 2 failed** of 5091 (42 of the passes are judged through `demo/ftw/envoy-overrides.yaml`) |
+| `go-ftw.sh full` | **5091 passed, 0 failed** of 5091 (42 of the passes are judged through `demo/ftw/envoy-overrides.yaml`) |
 
-The two go-ftw failures, `920100-8` and `920610-2`, send a URI with a `#fragment`. Envoy rejects that request itself with a local **400** before the request phase reaches ext_proc, but still passes the local reply's response headers to ext_proc; the connector has seen no request headers on that stream, fails closed, and the client gets **500** instead of Envoy's 400. Nothing reaches the origin — the result is closed, just with the wrong status. See [how-it-works.md](./how-it-works.md#known-limits).
+`920100-8` and `920610-2` send a URI with a `#fragment`, which Envoy rejects itself with a local **400** before the request phase. The connector passes Envoy's local reply through (see [fail-closed.md](./fail-closed.md#envoys-own-local-replies-not-a-failure-class)), so the client gets the 400 CRS expects.
 
-The overrides file records measured Envoy platform differences, like CRS's own `nginx-overrides.yaml`: 36 tests where Envoy's HTTP/1 codec drops a malformed request (client sees an empty reply, envoy#29440) and 6 where CRS's expected status was written for Apache's parser (the outcome here is still a 403 block, or matches CRS's nginx override).
+The overrides file records measured Envoy platform differences, like CRS's own `nginx-overrides.yaml`: 36 tests where Envoy's HTTP/1 codec drops a malformed request (client sees an empty reply, envoy#29440) and 6 where CRS's expected status was written for Apache's parser (the outcome here is still a 403 block, or matches CRS's nginx override). Each of the 42 entries was re-measured by removing it and running its test alone: all 42 still fail without their override.
 
 ---
 
