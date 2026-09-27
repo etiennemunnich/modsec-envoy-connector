@@ -41,16 +41,47 @@ if [[ "${OVERRIDES}" != "none" ]]; then
   override_args=(--overrides "${OVERRIDES}")
 fi
 
+# Several overrides accept a transport error (expect_error) for attack payloads
+# Envoy itself rejects, which a crashed or hung connector would also produce.
+# So every run must end with the same connector process serving /metrics and
+# no new gRPC stream errors.
+stream_errors() {
+  curl -sf --max-time 3 "${METRICS}/metrics" | awk '$1 == "ext_proc_stream_errors_total" { print $2 }' || true
+}
+
+# connector_after <pid> <stream errors before> — prints "ok" or the problem; 1 on a problem.
+connector_after() {
+  local pid="$1" before="$2" now
+  if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
+    echo "DEAD (pid ${pid:-?} gone)"
+    return 1
+  fi
+  now="$(stream_errors)"
+  if [[ -z "${now}" ]]; then
+    echo "UNRESPONSIVE (/metrics did not answer; pid ${pid} state $(ps -o stat= -p "${pid}" | tr -d ' '))"
+    return 1
+  fi
+  if [[ "${now}" != "${before}" ]]; then
+    echo "stream_errors_total ${before}→${now}"
+    return 1
+  fi
+  echo ok
+}
+
 # run_ftw <tests-dir> <name> [extra go-ftw args...] — sets LAST_SUMMARY.
 run_ftw() {
   local dir="$1" name="$2"
   shift 2
-  local json="${OUT_DIR}/${name}-${STAMP}.json" log="${OUT_DIR}/${name}-${STAMP}.log" rc=0
+  local json="${OUT_DIR}/${name}-${STAMP}.json" log="${OUT_DIR}/${name}-${STAMP}.log" rc=0 pid se health
+  pid="$(cat "${RUN}/connector.pid" 2>/dev/null || true)"
+  se="$(stream_errors)"
+  [[ -n "${se}" ]] || { LAST_SUMMARY="no-summary connector=UNRESPONSIVE before the run exit=1 log=${log}"; return 1; }
   "${FTW}" run --config "${CONFIG}" --cloud --dir "${dir}" \
     --output json --file "${json}" \
     --wait-for-host "${BASE}/" --wait-for-expect-status-code 200 --wait-for-timeout 30s \
     "${override_args[@]+"${override_args[@]}"}" "$@" >"${log}" 2>&1 || rc=$?
-  LAST_SUMMARY="$(summarize "${json}") exit=${rc} log=${log}"
+  health="$(connector_after "${pid}" "${se}")" || rc=1
+  LAST_SUMMARY="$(summarize "${json}") connector=${health} exit=${rc} log=${log}"
   return "${rc}"
 }
 
