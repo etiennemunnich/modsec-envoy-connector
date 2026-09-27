@@ -19,21 +19,33 @@
 //!
 //! | Piece | Source |
 //! |-------|--------|
-//! | Engine | [OWASP ModSecurity / libmodsecurity](https://github.com/owasp-modsecurity/ModSecurity) v3.x (pin `v3.0.16`) |
-//! | Rust bindings | [`modsecurity` / `modsecurity-sys`](https://crates.io/crates/modsecurity) (Apache-2.0 / MIT) |
+//! | Engine | [OWASP ModSecurity / libmodsecurity](https://github.com/owasp-modsecurity/ModSecurity) v3.x (pin `v3.0.16`), C API declared in [`ffi`] |
 //! | CRS (optional) | [OWASP CRS](https://github.com/coreruleset/coreruleset) (pin `v4.29.0`), loaded by the caller via `Include` chains |
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::mem::ManuallyDrop;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod ffi;
 
-use modsecurity::{ModSecurity, Rules, Transaction};
-use thiserror::Error;
+use std::ffi::{CStr, CString};
+use std::fmt;
+use std::os::raw::{c_char, c_int, c_uchar, c_void};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::ptr::{self, NonNull};
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use tracing::{debug, info, warn};
 
 const CONNECTOR_INFO: &str = concat!("envoy-modsec-connex/", env!("CARGO_PKG_VERSION"));
+
+/// libmodsecurity's SecLang parser and its engine/rules teardown are not
+/// re-entrant (owasp-modsecurity/ModSecurity#3138); every call into them
+/// holds this lock. Transactions run concurrently without it.
+static PARSE_LOCK: Mutex<()> = Mutex::new(());
+
+fn parse_lock() -> MutexGuard<'static, ()> {
+    PARSE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 /// Result of evaluating one ModSecurity Transaction API step.
 ///
@@ -73,30 +85,72 @@ impl Decision {
 }
 
 /// Errors from engine construction or a single transaction.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum EngineError {
-    #[error("failed to load rules from {path}: {message}")]
     RulesLoad { path: PathBuf, message: String },
-    #[error("no rules files provided")]
     NoRules,
-    #[error("modsecurity init failed: {0}")]
     Init(String),
-    #[error("modsecurity transaction error: {0}")]
     Transaction(String),
 }
 
-fn tx_err(e: impl std::fmt::Display) -> EngineError {
+impl fmt::Display for EngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RulesLoad { path, message } => {
+                write!(f, "failed to load rules from {}: {message}", path.display())
+            }
+            Self::NoRules => f.write_str("no rules files provided"),
+            Self::Init(m) => write!(f, "modsecurity init failed: {m}"),
+            Self::Transaction(m) => write!(f, "modsecurity transaction error: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+fn tx_err(e: impl fmt::Display) -> EngineError {
     EngineError::Transaction(e.to_string())
+}
+
+fn c_string(what: &str, s: &str) -> Result<CString, EngineError> {
+    CString::new(s).map_err(|_| tx_err(format!("{what} contains a NUL byte")))
+}
+
+/// `msc_*` Transaction calls return 1 on success.
+fn check(what: &str, rc: c_int) -> Result<(), EngineError> {
+    if rc == 1 {
+        Ok(())
+    } else {
+        Err(tx_err(format!("{what} returned {rc}")))
+    }
 }
 
 /// Shared, process-long ModSecurity instance + ruleset.
 ///
-/// libmodsecurity rule parsing is not re-entrant; the bindings serialize
-/// parse/cleanup. Build one [`Engine`] at boot and share it across streams.
+/// Build one [`Engine`] at boot and share it across streams.
 pub struct Engine {
-    msc: ModSecurity,
-    rules: Rules,
+    msc: NonNull<ffi::ModSecurity>,
+    rules: NonNull<ffi::RulesSet>,
     rules_paths: Vec<PathBuf>,
+}
+
+// SAFETY: after loading, `msc` and `rules` are only read by libmodsecurity
+// transactions, which it supports running concurrently from many threads;
+// parsing and cleanup are serialised by PARSE_LOCK.
+unsafe impl Send for Engine {}
+unsafe impl Sync for Engine {}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let _g = parse_lock();
+        // SAFETY: both pointers came from msc_create_rules_set / msc_init, are
+        // freed exactly once, and every InspectionSession holds an Arc<Engine>,
+        // so no transaction outlives them.
+        unsafe {
+            ffi::msc_rules_cleanup(self.rules.as_ptr());
+            ffi::msc_cleanup(self.msc.as_ptr());
+        }
+    }
 }
 
 impl Engine {
@@ -106,31 +160,76 @@ impl Engine {
         if paths.is_empty() {
             return Err(EngineError::NoRules);
         }
+        let connector =
+            CString::new(CONNECTOR_INFO).map_err(|e| EngineError::Init(e.to_string()))?;
 
-        let msc = ModSecurity::builder()
-            .with_connector_info(CONNECTOR_INFO)
-            .map_err(|e| EngineError::Init(e.to_string()))?
-            .with_log_callbacks()
-            .build();
-
-        let mut rules = Rules::new();
-        let mut rules_paths = Vec::with_capacity(paths.len());
+        let mut engine = {
+            let _g = parse_lock();
+            // SAFETY: plain constructors; NULL is handled below.
+            let (msc, rules) = unsafe { (ffi::msc_init(), ffi::msc_create_rules_set()) };
+            match (NonNull::new(msc), NonNull::new(rules)) {
+                (Some(msc), Some(rules)) => Self {
+                    msc,
+                    rules,
+                    rules_paths: Vec::with_capacity(paths.len()),
+                },
+                _ => {
+                    // SAFETY: free whichever half was allocated.
+                    unsafe {
+                        if !rules.is_null() {
+                            ffi::msc_rules_cleanup(rules);
+                        }
+                        if !msc.is_null() {
+                            ffi::msc_cleanup(msc);
+                        }
+                    }
+                    return Err(EngineError::Init(
+                        "msc_init / msc_create_rules_set returned NULL".into(),
+                    ));
+                }
+            }
+        };
+        // SAFETY: `msc` is live; libmodsecurity copies the connector string.
+        unsafe {
+            ffi::msc_set_connector_info(engine.msc.as_ptr(), connector.as_ptr());
+            ffi::msc_set_log_cb(engine.msc.as_ptr(), Some(log_cb));
+        }
 
         for path in paths {
             let path = path.as_ref().to_path_buf();
-            rules.add_file(&path).map_err(|e| EngineError::RulesLoad {
-                path: path.clone(),
-                message: e.to_string(),
-            })?;
+            engine.add_rules_file(&path)?;
             info!(path = %path.display(), "loaded ModSecurity rules file");
-            rules_paths.push(path);
+            engine.rules_paths.push(path);
         }
+        Ok(Arc::new(engine))
+    }
 
-        Ok(Arc::new(Self {
-            msc,
-            rules,
-            rules_paths,
-        }))
+    fn add_rules_file(&mut self, path: &Path) -> Result<(), EngineError> {
+        let load_err = |message: String| EngineError::RulesLoad {
+            path: path.to_path_buf(),
+            message,
+        };
+        let file = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| load_err("path contains a NUL byte".into()))?;
+        let mut error: *const c_char = ptr::null();
+        let _g = parse_lock();
+        // SAFETY: `rules` is live and exclusively borrowed; `file` is a valid C
+        // string; on failure libmodsecurity allocates `error`, freed below.
+        let rc = unsafe { ffi::msc_rules_add_file(self.rules.as_ptr(), file.as_ptr(), &mut error) };
+        if rc >= 0 {
+            return Ok(());
+        }
+        let message = if error.is_null() {
+            "unknown error".to_owned()
+        } else {
+            // SAFETY: non-NULL `error` is a NUL-terminated string we now own.
+            unsafe {
+                let m = CStr::from_ptr(error).to_string_lossy().into_owned();
+                ffi::msc_rules_error_cleanup(error);
+                m
+            }
+        };
+        Err(load_err(message))
     }
 
     /// Paths that were successfully loaded at construction.
@@ -147,77 +246,106 @@ impl Engine {
     }
 }
 
+/// Per-transaction data handed to libmodsecurity's log callback.
+struct LogContext {
+    request_id: String,
+}
+
+unsafe extern "C" fn log_cb(data: *mut c_void, msg: *const c_void) {
+    if data.is_null() || msg.is_null() {
+        return;
+    }
+    // SAFETY: `data` is the boxed LogContext of a live InspectionSession
+    // (freed only after msc_transaction_cleanup); with the default text log
+    // property `msg` is a NUL-terminated string.
+    let (ctx, msg) = unsafe {
+        (
+            &*(data as *const LogContext),
+            CStr::from_ptr(msg as *const c_char).to_string_lossy(),
+        )
+    };
+    debug!(
+        target: "modsecurity",
+        request_id = %ctx.request_id,
+        message = %msg,
+        "modsec engine log"
+    );
+}
+
 /// One ModSecurity transaction spanning request + response phases for a single
 /// HTTP exchange.
-///
-/// # Lifetime / safety
-///
-/// `modsecurity::Transaction` borrows the engine's `ModSecurity` + `Rules`.
-/// The session owns an [`Arc<Engine>`] and drops the transaction in [`Drop`]
-/// *before* that `Arc` is released; the `'static` transmute in
-/// [`InspectionSession::begin`] is only sound while that ordering holds.
 pub struct InspectionSession {
-    tx: ManuallyDrop<Transaction<'static>>,
+    tx: NonNull<ffi::Transaction>,
     request_id: Option<String>,
     request_headers_done: bool,
     request_body_done: bool,
     response_headers_done: bool,
     response_body_done: bool,
-    // Must be declared (and therefore dropped) after `tx`.
+    // Dropped after `tx` is cleaned up in `Drop::drop`.
+    _id: Option<CString>,
+    _log_ctx: Box<LogContext>,
     _engine: Arc<Engine>,
 }
+
+// SAFETY: a libmodsecurity Transaction may move between threads; it is only
+// ever used through `&mut self`, so never concurrently.
+unsafe impl Send for InspectionSession {}
 
 impl Drop for InspectionSession {
     fn drop(&mut self) {
         // Logging phase is best-effort: the stream is ending either way.
-        if let Err(e) = self.tx.process_logging() {
+        // SAFETY: `tx` is live until the cleanup call below.
+        let rc = unsafe { ffi::msc_process_logging(self.tx.as_ptr()) };
+        if rc != 1 {
             debug!(
                 request_id = self.request_id.as_deref().unwrap_or("-"),
-                error = %e,
-                "modsecurity process_logging failed"
+                rc, "modsecurity process_logging failed"
             );
         }
-        // SAFETY: `tx` is dropped exactly once, here, while `_engine` (which
-        // owns the borrowed ModSecurity/Rules) is still alive.
-        unsafe {
-            ManuallyDrop::drop(&mut self.tx);
-        }
+        // SAFETY: freed exactly once; the engine, id and log context it
+        // references are dropped only after this.
+        unsafe { ffi::msc_transaction_cleanup(self.tx.as_ptr()) };
     }
 }
 
 impl InspectionSession {
     fn begin(engine: Arc<Engine>, request_id: Option<&str>) -> Result<Self, EngineError> {
-        let id_owned = request_id.map(str::to_owned);
-        let mut builder = engine.msc.transaction_builder().with_rules(&engine.rules);
-        if let Some(ref id) = id_owned {
-            builder = builder.with_id(id);
-        }
-        let log_rid = id_owned.clone().unwrap_or_else(|| "-".into());
-        builder = builder.with_logging(move |msg| {
-            if let Some(m) = msg {
-                debug!(
-                    target: "modsecurity",
-                    request_id = %log_rid,
-                    message = %m,
-                    "modsec engine log"
-                );
-            }
+        let id = request_id.map(|r| c_string("request id", r)).transpose()?;
+        let log_ctx = Box::new(LogContext {
+            request_id: request_id.unwrap_or("-").to_owned(),
         });
-        let tx = builder.build().map_err(tx_err)?;
-
-        // SAFETY: `tx` borrows `engine.msc` / `engine.rules`. `engine` is moved
-        // into the same struct and outlives `tx` (see `Drop`).
-        let tx_static: Transaction<'static> = unsafe { std::mem::transmute(tx) };
-
+        let log_data = &*log_ctx as *const LogContext as *mut c_void;
+        // SAFETY: engine pointers are live (we hold the Arc); `id` and
+        // `log_ctx` are kept in the session for the transaction's lifetime.
+        let tx = unsafe {
+            match &id {
+                Some(id) => ffi::msc_new_transaction_with_id(
+                    engine.msc.as_ptr(),
+                    engine.rules.as_ptr(),
+                    id.as_ptr() as *mut c_char,
+                    log_data,
+                ),
+                None => {
+                    ffi::msc_new_transaction(engine.msc.as_ptr(), engine.rules.as_ptr(), log_data)
+                }
+            }
+        };
+        let tx = NonNull::new(tx).ok_or_else(|| tx_err("msc_new_transaction returned NULL"))?;
         Ok(Self {
-            tx: ManuallyDrop::new(tx_static),
-            request_id: id_owned,
+            tx,
+            request_id: request_id.map(str::to_owned),
             request_headers_done: false,
             request_body_done: false,
             response_headers_done: false,
             response_body_done: false,
+            _id: id,
+            _log_ctx: log_ctx,
             _engine: engine,
         })
+    }
+
+    fn raw(&mut self) -> *mut ffi::Transaction {
+        self.tx.as_ptr()
     }
 
     /// Request id this transaction was opened with (Envoy `x-request-id`).
@@ -250,26 +378,52 @@ impl InspectionSession {
         if self.request_headers_done {
             return Err(tx_err("process_request_headers called twice"));
         }
-        self.tx
-            .process_connection(client_ip, client_port, server_ip, server_port)
-            .map_err(tx_err)?;
+        let client = c_string("client address", client_ip)?;
+        let server = c_string("server address", server_ip)?;
+        // SAFETY: live transaction; C strings outlive the call.
+        let rc = unsafe {
+            ffi::msc_process_connection(
+                self.raw(),
+                client.as_ptr(),
+                client_port,
+                server.as_ptr(),
+                server_port,
+            )
+        };
+        check("process_connection", rc)?;
         if let Some(d) = self.disrupt_after("connection")? {
             return Ok(d);
         }
 
-        self.tx
-            .process_uri(uri, method, http_version)
-            .map_err(tx_err)?;
+        let uri = c_string("uri", uri)?;
+        let method = c_string("method", method)?;
+        let version = c_string("http version", http_version)?;
+        // SAFETY: as above.
+        let rc = unsafe {
+            ffi::msc_process_uri(self.raw(), uri.as_ptr(), method.as_ptr(), version.as_ptr())
+        };
+        check("process_uri", rc)?;
         if let Some(d) = self.disrupt_after("uri")? {
             return Ok(d);
         }
 
         for (k, v) in headers {
-            self.tx
-                .add_request_header(k.as_ref(), v.as_ref())
-                .map_err(tx_err)?;
+            let k = c_string("request header name", k.as_ref())?;
+            let v = c_string("request header value", v.as_ref())?;
+            // SAFETY: as above; libmodsecurity copies header strings.
+            let rc = unsafe {
+                ffi::msc_add_request_header(
+                    self.raw(),
+                    k.as_ptr() as *const c_uchar,
+                    v.as_ptr() as *const c_uchar,
+                )
+            };
+            check("add_request_header", rc)?;
         }
-        self.tx.process_request_headers().map_err(tx_err)?;
+        // SAFETY: live transaction.
+        check("process_request_headers", unsafe {
+            ffi::msc_process_request_headers(self.raw())
+        })?;
         self.request_headers_done = true;
         self.intervention("request_headers")
     }
@@ -286,7 +440,10 @@ impl InspectionSession {
         if chunk.is_empty() {
             return Ok(Decision::Allow);
         }
-        self.tx.append_request_body(chunk).map_err(tx_err)?;
+        // SAFETY: live transaction; libmodsecurity copies the bytes.
+        check("append_request_body", unsafe {
+            ffi::msc_append_request_body(self.raw(), chunk.as_ptr(), chunk.len())
+        })?;
         self.intervention("append_request_body")
     }
 
@@ -298,7 +455,10 @@ impl InspectionSession {
         if !self.request_headers_done {
             return Err(tx_err("finish_request_body before request headers"));
         }
-        self.tx.process_request_body().map_err(tx_err)?;
+        // SAFETY: live transaction.
+        check("process_request_body", unsafe {
+            ffi::msc_process_request_body(self.raw())
+        })?;
         self.request_body_done = true;
         self.intervention("request_body")
     }
@@ -325,13 +485,23 @@ impl InspectionSession {
             }
         }
         for (k, v) in headers {
-            self.tx
-                .add_response_header(k.as_ref(), v.as_ref())
-                .map_err(tx_err)?;
+            let k = c_string("response header name", k.as_ref())?;
+            let v = c_string("response header value", v.as_ref())?;
+            // SAFETY: live transaction; libmodsecurity copies header strings.
+            let rc = unsafe {
+                ffi::msc_add_response_header(
+                    self.raw(),
+                    k.as_ptr() as *const c_uchar,
+                    v.as_ptr() as *const c_uchar,
+                )
+            };
+            check("add_response_header", rc)?;
         }
-        self.tx
-            .process_response_headers(status, protocol)
-            .map_err(tx_err)?;
+        let protocol = c_string("protocol", protocol)?;
+        // SAFETY: live transaction; C string outlives the call.
+        check("process_response_headers", unsafe {
+            ffi::msc_process_response_headers(self.raw(), status, protocol.as_ptr())
+        })?;
         self.response_headers_done = true;
         self.intervention("response_headers")
     }
@@ -347,7 +517,10 @@ impl InspectionSession {
         if chunk.is_empty() {
             return Ok(Decision::Allow);
         }
-        self.tx.append_response_body(chunk).map_err(tx_err)?;
+        // SAFETY: live transaction; libmodsecurity copies the bytes.
+        check("append_response_body", unsafe {
+            ffi::msc_append_response_body(self.raw(), chunk.as_ptr(), chunk.len())
+        })?;
         self.intervention("append_response_body")
     }
 
@@ -359,7 +532,10 @@ impl InspectionSession {
         if !self.response_headers_done {
             return Err(tx_err("finish_response_body before response headers"));
         }
-        self.tx.process_response_body().map_err(tx_err)?;
+        // SAFETY: live transaction.
+        check("process_response_body", unsafe {
+            ffi::msc_process_response_body(self.raw())
+        })?;
         self.response_body_done = true;
         self.intervention("response_body")
     }
@@ -373,24 +549,42 @@ impl InspectionSession {
     ///
     /// `pause` is logged and ignored: ext_proc has no delay primitive.
     fn intervention(&mut self, phase: &str) -> Result<Decision, EngineError> {
-        let rid = self.request_id.as_deref().unwrap_or("-");
-        let Some(it) = self.tx.intervention() else {
-            return Ok(Decision::Allow);
+        let mut it = ffi::ModSecurityIntervention {
+            status: 200,
+            pause: 0,
+            url: ptr::null_mut(),
+            log: ptr::null_mut(),
+            disruptive: 0,
         };
-        let status = it.status();
-        let pause = it.pause();
+        // SAFETY: live transaction; `it` is a valid out-parameter. url/log
+        // are copied out before msc_intervention_cleanup frees them.
+        let (pending, disruptive, status, pause, url, log) = unsafe {
+            let pending = ffi::msc_intervention(self.raw(), &mut it) > 0;
+            let owned = |p: *mut c_char| {
+                (!p.is_null()).then(|| CStr::from_ptr(p).to_string_lossy().into_owned())
+            };
+            let out = (
+                pending,
+                it.disruptive != 0,
+                it.status,
+                it.pause,
+                owned(it.url),
+                owned(it.log),
+            );
+            ffi::msc_intervention_cleanup(&mut it);
+            out
+        };
+        if !pending {
+            return Ok(Decision::Allow);
+        }
+        let rid = self.request_id.as_deref().unwrap_or("-");
         if pause != 0 {
             warn!(
                 request_id = rid,
                 phase, pause, "modsecurity pause intervention unsupported; ignoring pause"
             );
         }
-        let decision = map_intervention(
-            it.disruptive(),
-            status,
-            it.url(),
-            it.log().map(str::to_owned),
-        );
+        let decision = map_intervention(disruptive, status, url.as_deref(), log);
         match &decision {
             Decision::Allow => {
                 debug!(
