@@ -4,6 +4,7 @@ name: release-watch
 # releases newer than versions.lock.md (filtered from the releases list, not
 # releases/latest). Each new tag gets a tracking issue and a stable-candidate
 # run on both architectures. Idempotent: the issue title is the dedupe key.
+# A failing watch files the issue "release-watch: failing" (closed when green).
 
 on:
   schedule:
@@ -45,3 +46,22 @@ jobs:
           FORCE: ${{ inputs.force }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         run: ./scripts/release-watch.sh
+
+  # A failed scheduled run would otherwise only email the cron's last editor.
+  report:
+    name: report
+    needs: watch
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: File or close the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-report.sh --mode on-failure --title "release-watch: failing"
