@@ -8,7 +8,7 @@ name: ci
 #                                      dispatches (not cursor/** pushes)
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
-# the changes job, so ci-ok still reports.
+# the changes job, so ci-ok still reports; runs on main are never cancelled.
 # GitHub-hosted runners only.
 
 on:
@@ -21,7 +21,7 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
