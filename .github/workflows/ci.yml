@@ -1,26 +1,22 @@
 name: ci
 
-# Gate for every push to main (and PRs, for a future public repo):
-#   pin-check · rust-quality × {x86_64, aarch64} · live e2e at the pins × {x86_64, aarch64}
-# cursor/** branches get pin-check + rust-quality only. Doc-only changes skip CI;
-# versions.lock.md always runs it. GitHub-hosted runners only.
+# Gate for main (work lands there directly), cursor/** branches, PRs and dispatches.
+#   pin-check                          every run (pins, workflow rules)
+#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build
+#   msrv                               cargo check at the crates' rust-version
+#   e2e-pin × {x86_64, aarch64}        live suites at the pins; push to main, PRs and
+#                                      dispatches (not cursor/** pushes)
+#   ci-ok                              one verdict over all of the above
+# Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
+# the changes job, so ci-ok still reports.
+# GitHub-hosted runners only.
 
 on:
   push:
     branches:
       - main
       - "cursor/**"
-    paths:
-      - "**"
-      - "!**/*.md"
-      - "!docs/**"
-      - "versions.lock.md"
   pull_request:
-    paths:
-      - "**"
-      - "!**/*.md"
-      - "!docs/**"
-      - "versions.lock.md"
   workflow_dispatch:
 
 concurrency:
@@ -36,6 +32,23 @@ env:
   CRS_TAG: v4.29.0
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.d.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Docs-only change?
+        id: d
+        env:
+          BASE: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: ./scripts/ci-changes.sh
+
   pin-check:
     name: pin-check
     runs-on: ubuntu-24.04
@@ -49,6 +62,8 @@ jobs:
 
   rust-quality:
     name: rust-quality (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -94,6 +109,8 @@ jobs:
 
   msrv:
     name: msrv (rust-version)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -113,8 +130,40 @@ jobs:
 
   e2e-pin:
     name: e2e-pin
-    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
-    needs: pin-check
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
+
+  ci-ok:
+    name: ci-ok
+    needs: [changes, pin-check, rust-quality, msrv, e2e-pin]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job passed (or was skipped by design)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          E2E_WANTED: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          docs_only = os.environ["DOCS_ONLY"] == "true"
+          e2e_wanted = os.environ["E2E_WANTED"] == "true"
+          heavy = {"rust-quality", "msrv", "e2e-pin"}
+          bad = []
+          for job, v in needs.items():
+              r = v["result"]
+              ok = r == "success" or (r == "skipped" and (
+                  (docs_only and job in heavy) or (job == "e2e-pin" and not e2e_wanted)))
+              print(f"{'ok  ' if ok else 'FAIL'} {job}: {r}")
+              if not ok:
+                  bad.append(f"{job}={r}")
+          if bad:
+              print(f"::error::ci-ok: {', '.join(bad)}")
+              sys.exit(1)
+          PY
