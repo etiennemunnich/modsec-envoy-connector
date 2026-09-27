@@ -43,6 +43,19 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not claim Mac-only proofs from cloud CI.
 
+## CI rules
+
+1. **A proof cites a run only after reading it.** For each run URL, record `event`, `conclusion` and `headSha` from `gh run view <id> --json event,conclusion,headSha`. Never label a `workflow_dispatch` run as "scheduled"; a schedule is proven only by a run with `event=schedule`.
+2. **Every new or changed check ships with a negative control.** Break it on a `cursor/ci-negctl-*` branch, link the red run, then link the green run on `main`. A check that never went red is unproven.
+3. **No vacuous passes.** No `|| true`, `continue-on-error` or soft asserts on assertion paths. Guards use `var="$(cmd)"`, never `echo "$(cmd)"`. Suites assert a minimum count (PASS ≥ N, tests selected > 0), not only "no failures". Never call functions as `cond && fn` under `set -e`.
+4. **Pin runners and toolchains; never float.** `ubuntu-24.04` / `ubuntu-24.04-arm` together, never `ubuntu-latest`. Rust comes from `rust-toolchain.toml`. Actions are pinned by full commit SHA with a `# vX.Y.Z` comment. No third-party actions in jobs with write scopes. (`scripts/check-workflows.sh` enforces the mechanical parts.)
+5. **Cache keys include everything that changes the output:** OS id + version, arch, upstream tag, the hash of the build script, the toolchain file.
+6. **Report jobs use `if: ${{ !cancelled() }}`, never `always()`.** A cancelled run must not file a failure issue.
+7. **`main` runs are never cancelled:** `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`.
+8. **Watchers** propose the latest stable *and* the top patch on the pinned line, warn on release lines the pattern does not cover, dedupe only on a recorded result (never on "issue exists"), create tracking state only after the dispatch succeeded, and report their own failures.
+9. **Releases are gated.** The tag commit must be on `main` and the required `ci` checks green for that SHA before anything is pushed to GHCR or released.
+10. **Workflow comments and docs match the triggers.** When you change `on:` or `if:`, update the workflow's header comment and `docs/testing.md` in the same commit.
+
 ## Docs
 
 On **substantive** architecture / fail-mode / protocol / CI / pin changes: update **`README.md`** (and product how-it-works when this repo owns it). Prefer honesty over completeness theater.
