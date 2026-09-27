@@ -6,3 +6,12 @@ This product includes software developed for an Envoy ExternalProcessor
 
 Licensed under the Apache License, Version 2.0.
 See the LICENSE file in the project root.
+
+proto/ vendors Protocol Buffers definitions, unmodified, and
+crates/ext-proc-modsec/src/pb/ is code generated from them:
+  - Envoy data-plane API (envoyproxy/envoy api/, v1.39.1) — Apache-2.0,
+    Copyright Envoy Project Authors
+  - cncf/xds (xds/, udpa/) — Apache-2.0, Copyright CNCF xDS API Working Group
+  - protoc-gen-validate (validate/) — Apache-2.0, Copyright Buf Technologies
+  - Protocol Buffers well-known types (google/protobuf/) — BSD-3-Clause,
+    Copyright Google Inc.

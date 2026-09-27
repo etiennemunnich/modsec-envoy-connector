@@ -1,0 +1,19 @@
+# Offline generator for the committed ext_proc protobuf/gRPC code in
+# crates/ext-proc-modsec/src/pb/. Not a workspace member, so its build-time
+# dependencies never reach the connector's Cargo.lock. Run via
+# scripts/gen-protos.sh (needs protoc).
+
+[package]
+name = "protogen"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+prost = "0.14"
+prost-build = "0.14"
+prost-types = "0.14"
+tonic-prost-build = "0.14"
