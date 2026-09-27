@@ -26,5 +26,9 @@ rule "remote action not pinned by commit SHA with a # vX.Y.Z comment" \
 rule "floating runner label (use ubuntu-24.04 / ubuntu-24.04-arm)" \
   "$(grep -nE 'ubuntu-latest' "${files[@]}" || true)"
 
+# always() also runs after a cancel, so a cancelled run would file a failure issue.
+rule "always() in a condition (use \${{ !cancelled() }})" \
+  "$(grep -nE 'if:.*always\(\)' "${files[@]}" || true)"
+
 [[ "${bad}" -eq 0 ]] || exit 1
 echo "check-workflows OK: ${#files[@]} files"
