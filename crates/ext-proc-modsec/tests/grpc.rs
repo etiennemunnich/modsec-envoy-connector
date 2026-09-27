@@ -363,6 +363,69 @@ async fn response_before_request_fails_closed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn envoy_local_reply_without_request_passes_through() {
+    let h = start().await;
+    for status in ["400", "404", "503"] {
+        let mut s = Stream::open(h.addr).await;
+        let r = s.send(resp_headers(status, &[], false)).await.unwrap();
+        assert!(
+            matches!(r.response, Some(ProcResponse::ResponseHeaders(_))),
+            "{status}: Envoy's local reply status must pass through, got {:?}",
+            r.response
+        );
+        let r = s.send(resp_body(b"Bad Request", true)).await.unwrap();
+        assert!(
+            matches!(r.response, Some(ProcResponse::ResponseBody(_))),
+            "{status}: local reply body must continue, got {:?}",
+            r.response
+        );
+    }
+    assert_eq!(h.metrics.local_reply_passthrough_total(), 3);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_without_request_below_400_fails_closed() {
+    let h = start().await;
+    for status in ["200", "204", "302", "399", "600", "abc"] {
+        let mut s = Stream::open(h.addr).await;
+        let r = s.send(resp_headers(status, &[], true)).await.unwrap();
+        let (code, details, _) = immediate(&r).expect("immediate");
+        assert_eq!(code, 500, "status {status} without a request must fail closed");
+        assert_eq!(details, "modsec_fail_closed");
+        s.expect_closed().await;
+    }
+    assert_eq!(h.metrics.local_reply_passthrough_total(), 0);
+    assert_eq!(h.metrics.fail_closed_total(), 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_reply_does_not_open_the_request_path() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert!(matches!(
+        s.send(resp_headers("400", &[], false))
+            .await
+            .unwrap()
+            .response,
+        Some(ProcResponse::ResponseHeaders(_))
+    ));
+    let r = s.send(req_body(b"x", true)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+
+    let mut s = Stream::open(h.addr).await;
+    s.send(resp_headers("400", &[], false)).await.unwrap();
+    let r = s.send(req_headers("GET", "/", &[], true)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+
+    let mut s = Stream::open(h.addr).await;
+    s.send(resp_headers("400", &[], false)).await.unwrap();
+    let r = s.send(resp_headers("400", &[], false)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 500);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_request_headers_fail_closed() {
     let h = start().await;
     let mut s = Stream::open(h.addr).await;

@@ -76,6 +76,7 @@ pub struct ConnectorMetrics {
     deny: AtomicU64,
     fail_closed: AtomicU64,
     stream_errors: AtomicU64,
+    local_reply_passthrough: AtomicU64,
     request_body_bytes: AtomicU64,
     response_body_bytes: AtomicU64,
     phase_request_headers: Histogram,
@@ -122,6 +123,14 @@ impl ConnectorMetrics {
         self.stream_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_local_reply_passthrough(&self) {
+        self.local_reply_passthrough.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn local_reply_passthrough_total(&self) -> u64 {
+        self.local_reply_passthrough.load(Ordering::Relaxed)
+    }
+
     pub fn deny_total(&self) -> u64 {
         self.deny.load(Ordering::Relaxed)
     }
@@ -137,7 +146,7 @@ impl ConnectorMetrics {
     /// Render Prometheus text exposition (format 0.0.4).
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(4096);
-        let counters: [(&str, &str, &AtomicU64); 7] = [
+        let counters: [(&str, &str, &AtomicU64); 8] = [
             (
                 "ext_proc_requests_total",
                 "HTTP exchanges seen (request_headers messages)",
@@ -162,6 +171,11 @@ impl ConnectorMetrics {
                 "ext_proc_stream_errors_total",
                 "gRPC stream read errors from Envoy",
                 &self.stream_errors,
+            ),
+            (
+                "ext_proc_local_reply_passthrough_total",
+                "Envoy 4xx/5xx local replies with no request phase, passed through uninspected",
+                &self.local_reply_passthrough,
             ),
             (
                 "ext_proc_request_body_bytes_total",

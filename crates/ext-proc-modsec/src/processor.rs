@@ -128,6 +128,9 @@ pub struct Exchange {
     request_id: Option<String>,
     endpoints: ConnectionEndpoints,
     request_settled: bool,
+    /// Set once response headers of an Envoy local reply (no request on this
+    /// stream) were passed through; only its response body may follow.
+    local_reply: bool,
 }
 
 impl Exchange {
@@ -139,6 +142,7 @@ impl Exchange {
             request_id: None,
             endpoints: ConnectionEndpoints::fallback(),
             request_settled: false,
+            local_reply: false,
         }
     }
 
@@ -180,7 +184,7 @@ impl Exchange {
     ) -> Step {
         let phase = Phase::RequestHeaders;
         self.metrics.inc_requests();
-        if self.session.is_some() {
+        if self.session.is_some() || self.local_reply {
             return self.fail_closed(phase, "request_headers received twice on one stream");
         }
         self.request_id = header(headers, "x-request-id");
@@ -268,6 +272,9 @@ impl Exchange {
                 return self.fail_closed(phase, "body handler called for a headers phase")
             }
         };
+        if self.local_reply && dir == Direction::Response {
+            return Step::Reply(responses::body_continue(dir));
+        }
         let Some(mut session) = self.session.take() else {
             return self.fail_closed(phase, "body received before headers");
         };
@@ -313,10 +320,11 @@ impl Exchange {
 
     fn response_headers(&mut self, headers: &HttpHeaders) -> Step {
         let phase = Phase::ResponseHeaders;
+        let status = header(headers, ":status").and_then(|s| s.parse::<i32>().ok());
         let Some(mut session) = self.session.take() else {
-            return self.fail_closed(phase, "response_headers received before request_headers");
+            return self.response_without_request(status);
         };
-        let Some(status) = header(headers, ":status").and_then(|s| s.parse::<i32>().ok()) else {
+        let Some(status) = status else {
             return self.fail_closed(phase, "response_headers without a valid :status");
         };
         let t0 = Instant::now();
@@ -347,6 +355,32 @@ impl Exchange {
 
         self.session = Some(session);
         Step::Reply(responses::headers_continue(Direction::Response))
+    }
+
+    /// Response headers on a stream that never carried request headers.
+    ///
+    /// Envoy only does this for its own local reply to a request it rejected
+    /// before the request phase (e.g. a `#fragment` URI → 400): with
+    /// `request_header_mode: SEND`, nothing reaches the origin without a
+    /// request_headers message first. A 4xx/5xx is therefore already closed
+    /// and passes through unchanged; anything else fails closed.
+    fn response_without_request(&mut self, status: Option<i32>) -> Step {
+        let phase = Phase::ResponseHeaders;
+        match status {
+            Some(code) if (400..=599).contains(&code) && !self.local_reply => {
+                self.local_reply = true;
+                self.metrics.inc_local_reply_passthrough();
+                info!(
+                    request_id = self.rid(),
+                    phase = phase.as_str(),
+                    action = "local_reply_passthrough",
+                    status = code,
+                    "Envoy local reply without request phase passed through"
+                );
+                Step::Reply(responses::headers_continue(Direction::Response))
+            }
+            _ => self.fail_closed(phase, "response_headers received before request_headers"),
+        }
     }
 
     fn mark_request_allowed(&mut self) {
