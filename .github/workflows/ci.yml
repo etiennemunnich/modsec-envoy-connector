@@ -28,11 +28,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  ENVOY_PIN: v1.39.1
-  MODSECURITY_PIN: v3.0.16
-  CRS_TAG: v4.29.0
-
 jobs:
   changes:
     name: changes
@@ -57,7 +52,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Assert versions.lock.md pins
+      - name: versions.lock.md pins (and install-script fallbacks)
         run: ./scripts/check-pins.sh
       - name: Workflow rules (SHA-pinned actions, pinned runners)
         run: ./scripts/check-workflows.sh
@@ -81,6 +76,13 @@ jobs:
 
       - uses: ./.github/actions/rust-toolchain
 
+      - name: libmodsecurity pin (versions.lock.md)
+        id: pins
+        run: |
+          set -euo pipefail
+          modsec="$(./scripts/stable-releases.sh pin modsecurity)"
+          echo "modsec=${modsec}" | tee -a "$GITHUB_OUTPUT"
+
       - name: OS id
         id: os
         run: . /etc/os-release && echo "id=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
@@ -92,12 +94,12 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ env.MODSECURITY_PIN }}-${{ hashFiles('rust-toolchain.toml') }}-
+          key: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:
-          pin: ${{ env.MODSECURITY_PIN }}
+          pin: ${{ steps.pins.outputs.modsec }}
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
@@ -119,9 +121,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: libmodsecurity pin (versions.lock.md)
+        id: pins
+        run: |
+          set -euo pipefail
+          modsec="$(./scripts/stable-releases.sh pin modsecurity)"
+          echo "modsec=${modsec}" | tee -a "$GITHUB_OUTPUT"
       - uses: ./.github/actions/libmodsecurity
         with:
-          pin: ${{ env.MODSECURITY_PIN }}
+          pin: ${{ steps.pins.outputs.modsec }}
       - name: cargo check with the crates' rust-version
         run: |
           set -euo pipefail

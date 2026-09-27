@@ -82,7 +82,7 @@ jobs:
           ### Ready to bump on main
           Both architectures passed with \`${key}=${VERSION}\` and the other axes at their pins. To adopt it, in one commit on \`main\`:
           - \`versions.lock.md\`: table row + machine-readable \`${key}=${VERSION}\`
-          - \`scripts/check-pins.sh\` default and \`.github/workflows/ci.yml\` \`env.${key}\`
+          - the offline fallback in the install script for that axis (\`scripts/check-pins.sh\` fails until it matches)
           - docs that quote the pin (\`docs/*.md\` frontmatter), then let \`ci\` re-run as the gate.
           EOF
           fi
