@@ -37,7 +37,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 |------|-------|------|
 | **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; `e2e-pin` (BUFFERED: live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke) and thin `e2e-streamed` (STREAMED smoke + fail-closed) on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict |
 | **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; results as issues (see `docs/testing.md`) |
-| **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`; `scripts/ci-live-e2e.sh` runs a CI cell locally |
+| **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`, `perf.sh` (latency floors); `scripts/ci-live-e2e.sh` runs a CI cell locally |
 | **CRS** | go-ftw | **H1** rule fidelity only |
 | **Fail-closed** | `demo/scripts/fail-closed.sh` | absolute gate: kill → 500, hang → 504, bad rules → 500, origin untouched |
 
@@ -96,4 +96,4 @@ Copy into the PR body (or tick the PR template). Skip rows that truly do not app
 - `proto/` → `crates/ext-proc-modsec/src/pb/` — vendored Envoy ext_proc proto closure and its committed generated code; never hand-edit `pb/`, rerun `scripts/gen-protos.sh`.
 - No new crates without a reason in the commit; the runtime set is tokio, tokio-stream, tonic (server + codegen), prost, tonic-prost, tracing.
 
-Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `scripts/probe-modsec-pin.sh`, `scripts/envoy-candidate-smoke.sh`, `scripts/crs-version-probe.sh`. Anything else from `modsec-envoy-experiement` (perf harness, WebSocket / gRPC hop tracing) — port deliberately; do not dump experiment history wholesale.
+Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`, `perf.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `scripts/probe-modsec-pin.sh`, `scripts/envoy-candidate-smoke.sh`, `scripts/crs-version-probe.sh`. Anything else from `modsec-envoy-experiement` (WebSocket / gRPC hop tracing) — port deliberately; do not dump experiment history wholesale.

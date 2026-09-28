@@ -49,6 +49,7 @@ curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # c
 | [`go-ftw.sh`](./scripts/go-ftw.sh) | Runs the OWASP CRS regression tests with [go-ftw](https://github.com/coreruleset/go-ftw) against the demo (HTTP/1.x, status codes only). `smoke` (demo tests + body-heavy CRS SQLi/XSS tests), `body`, or `full`. Results in `demo/.run/go-ftw/`. |
 | [`install-go-ftw.sh`](./scripts/install-go-ftw.sh) | Installs go-ftw (Homebrew tap, or `go install`). |
 | [`hop-trace.sh`](./scripts/hop-trace.sh) | Sends one request and shows every hop by request id: Envoy access log, connector phase decisions, CRS rule matches, and whether the origin received it. `--expect-status`, `--expect-origin yes\|no`, `--proto h2`. |
+| [`perf.sh`](./scripts/perf.sh) | Latency samples (p50/p99) on allow/deny GET+POST paths through the live demo. Floors: `PERF_N ≥ 10`, every required WAF path must match expected status for all N samples, ≥ 6 WAF paths. Empty/partial runs fail. Not an SLO. Results in `demo/.run/perf/`. |
 | [`down.sh`](./scripts/down.sh) | Stops everything the demo started. |
 | [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit with its request id), a detach helper, and shared settings. |
 
