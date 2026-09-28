@@ -16,7 +16,7 @@ use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_server
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::{
-    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
+    HttpBody, HttpHeaders, HttpTrailers, ProcessingRequest, ProcessingResponse,
 };
 use ext_proc_modsec::pb::google::protobuf::{value::Kind, Struct, Value};
 use ext_proc_modsec::{metrics_server, ModSecProcessor};
@@ -167,6 +167,23 @@ fn resp_body(body: &[u8], eos: bool) -> ProcessingRequest {
         })),
         ..Default::default()
     }
+}
+
+fn req_trailers(extra: &[(&str, &str)]) -> ProcessingRequest {
+    let headers: Vec<HeaderValue> = extra.iter().map(|(k, v)| hv(k, v)).collect();
+    ProcessingRequest {
+        request: Some(ProcRequest::RequestTrailers(HttpTrailers {
+            trailers: Some(HeaderMap { headers }),
+        })),
+        ..Default::default()
+    }
+}
+
+fn assert_fail_closed(r: &ProcessingResponse, what: &str) {
+    let (code, details, _) =
+        immediate(r).unwrap_or_else(|| panic!("{what}: expected ImmediateResponse"));
+    assert_eq!(code, 500, "{what}: want 500, got {code} details={details}");
+    assert_eq!(details, "modsec_fail_closed", "{what}");
 }
 
 fn immediate(r: &ProcessingResponse) -> Option<(i32, String, Vec<u8>)> {
@@ -483,6 +500,244 @@ async fn connect_is_rejected() {
     let (code, details, _) = immediate(&r).expect("immediate");
     assert_eq!(code, 403);
     assert_eq!(details, "connect_rejected");
+}
+
+// --- Class 3: per-request engine Err after the session is open -----------------
+// A real libmodsecurity Err cannot be forced through a well-behaved Envoy, so
+// these drive the same fail_closed path over gRPC. Floor: ≥ 8 cases named
+// *fails_closed* that assert ImmediateResponse 500 (see docs/fail-closed.md).
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_engine_err_on_request_body_fails_closed() {
+    // Mid-exchange: headers Continue, then fail-inject on append → 500.
+    // Negative control (same request, no inject) Continues — see
+    // benign_request_body_continues / streamed_benign_body_chunks_continue.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    h.processor.engine().inject_fail_next_transaction_step();
+    let r = s.send(req_body(b"name=alice", true)).await.unwrap();
+    assert_fail_closed(&r, "injected append Err");
+    s.expect_closed().await;
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn injected_engine_err_negative_control_continues() {
+    // Same bytes as the inject test; without arming the hook, the path Continues.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    let r = s.send(req_body(b"name=alice", true)).await.unwrap();
+    assert_continue(&r, "body without inject");
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+    assert_eq!(h.metrics.allow_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn append_after_request_body_finished_fails_closed() {
+    // Real EngineError from the façade (phase-order), after a successful session.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    assert_continue(&s.send(req_body(b"name=alice", true)).await.unwrap(), "eos");
+    let r = s.send(req_body(b"extra", true)).await.unwrap();
+    assert_fail_closed(&r, "body after finish");
+    s.expect_closed().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_body_before_response_headers_fails_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    let r = s.send(resp_body(b"oops", true)).await.unwrap();
+    assert_fail_closed(&r, "response body before headers");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nul_in_request_header_fails_closed() {
+    // CString rejection → EngineError::Transaction during process_request_headers
+    // (session already opened by open_transaction).
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let mut req = req_headers("GET", "/", &[("x-bad", "ok")], true);
+    if let Some(ProcRequest::RequestHeaders(ref mut h)) = req.request {
+        if let Some(ref mut map) = h.headers {
+            map.headers.push(HeaderValue {
+                key: "x-nul".into(),
+                raw_value: b"a\0b".to_vec(),
+                ..Default::default()
+            });
+        }
+    }
+    let r = s.send(req).await.unwrap();
+    assert_fail_closed(&r, "NUL in header value");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_response_headers_fail_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp1",
+    );
+    let r = s.send(resp_headers("200", &[], false)).await.unwrap();
+    assert_fail_closed(&r, "duplicate response headers");
+}
+
+// --- BUFFERED / STREAMED body path (gRPC multi-chunk = Envoy STREAMED) --------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_benign_body_chunks_continue() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    assert_continue(&s.send(req_body(b"name=", false)).await.unwrap(), "chunk1");
+    assert_continue(&s.send(req_body(b"alice", false)).await.unwrap(), "chunk2");
+    let r = s.send(req_body(b"", true)).await.unwrap();
+    assert_continue(&r, "eos empty");
+    assert_eq!(h.metrics.allow_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_sqli_denied_at_end_of_stream() {
+    // Phase-2 rule fires at process_request_body (EOS), after benign chunks Continue.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    assert_continue(&s.send(req_body(b"q=1 ", false)).await.unwrap(), "chunk1");
+    assert_continue(&s.send(req_body(b"UNION ", false)).await.unwrap(), "chunk2");
+    let r = s
+        .send(req_body(b"SELECT password FROM users", true))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("deny at EOS").0, 403);
+    s.expect_closed().await;
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_request_body_eos_continues() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    let r = s.send(req_body(b"", true)).await.unwrap();
+    assert_continue(&r, "empty eos body");
+    assert_eq!(h.metrics.allow_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trailers_without_session_fail_closed() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_trailers(&[("x-evil", "1 UNION SELECT 1")]))
+        .await
+        .unwrap();
+    assert_fail_closed(&r, "trailers with no session");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trailers_after_allowed_body_continue_uninspected() {
+    // Trailers are not inspected; they must not open a hole and must not deny.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    assert_continue(
+        &s.send(req_body(b"name=alice", true)).await.unwrap(),
+        "body",
+    );
+    let r = s
+        .send(req_trailers(&[("x-attack", "1 UNION SELECT password")]))
+        .await
+        .unwrap();
+    assert!(
+        matches!(r.response, Some(ProcResponse::RequestTrailers(_))),
+        "trailers Continue (uninspected), got {:?}",
+        r.response
+    );
+    assert_eq!(h.metrics.deny_total(), 0);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
 }
 
 async fn http_get(addr: SocketAddr, path: &str) -> String {

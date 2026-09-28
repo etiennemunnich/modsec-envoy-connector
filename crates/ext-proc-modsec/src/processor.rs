@@ -55,6 +55,10 @@ impl ModSecProcessor {
         &self.metrics
     }
 
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.engine
+    }
+
     /// A fresh per-stream state, exactly as `Process` creates one.
     pub fn exchange(&self) -> Exchange {
         Exchange::new(Arc::clone(&self.engine), Arc::clone(&self.metrics))
@@ -217,12 +221,8 @@ impl Exchange {
             Some(ProcRequest::RequestBody(b)) => self.body(Phase::RequestBody, &b),
             Some(ProcRequest::ResponseHeaders(h)) => self.response_headers(&h),
             Some(ProcRequest::ResponseBody(b)) => self.body(Phase::ResponseBody, &b),
-            Some(ProcRequest::RequestTrailers(_)) => {
-                Step::Reply(responses::trailers_continue(Direction::Request))
-            }
-            Some(ProcRequest::ResponseTrailers(_)) => {
-                Step::Reply(responses::trailers_continue(Direction::Response))
-            }
+            Some(ProcRequest::RequestTrailers(_)) => self.trailers(Direction::Request),
+            Some(ProcRequest::ResponseTrailers(_)) => self.trailers(Direction::Response),
             None => self.fail_closed(Phase::RequestHeaders, "ProcessingRequest without a request"),
         }
     }
@@ -366,6 +366,21 @@ impl Exchange {
 
         self.session = Some(session);
         Step::Reply(responses::body_continue(dir))
+    }
+
+    /// Trailers are not inspected (SecLang / CRS have no trailer phase here).
+    /// Without a session they must not open a path past fail-closed: answer
+    /// Continue only when a request was already allowed, or for an Envoy
+    /// local-reply stream that never had a request.
+    fn trailers(&self, dir: Direction) -> Step {
+        if self.session.is_some() || self.request_settled || self.local_reply {
+            return Step::Reply(responses::trailers_continue(dir));
+        }
+        let phase = match dir {
+            Direction::Request => Phase::RequestBody,
+            Direction::Response => Phase::ResponseBody,
+        };
+        self.fail_closed(phase, "trailers received without an open session")
     }
 
     fn response_headers(&mut self, headers: &HttpHeaders) -> Step {
