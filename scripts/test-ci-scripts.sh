@@ -86,6 +86,42 @@ check "check-workflows: checkout, last step"  1 "$(wf '      - uses: actions/che
         with:
           fetch-depth: 0')"
 
+# Cron presence for product schedule workflows (skip when files absent — covered above).
+cron_neg() {
+  local d="${TMP}/cron-neg" rc
+  mkdir -p "${d}/.github/workflows" "${d}/.github/actions/x" "${d}/scripts"
+  cp "${ROOT}/scripts/check-workflows.sh" "${d}/scripts/"
+  echo 'runs: { using: composite, steps: [] }' >"${d}/.github/actions/x/action.yml"
+  # Minimal valid job so other rules pass; omit schedule cron on purpose.
+  cat >"${d}/.github/workflows/stable-window.yml" <<'YAML'
+on:
+  workflow_dispatch:
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+YAML
+  cat >"${d}/.github/workflows/crs-full.yml" <<'YAML'
+on:
+  schedule:
+    - cron: "41 3 7 * *"
+  workflow_dispatch:
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+YAML
+  "${d}/scripts/check-workflows.sh" >/dev/null 2>&1 && rc=0 || rc=1
+  echo "${rc}"
+}
+check "check-workflows: stable-window missing schedule cron (neg)" 1 "$(cron_neg)"
+
 # --- ci-live-e2e smoke summary + floor (body_mode suffix regression) --------
 # Keep SUMMARY_RE / smoke floor rules in sync with scripts/ci-live-e2e.sh.
 SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS'

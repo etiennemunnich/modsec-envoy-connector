@@ -84,6 +84,15 @@ GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarc
 | `crs-full` | monthly (7th, 03:41 UTC), dispatch | full CRS go-ftw at the pins | issue `crs-full: go-ftw failing` on failure, closed when green |
 | `release` | tag `vX.Y.Z` (`vX.Y.Z-rc.N` = pre-release); dispatch | tags only: `gate` = the tag commit is on `main` and has green `ci-ok`, `pin-check`, `rust-quality` × arch, `msrv`, `e2e-pin` × arch. Then release build per arch → `ext-proc-modsec-<ver>-linux-{x86_64,aarch64}.tar.gz` (+ `.sha256`; bundles `libmodsecurity.so`), per-arch image pushed by digest, multi-arch `ghcr.io/<owner>/envoy-modsec-connex:<ver>` from both digests, GitHub Release (tag only); build provenance attested once the repo is public. A dispatch skips the gate and the Release but **does push** the image, tagged `sha-<short>` | Release page |
 
+### Schedule proof (cron configured + last proven run)
+
+A schedule is proven only by a run with `event=schedule` (`gh run view <id> --json event,conclusion,headSha`). `workflow_dispatch` proves the same job graph before the cron fires; it is **not** a schedule proof. `scripts/check-workflows.sh` asserts both workflows keep their cron + `workflow_dispatch`.
+
+| Workflow | Cron (UTC) | Last proven run | `event` | `conclusion` | `headSha` |
+|----------|------------|-----------------|---------|--------------|-----------|
+| `stable-window` | `23 4 * * 1` (Mon) | [36413020845](https://github.com/etiennemunnich/envoy-modsec-connex/actions/runs/36413020845) | **schedule** | success | `3249f96909991437afb2f4effb5de564a0307c13` |
+| `crs-full` | `41 3 7 * *` (7th) | [36363409290](https://github.com/etiennemunnich/envoy-modsec-connex/actions/runs/36363409290) (path via dispatch; **no `event=schedule` yet** — next window ~7th of month) | workflow_dispatch | success | `bab5dc79c3ef75be63bd5ad1e7c63ec91a916d7c` |
+
 Candidates never bump anything: after a green `stable-candidate`, a human or agent edits `versions.lock.md` (plus the offline fallback in that axis's install script, which `pin-check` compares) on `main`, and `ci` re-runs as the gate.
 
 Every live suite must also reach a floor of passing checks, not just exit 0: smoke body-path checks ≥ 5, fail-modes ≥ 57 (class-3 gRPC ≥ 8), go-ftw demo tests ≥ 8, CRS body ids ≥ 100, CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.

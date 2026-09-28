@@ -41,5 +41,35 @@ rule "actions/checkout without persist-credentials: false in its with: block" \
 rule "always() in a condition (use \${{ !cancelled() }})" \
   "$(grep -nE 'if:.*always\(\)' "${files[@]}" || true)"
 
+# Scheduled version gates must keep an explicit cron (and stay dispatchable).
+# A missing cron is a silent regression: the weekly/monthly path never fires.
+# Only enforced when the product workflows are present (skip throwaway fixtures
+# used by scripts/test-ci-scripts.sh).
+require_cron() { # require_cron <workflow> <expected-cron-substring>
+  local wf=".github/workflows/$1" want="$2"
+  if [[ ! -f "$wf" ]]; then
+    echo "$wf: missing workflow file"
+    return
+  fi
+  if ! grep -qE '^[[:space:]]*schedule:' "$wf"; then
+    echo "$wf: missing on.schedule"
+    return
+  fi
+  if ! grep -qF "$want" "$wf"; then
+    echo "$wf: expected cron containing '$want'"
+    return
+  fi
+  if ! grep -qE '^[[:space:]]*workflow_dispatch:' "$wf"; then
+    echo "$wf: missing workflow_dispatch (needed to prove the path before schedule fires)"
+  fi
+}
+if [[ -f .github/workflows/stable-window.yml || -f .github/workflows/crs-full.yml ]]; then
+  rule "stable-window / crs-full must keep schedule cron + workflow_dispatch" \
+    "$( {
+        require_cron stable-window.yml '23 4 * * 1'
+        require_cron crs-full.yml '41 3 7 * *'
+      } )"
+fi
+
 [[ "${bad}" -eq 0 ]] || exit 1
 echo "check-workflows OK: ${#files[@]} files"
