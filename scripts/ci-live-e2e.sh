@@ -81,6 +81,11 @@ MIN_FTW_BODY="${MIN_FTW_BODY:-100}"
 MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 
+# Suite summary lines for the report table. Must match mid-line suffixes
+# (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.
+# Shared with scripts/test-ci-scripts.sh (keep in sync).
+SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE'
+
 # ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
 ftw_success() {
   local n
@@ -93,6 +98,8 @@ floor() {
   local n
   case "$1" in
     smoke)
+      # Require an explicit SMOKE PASSED line (not just body_checks=N from a fake log).
+      grep -qE '\bSMOKE PASSED\b' "$2" || { echo "missing SMOKE PASSED"; return 1; }
       n="$(grep -Eo 'body_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_SMOKE_BODY}" ]] || { echo "body_checks=${n:-0} < ${MIN_SMOKE_BODY}"; return 1; }
       ;;
@@ -146,7 +153,8 @@ for suite in ${SUITES}; do
   esac
   t0=$SECONDS
   if "${cmd[@]}" 2>&1 | tee "${log}"; then result=PASS; else result=FAIL; fi
-  summary="$(grep -E 'summary: PASS=|^(demo tests|CRS body ids|CRS full):|PASSED$|FAILED$|HOP-TRACE' "${log}" \
+  # grep may find nothing on unknown suites; keep the pipeline from aborting under pipefail.
+  summary="$( { grep -E "${SUMMARY_RE}" "${log}" || true; } \
     | sed -E 's/ exit=[0-9]+ log=.*//; s/\|/\//g' | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
   if [[ "${result}" == PASS ]] && ! why="$(floor "${suite}" "${log}")"; then
     result=FAIL

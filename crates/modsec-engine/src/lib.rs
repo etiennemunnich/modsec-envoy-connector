@@ -488,8 +488,7 @@ impl InspectionSession {
         if !self.request_headers_done {
             return Err(tx_err("finish_request_body before request headers"));
         }
-        self._engine
-            .take_injected_fail("process_request_body")?;
+        self._engine.take_injected_fail("process_request_body")?;
         // SAFETY: live transaction.
         check("process_request_body", unsafe {
             ffi::msc_process_request_body(self.raw())
@@ -568,8 +567,7 @@ impl InspectionSession {
         if !self.response_headers_done {
             return Err(tx_err("finish_response_body before response headers"));
         }
-        self._engine
-            .take_injected_fail("process_response_body")?;
+        self._engine.take_injected_fail("process_response_body")?;
         // SAFETY: live transaction.
         check("process_response_body", unsafe {
             ffi::msc_process_response_body(self.raw())
