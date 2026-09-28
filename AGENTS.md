@@ -64,9 +64,30 @@ On **substantive** architecture / fail-mode / protocol / CI / pin changes: updat
 
 Apache-2.0 — `Copyright (c) 2026 Etienne Munnich`. See `LICENSE` and `CONTRIBUTING.md` (DCO; no CLA).
 
-## Git
+## Git / PR workflow
 
-After a **validated** moderate slice: `git commit` + `git push` on the working tip branch. No force-push to shared branches unless Etienne asks. No secrets in commits.
+**Remaining work lands via pull requests — not direct pushes to `main`.**
+
+1. Branch from current `main`: `cursor/<short-name>` (agents may use `cursor/<short-name>-…`).
+2. Commit + push the branch; open a PR against `main`.
+3. Wait for **`ci-ok` green on both arches** (x86_64 + aarch64) for that PR head SHA.
+4. **Squash-merge** only after the checklist below is satisfied. Record the merge SHA when updating Project store status docs.
+5. Do **not** push commits straight to `main` for product/docs/CI work unless Etienne explicitly overrides for an emergency.
+
+After a **validated** moderate slice on the feature branch: `git commit` + `git push` (to the branch). No force-push to shared branches unless Etienne asks. No secrets in commits.
+
+### Test plan checklist (every PR)
+
+Copy into the PR body (or tick the PR template). Skip rows that truly do not apply and say why.
+
+- [ ] Fail-closed absolute: no `failure_mode_allow: true` on enforcement; no `Continue` after ModSec/FFI `Err`
+- [ ] Pins: `versions.lock.md` still accurate (or bumped deliberately in this PR)
+- [ ] Local: `cargo fmt` / `clippy -D warnings` / `cargo test --workspace --locked` (or docs-only and noted)
+- [ ] Workflows touched → `./scripts/check-workflows.sh`; CI scripts touched → `./scripts/test-ci-scripts.sh`
+- [ ] Live suites if behavior / demo / body-mode / fail-mode changed: smoke + fail-closed (and fail-modes / hop-trace / go-ftw as relevant); note Mac or `workflow_dispatch` run URL with `event`, `conclusion`, `headSha`
+- [ ] `ci-ok` green on the PR (both arches) before squash-merge
+- [ ] README stays product-only; agent/CI detail goes in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
+- [ ] Claims cite real runs (see CI rule 1) — never invent green
 
 ## Crate layout
 

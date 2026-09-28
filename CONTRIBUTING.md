@@ -25,17 +25,29 @@ CI builds with the toolchain in `rust-toolchain.toml`; rustup picks it up locall
 
 ## Pull requests
 
-- Branch from `main` (or the documented tip). Prefer `cursor/<short-name>-…` for agent work.
-- Keep PRs focused. Use the PR template checklist.
-- Update `README.md` / `versions.lock.md` when behavior or pins change.
+**Do not push product, docs, or CI changes straight to `main`.** Bootstrap used direct-to-`main`; remaining work uses PRs.
+
+1. Branch from current `main`: `cursor/<short-name>` (agent branches may append a short suffix).
+2. Keep the PR focused; one concern per PR when possible so CI can be judged in isolation.
+3. Open the PR → wait for **`ci-ok` green on both architectures** for the PR head SHA.
+4. **Squash-merge** into `main`. Then update any Project store status docs with the merge SHA.
+5. Prefer ordered stacks (merge + prove A before opening B) when later work depends on earlier gates.
+
+- Use the [PR template](./.github/PULL_REQUEST_TEMPLATE.md) checklist.
+- Update `README.md` only for product-facing behavior (README stays product-only — no CI/pin theater). Agent and contributor detail lives here and in `AGENTS.md` / `docs/`.
+- Update `versions.lock.md` when pins change.
 - Do not set `failure_mode_allow: true` on enforcement configs in the PR.
 
-### PR checklist (summary)
+### Test plan checklist
 
-- [ ] Fail-closed preserved (no enforcement fail-open; no `Continue` after ModSec Err)
+- [ ] Fail-closed preserved (no enforcement fail-open; no `Continue` after ModSec/FFI Err)
 - [ ] Pins in `versions.lock.md` still accurate (or bumped deliberately)
-- [ ] `ci-ok` green (or explained)
-- [ ] Mac / dispatch proofs noted if the change needs them (CRS full, fail-mode, H2)
+- [ ] Local gates: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace --locked` — or mark **docs-only**
+- [ ] If `.github/` or `scripts/ci-*.sh` changed: `./scripts/check-workflows.sh` / `./scripts/test-ci-scripts.sh`
+- [ ] Live proof when needed (smoke, fail-closed, fail-modes, hop-trace, go-ftw): Mac log path and/or Actions run URL with `gh run view <id> --json event,conclusion,headSha`
+- [ ] **`ci-ok` green on both arches** for this PR before squash-merge
+- [ ] No vacuous asserts; floors still hold (see `AGENTS.md` CI rules)
+- [ ] Honest claims only — cite runs; do not invent schedule/`workflow_dispatch` labels
 
 ## Test matrix
 
