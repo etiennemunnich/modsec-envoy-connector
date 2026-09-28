@@ -26,7 +26,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 - Set `failure_mode_allow: true` on enforcement paths.
 - Treat **BUFFERED_PARTIAL** as “CRS-complete” body inspection.
-- Claim **HTTP/3** or **WebSocket-frame** CRS without a proven QUIC / frame inspector path.
+- Never claim **HTTP/3** or **WebSocket-frame** CRS without a proven QUIC / frame inspector path. WebSocket **handshake** hop-trace (`--proto ws`) documents Envoy upgrade rejection only — not CRS on upgrade headers or frames.
 - Return **`Continue`** after ModSec / FFI `Err` (that is connector-lie fail-open → map to ImmediateResponse **500**).
 - Invent Envoy / ModSec / CRS tip flags or pins not in `versions.lock.md`.
 - Market go-ftw green as “H2 WAF proven” (go-ftw is **HTTP/1.x CRS fidelity** only).
