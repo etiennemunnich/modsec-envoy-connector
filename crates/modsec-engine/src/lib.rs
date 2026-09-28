@@ -34,6 +34,9 @@ use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[cfg(feature = "fail-inject")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tracing::{debug, info, warn};
 
 const CONNECTOR_INFO: &str = concat!("envoy-modsec-connex/", env!("CARGO_PKG_VERSION"));
@@ -132,6 +135,11 @@ pub struct Engine {
     msc: NonNull<ffi::ModSecurity>,
     rules: NonNull<ffi::RulesSet>,
     rules_paths: Vec<PathBuf>,
+    /// Test-only (`fail-inject` feature): next Transaction step on a session
+    /// from this engine returns [`EngineError`]. Per-engine so parallel tests
+    /// do not race. Compiled out of product builds.
+    #[cfg(feature = "fail-inject")]
+    fail_next: AtomicBool,
 }
 
 // SAFETY: after loading, `msc` and `rules` are only read by libmodsecurity
@@ -172,6 +180,8 @@ impl Engine {
                     msc,
                     rules,
                     rules_paths: Vec::with_capacity(paths.len()),
+                    #[cfg(feature = "fail-inject")]
+                    fail_next: AtomicBool::new(false),
                 },
                 _ => {
                     // SAFETY: free whichever half was allocated.
@@ -235,6 +245,28 @@ impl Engine {
     /// Paths that were successfully loaded at construction.
     pub fn rules_paths(&self) -> &[PathBuf] {
         &self.rules_paths
+    }
+
+    /// Arm a one-shot mid-exchange engine error on the next Transaction API
+    /// step for a session from this engine (test builds with `fail-inject` only).
+    #[cfg(feature = "fail-inject")]
+    pub fn inject_fail_next_transaction_step(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(feature = "fail-inject")]
+    fn take_injected_fail(&self, what: &str) -> Result<(), EngineError> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            Err(tx_err(format!("{what}: injected test failure")))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(feature = "fail-inject"))]
+    #[inline]
+    fn take_injected_fail(&self, _what: &str) -> Result<(), EngineError> {
+        Ok(())
     }
 
     /// Open one ModSecurity transaction for an ext_proc stream.
@@ -437,6 +469,7 @@ impl InspectionSession {
         if self.request_body_done {
             return Err(tx_err("append_request_body after request body finished"));
         }
+        self._engine.take_injected_fail("append_request_body")?;
         if chunk.is_empty() {
             return Ok(Decision::Allow);
         }
@@ -455,6 +488,8 @@ impl InspectionSession {
         if !self.request_headers_done {
             return Err(tx_err("finish_request_body before request headers"));
         }
+        self._engine
+            .take_injected_fail("process_request_body")?;
         // SAFETY: live transaction.
         check("process_request_body", unsafe {
             ffi::msc_process_request_body(self.raw())
@@ -514,6 +549,7 @@ impl InspectionSession {
         if self.response_body_done {
             return Err(tx_err("append_response_body after response body finished"));
         }
+        self._engine.take_injected_fail("append_response_body")?;
         if chunk.is_empty() {
             return Ok(Decision::Allow);
         }
@@ -532,6 +568,8 @@ impl InspectionSession {
         if !self.response_headers_done {
             return Err(tx_err("finish_response_body before response headers"));
         }
+        self._engine
+            .take_injected_fail("process_response_body")?;
         // SAFETY: live transaction.
         check("process_response_body", unsafe {
             ffi::msc_process_response_body(self.raw())

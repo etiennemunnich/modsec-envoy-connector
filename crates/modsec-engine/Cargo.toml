@@ -10,5 +10,10 @@ publish = false
 # build.rs links the system libmodsecurity (>= 3.0.13) via the pkg-config tool.
 links = "modsecurity"
 
+[features]
+# Test-only: lets gRPC integration tests force a mid-exchange EngineError.
+# Never enable on product builds (`cargo build -p ext-proc-modsec`).
+fail-inject = []
+
 [dependencies]
 tracing = { version = "0.1", default-features = false, features = ["std"] }

@@ -28,3 +28,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 [dev-dependencies]
 # gRPC client for the integration tests only; the shipped binary has no client stack.
 tonic = { version = "0.14", default-features = false, features = ["server", "codegen", "channel"] }
+# Enables the test-only fail-inject hook on modsec-engine for class-3 gRPC tests.
+# Feature unification applies only when this crate's tests are built; product
+# `cargo build -p ext-proc-modsec` keeps fail-inject off.
+modsec-engine = { path = "../modsec-engine", features = ["fail-inject"] }
