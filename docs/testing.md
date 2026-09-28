@@ -109,7 +109,7 @@ Every live suite must also reach a floor of passing checks, not just exit 0: smo
 - **go-ftw is HTTP/1.x only** and judges by status code. A green run says nothing about HTTP/2; the H2 evidence is `fail-modes.sh --proto h2`.
 - **Class 3** (per-request engine error mid-exchange) cannot be injected through a well-behaved Envoy; see [fail-closed.md](./fail-closed.md#why-class-3-has-no-live-envoy-drill). Covered by gRPC tests (real `EngineError` + test-only `fail-inject` feature off in the product binary), floor ≥ 8; `fail-modes.sh` runs them.
 - **STREAMED** is proven live with thin smoke + fail-closed on both arches; full CRS / go-ftw stay on BUFFERED. Phase-2/4 rules still decide at EOS.
-- **Trailers** are not inspected; without a session they fail closed so they cannot open a path alone.
+- **Trailers** values are not CRS-inspected. Product demo keeps trailer mode `SKIP`. With `SEND`, unfinished body is finalized when trailers mark EOS; trailers alone / no session → **500** (gRPC). Live: `demo/scripts/trailers.sh` (floor ≥ 4).
 - **Class 6:** with `SecAuditLog` pointing at an unwritable path, libmodsecurity v3.0.16 still loads the rules; the suite proves decisions are unchanged (attack **403**, origin untouched; benign **200**).
 - **HTTP/3 and WebSocket frames** are not tested and not supported.
 - **Not ported from the experiment lab:** the perf harness, and hop-trace for WebSocket / gRPC origins (the demo origin is plain HTTP).

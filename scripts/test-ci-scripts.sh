@@ -88,7 +88,7 @@ check "check-workflows: checkout, last step"  1 "$(wf '      - uses: actions/che
 
 # --- ci-live-e2e smoke summary + floor (body_mode suffix regression) --------
 # Keep SUMMARY_RE / smoke floor rules in sync with scripts/ci-live-e2e.sh.
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE'
+SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS'
 smoke_floor() { # smoke_floor <log> -> 0/1 (mirrors ci-live-e2e.sh floor smoke)
   local n
   grep -qE '\bSMOKE PASSED\b' "$1" || { echo "missing SMOKE PASSED"; return 1; }
@@ -96,14 +96,26 @@ smoke_floor() { # smoke_floor <log> -> 0/1 (mirrors ci-live-e2e.sh floor smoke)
   [[ "${n:-0}" -ge 5 ]] || { echo "body_checks=${n:-0} < 5"; return 1; }
   return 0
 }
+trailers_floor() { # mirrors ci-live-e2e.sh floor trailers
+  local n
+  grep -qE '\bTRAILERS PASSED\b' "$1" || { echo "missing TRAILERS PASSED"; return 1; }
+  n="$(grep -Eo 'trailer_checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
+  [[ "${n:-0}" -ge 5 ]] || { echo "trailer_checks=${n:-0} < 5"; return 1; }
+  return 0
+}
 printf '%s\n' 'SMOKE PASSED body_mode=BUFFERED body_checks=6' >"${TMP}/smoke-ok.log"
 printf '%s\n' 'SMOKE PASSED body_mode=STREAMED body_checks=7' >"${TMP}/smoke-streamed.log"
 printf '%s\n' 'SMOKE FAILED body_mode=BUFFERED' >"${TMP}/smoke-failed.log"
 printf '%s\n' 'body_checks=99' >"${TMP}/smoke-fake.log" # floor number without PASSED
+printf '%s\n' 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=5' >"${TMP}/trailers-ok.log"
+printf '%s\n' 'TRAILERS FAILED body_mode=BUFFERED PASS=0' >"${TMP}/trailers-failed.log"
+printf '%s\n' 'trailer_checks=99' >"${TMP}/trailers-fake.log"
 check "e2e summary: PASSED with body_mode (BUFFERED)" 1 \
   "$(grep -cE "${SUMMARY_RE}" "${TMP}/smoke-ok.log")"
 check "e2e summary: PASSED with body_mode (STREAMED)" 1 \
   "$(grep -cE "${SUMMARY_RE}" "${TMP}/smoke-streamed.log")"
+check "e2e summary: TRAILERS PASSED matches SUMMARY_RE" 1 \
+  "$(grep -cE "${SUMMARY_RE}" "${TMP}/trailers-ok.log")"
 check "e2e summary: old PASSED\$ misses body_mode suffix" 0 \
   "$(grep -cE 'PASSED$' "${TMP}/smoke-ok.log" || true)"
 smoke_floor "${TMP}/smoke-ok.log" >/dev/null && ok=0 || ok=1
@@ -114,6 +126,12 @@ smoke_floor "${TMP}/smoke-failed.log" >/dev/null && ok=0 || ok=1
 check "e2e floor: SMOKE FAILED fails (negative)" 1 "${ok}"
 smoke_floor "${TMP}/smoke-fake.log" >/dev/null && ok=0 || ok=1
 check "e2e floor: fake body_checks without PASSED fails (negative)" 1 "${ok}"
+trailers_floor "${TMP}/trailers-ok.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: real TRAILERS PASSED passes" 0 "${ok}"
+trailers_floor "${TMP}/trailers-failed.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: TRAILERS FAILED fails (negative)" 1 "${ok}"
+trailers_floor "${TMP}/trailers-fake.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: fake trailer_checks without PASSED fails (negative)" 1 "${ok}"
 
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

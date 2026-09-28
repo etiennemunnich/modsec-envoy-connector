@@ -709,7 +709,7 @@ async fn trailers_without_session_fail_closed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trailers_after_allowed_body_continue_uninspected() {
-    // Trailers are not inspected; they must not open a hole and must not deny.
+    // Trailers values are not CRS-inspected; they must not open a hole and must not deny.
     let h = start().await;
     let mut s = Stream::open(h.addr).await;
     assert_continue(
@@ -736,6 +736,78 @@ async fn trailers_after_allowed_body_continue_uninspected() {
         "trailers Continue (uninspected), got {:?}",
         r.response
     );
+    assert_eq!(h.metrics.deny_total(), 0);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_body_sqli_denied_when_trailers_mark_eos() {
+    // Envoy STREAMED/BUFFERED with trailers: last body chunk has eos=false,
+    // then request_trailers. Body must still be CRS-denied; trailer values
+    // themselves are not inspected.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    assert_continue(
+        &s.send(req_body(b"q=1 UNION SELECT password FROM users", false))
+            .await
+            .unwrap(),
+        "body eos=false",
+    );
+    let r = s
+        .send(req_trailers(&[("x-harmless", "trailers-not-inspected")]))
+        .await
+        .unwrap();
+    assert_eq!(
+        immediate(&r).expect("deny at trailers finalize").0,
+        403,
+        "body SQLi must deny when trailers mark EOS"
+    );
+    s.expect_closed().await;
+    assert_eq!(h.metrics.allow_total(), 0);
+    assert_eq!(h.metrics.deny_total(), 1);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_allow_then_trailers_continue_no_spurious_500() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers(
+            "POST",
+            "/post",
+            &[("content-type", "application/x-www-form-urlencoded")],
+            false,
+        ))
+        .await
+        .unwrap(),
+        "headers",
+    );
+    assert_continue(
+        &s.send(req_body(b"name=alice", false)).await.unwrap(),
+        "body eos=false",
+    );
+    let r = s
+        .send(req_trailers(&[("x-attack", "1 UNION SELECT password")]))
+        .await
+        .unwrap();
+    assert!(
+        matches!(r.response, Some(ProcResponse::RequestTrailers(_))),
+        "allow + trailers Continue (trailer attack uninspected), got {:?}",
+        r.response
+    );
+    assert_eq!(h.metrics.allow_total(), 1);
     assert_eq!(h.metrics.deny_total(), 0);
     assert_eq!(h.metrics.fail_closed_total(), 0);
 }

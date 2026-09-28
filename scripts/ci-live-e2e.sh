@@ -6,7 +6,7 @@
 #   SUITES="smoke fail-closed fail-modes go-ftw-smoke" ./scripts/ci-live-e2e.sh
 #
 # Env:
-#   SUITES           any of: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full
+#   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace go-ftw-smoke go-ftw-body go-ftw-full
 #   BODY_MODE        BUFFERED (default) or STREAMED — selects demo/envoy/envoy{,-streamed}.yaml
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
@@ -80,11 +80,12 @@ MIN_FTW_DEMO="${MIN_FTW_DEMO:-8}"
 MIN_FTW_BODY="${MIN_FTW_BODY:-100}"
 MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
+MIN_TRAILERS="${MIN_TRAILERS:-5}"
 
 # Suite summary lines for the report table. Must match mid-line suffixes
 # (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.
 # Shared with scripts/test-ci-scripts.sh (keep in sync).
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE'
+SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS'
 
 # ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
 ftw_success() {
@@ -106,6 +107,11 @@ floor() {
     fail-modes)
       n="$(grep -Eo 'summary: PASS=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_FAIL_MODES}" ]] || { echo "PASS=${n:-0} < ${MIN_FAIL_MODES}"; return 1; }
+      ;;
+    trailers)
+      grep -qE '\bTRAILERS PASSED\b' "$2" || { echo "missing TRAILERS PASSED"; return 1; }
+      n="$(grep -Eo 'trailer_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_TRAILERS}" ]] || { echo "trailer_checks=${n:-0} < ${MIN_TRAILERS}"; return 1; }
       ;;
     go-ftw-smoke)
       n="$(ftw_success "$2" 'demo tests')"
@@ -146,7 +152,7 @@ for suite in ${SUITES}; do
   echo "==> ${suite}"
   log="${ROOT}/demo/.run/e2e-${suite}.log"
   case "${suite}" in
-    smoke | fail-closed | fail-modes) cmd=("${DEMO}/${suite}.sh") ;;
+    smoke | fail-closed | fail-modes | trailers) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
     go-ftw-smoke | go-ftw-body | go-ftw-full) cmd=("${DEMO}/go-ftw.sh" "${suite#go-ftw-}") ;;
     *) record "${suite}" FAIL 0 "unknown suite"; continue ;;

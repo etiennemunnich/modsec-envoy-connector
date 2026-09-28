@@ -368,19 +368,53 @@ impl Exchange {
         Step::Reply(responses::body_continue(dir))
     }
 
-    /// Trailers are not inspected (SecLang / CRS have no trailer phase here).
-    /// Without a session they must not open a path past fail-closed: answer
-    /// Continue only when a request was already allowed, or for an Envoy
-    /// local-reply stream that never had a request.
-    fn trailers(&self, dir: Direction) -> Step {
-        if self.session.is_some() || self.request_settled || self.local_reply {
-            return Step::Reply(responses::trailers_continue(dir));
-        }
+    /// Trailers themselves are not inspected (SecLang / CRS have no trailer
+    /// phase). They *do* mark true body end when Envoy sent the last body
+    /// chunk with `end_of_stream=false` because trailers follow — so any
+    /// unfinished request/response body is finalized here (Coraza #289 class).
+    /// Without a session they must not open a path: Continue only when the
+    /// request was already allowed, or for an Envoy local-reply stream.
+    fn trailers(&mut self, dir: Direction) -> Step {
         let phase = match dir {
             Direction::Request => Phase::RequestBody,
             Direction::Response => Phase::ResponseBody,
         };
-        self.fail_closed(phase, "trailers received without an open session")
+        if self.local_reply {
+            return Step::Reply(responses::trailers_continue(dir));
+        }
+        let Some(mut session) = self.session.take() else {
+            if self.request_settled {
+                return Step::Reply(responses::trailers_continue(dir));
+            }
+            return self.fail_closed(phase, "trailers received without an open session");
+        };
+
+        // Finalize body that Envoy ended with trailers instead of eos=true.
+        let t0 = Instant::now();
+        let finished = match dir {
+            Direction::Request => session.finish_request_body(),
+            Direction::Response => session.finish_response_body(),
+        };
+        match finished {
+            Ok(d) => {
+                if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(0)) {
+                    return step;
+                }
+                if dir == Direction::Request {
+                    self.mark_request_allowed();
+                }
+            }
+            Err(e) => return self.fail_closed(phase, &e),
+        }
+
+        self.session = Some(session);
+        info!(
+            request_id = self.rid(),
+            phase = phase.as_str(),
+            action = "trailers_continue",
+            "trailers Continue (values not CRS-inspected; body finalized if needed)"
+        );
+        Step::Reply(responses::trailers_continue(dir))
     }
 
     fn response_headers(&mut self, headers: &HttpHeaders) -> Step {
