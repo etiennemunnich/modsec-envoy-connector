@@ -114,7 +114,7 @@ Every live suite must also reach a floor of passing checks, not just exit 0: smo
 - **HTTP/3 and WebSocket frames** are not tested and not supported.
 - **Not ported from the experiment lab:** the perf harness, and hop-trace for WebSocket / gRPC origins (the demo origin is plain HTTP).
 - **Live suites run on `main` pushes, PRs and dispatches**, not on `cursor/**` pushes (those get the Rust, supply-chain and protos gates; dispatch `ci` on the branch for the live suites).
-- **The release tag path has run once, as the pre-release `v0.1.0-rc.1`** (gate → both arch builds → multi-arch image → GitHub pre-release with both tarballs); no final `v0.1.0` has been cut.
+- **The release tag path has run once, as the pre-release `v0.1.0-rc.1`** (gate → both arch builds → multi-arch image → GitHub pre-release with both tarballs); no final `v0.1.0` has been cut. The **GitHub Release + git tag were deleted**; GHCR image tags (`v0.1.0-rc.1`, `sha-770ab01-*`) may remain until someone with `read:packages` + `delete:packages` runs the commands in [findings/ghcr-stale-tags.md](./findings/ghcr-stale-tags.md).
 - **Build provenance is not attested yet:** GitHub artifact attestations need a public repo on this plan, so those steps are skipped while the repo is private.
 - **`main` has no branch protection or ruleset:** both need GitHub Pro or a public repo. `ci-ok` is the check to require once they are available.
 - **Tarballs are not static:** they bundle `libmodsecurity.so` but need Ubuntu 24.04's pcre2, libxml2, yajl, curl, GeoIP and LMDB runtime libraries (the image has them).
