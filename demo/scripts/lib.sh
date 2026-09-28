@@ -6,7 +6,18 @@ DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
 
-ENVOY_CFG="${DEMO}/envoy/envoy.yaml"
+# BODY_MODE=BUFFERED (default) | STREAMED — selects the Envoy ext_proc body mode.
+# `up.sh` writes demo/.run/body_mode so later scripts (smoke, fail-closed) match
+# the running Envoy without re-exporting BODY_MODE.
+if [[ -z "${BODY_MODE:-}" && -f "${RUN}/body_mode" ]]; then
+  BODY_MODE="$(tr -d '[:space:]' <"${RUN}/body_mode")"
+fi
+BODY_MODE="${BODY_MODE:-BUFFERED}"
+case "${BODY_MODE}" in
+  BUFFERED) ENVOY_CFG="${DEMO}/envoy/envoy.yaml" ;;
+  STREAMED) ENVOY_CFG="${DEMO}/envoy/envoy-streamed.yaml" ;;
+  *) echo "BODY_MODE must be BUFFERED or STREAMED (got '${BODY_MODE}')" >&2; return 2 2>/dev/null || exit 2 ;;
+esac
 CONNECTOR_BIN="${ROOT}/target/debug/ext-proc-modsec"
 RULES_FILE="${RUN}/modsec.conf"
 HITS_FILE="${RUN}/origin-hits.log"

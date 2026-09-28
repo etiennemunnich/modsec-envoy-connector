@@ -13,6 +13,7 @@ pkg-config --exists modsecurity 2>/dev/null || { echo "libmodsecurity not found 
 "${DEMO}/scripts/down.sh" >/dev/null 2>&1 || true
 ports_free_or_die
 mkdir -p "${RUN}/tmp" "${RUN}/data"
+echo "${BODY_MODE}" >"${RUN}/body_mode"
 : >"${HITS_FILE}"
 : >"${RUN}/connector.log"
 : >"${RUN}/envoy.log"
@@ -50,7 +51,10 @@ if ! wait_http "${METRICS}/healthz" 100; then
   exit 1
 fi
 
-echo "==> envoy :18080 ($(envoy --version 2>&1 | grep -o '1\.[0-9]*\.[0-9]*' | head -1))"
+grep -q "request_body_mode: ${BODY_MODE}" "${ENVOY_CFG}" \
+  || { echo "${ENVOY_CFG} must set request_body_mode: ${BODY_MODE}" >&2; exit 2; }
+
+echo "==> envoy :18080 ($(envoy --version 2>&1 | grep -o '1\.[0-9]*\.[0-9]*' | head -1)) body_mode=${BODY_MODE}"
 daemonize "${RUN}/envoy.log" "${RUN}/envoy.pid" envoy -c "${ENVOY_CFG}" --concurrency 2 --log-level warn --file-flush-interval-msec 200
 if ! wait_http "http://127.0.0.1:${ENVOY_ADMIN_PORT}/ready" 100; then
   echo "envoy failed to become ready:" >&2
@@ -60,9 +64,10 @@ fi
 
 cat <<EOF
 
-Demo up.
+Demo up (body_mode=${BODY_MODE}).
   App (through Envoy + ModSecurity): ${BASE}/
   Connector metrics / readiness:     ${METRICS}/metrics  ${METRICS}/healthz
+  Envoy config:                      ${ENVOY_CFG}
   Logs:                              ${RUN}/{envoy,connector,origin}.log
   ModSecurity audit log:             ${RUN}/modsec-audit.log
 Next: ./demo/scripts/smoke.sh   ./demo/scripts/fail-closed.sh   ./demo/scripts/down.sh

@@ -16,8 +16,9 @@
 #   body    attack only in the last H1 chunk / last H2 DATA frames → 403 (BUFFERED)
 #
 # Class 3 cannot be injected through a well-behaved Envoy, so it runs the
-# connector's gRPC integration tests (real libmodsecurity, no Envoy) that drive
-# protocol violations into the fail-closed path.
+# connector's gRPC integration tests (real EngineError + test-only fail-inject,
+# product binary keeps fail-inject off) that drive fail_closed → ImmediateResponse 500.
+# Floor: MIN_CLASS3_GRPC (default 8).
 #
 #   ./demo/scripts/fail-modes.sh                    # h1 and h2, all classes
 #   ./demo/scripts/fail-modes.sh --proto h2 --class proto,1,4,5
@@ -186,15 +187,22 @@ run_class2() {
 }
 
 CLASS3_DONE=0
+# Floor: mid-exchange engine Err / protocol-violation fail-closed cases in grpc.rs.
+MIN_CLASS3_GRPC="${MIN_CLASS3_GRPC:-8}"
 run_class3() {
-  local id="FC3" log="${OUT_DIR}/class3-cargo-test.log" tests
+  local id="FC3" log="${OUT_DIR}/class3-cargo-test.log" tests n
   if [[ "${CLASS3_DONE}" -eq 1 ]]; then
     return 0
   fi
   CLASS3_DONE=1
   if (cd "${ROOT}" && cargo test -q -p ext-proc-modsec --test grpc -- fails_closed fail_closed) >"${log}" 2>&1; then
-    tests="$(grep -Eo '[0-9]+ passed' "${log}" | tail -1)"
-    record PASS "${id}-grpc" "${tests:-?} fail-closed gRPC tests → ImmediateResponse 500 (real libmodsecurity, no Envoy)"
+    tests="$(grep -Eo '[0-9]+ passed' "${log}" | tail -1 | awk '{print $1}')"
+    n="${tests:-0}"
+    if [[ "${n}" -ge "${MIN_CLASS3_GRPC}" ]]; then
+      record PASS "${id}-grpc" "${n} fail-closed gRPC tests → ImmediateResponse 500 (real engine Err / phase-order; no Envoy live inject)"
+    else
+      record FAIL "${id}-grpc" "only ${n} passed (floor ≥ ${MIN_CLASS3_GRPC}) — see ${log}"
+    fi
   else
     record FAIL "${id}-grpc" "cargo test failed — see ${log}"
   fi
