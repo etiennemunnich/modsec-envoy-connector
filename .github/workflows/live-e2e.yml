@@ -20,6 +20,10 @@ on:
         description: "space-separated: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full"
         type: string
         default: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
+      body_mode:
+        description: "Envoy ext_proc body mode: BUFFERED (default) or STREAMED"
+        type: string
+        default: "BUFFERED"
       timeout_minutes:
         type: number
         default: 45
@@ -32,7 +36,7 @@ env:
 
 jobs:
   e2e:
-    name: e2e (${{ matrix.arch }})
+    name: e2e (${{ matrix.arch }}, ${{ inputs.body_mode }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
     strategy:
@@ -111,9 +115,10 @@ jobs:
             echo "$dir" >> "$GITHUB_PATH"
           fi
 
-      - name: Live suites (${{ inputs.suites }})
+      - name: Live suites (${{ inputs.suites }}, ${{ inputs.body_mode }})
         env:
           SUITES: ${{ inputs.suites }}
+          BODY_MODE: ${{ inputs.body_mode }}
           ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
           MODSECURITY_PIN: ${{ steps.v.outputs.modsec }}
           CRS_TAG: ${{ steps.v.outputs.crs }}
@@ -124,7 +129,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-${{ matrix.arch }}-envoy${{ steps.v.outputs.envoy }}-modsec${{ steps.v.outputs.modsec }}-crs${{ steps.v.outputs.crs }}
+          name: e2e-${{ matrix.arch }}-${{ inputs.body_mode }}-envoy${{ steps.v.outputs.envoy }}-modsec${{ steps.v.outputs.modsec }}-crs${{ steps.v.outputs.crs }}
           path: |
             demo/.run/*.log
             demo/.run/*.md

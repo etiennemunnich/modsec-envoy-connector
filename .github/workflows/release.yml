@@ -45,7 +45,8 @@ jobs:
           got="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
             -q '.check_runs[] | select(.conclusion == "success") | .name')"
           for n in "ci-ok" "pin-check" "rust-quality (x86_64)" "rust-quality (aarch64)" "msrv (rust-version)" \
-                   "e2e-pin / e2e (x86_64)" "e2e-pin / e2e (aarch64)"; do
+                   "e2e-pin / e2e (x86_64, BUFFERED)" "e2e-pin / e2e (aarch64, BUFFERED)" \
+                   "e2e-streamed / e2e (x86_64, STREAMED)" "e2e-streamed / e2e (aarch64, STREAMED)"; do
             grep -qxF "${n}" <<<"${got}" || { echo "::error::no green '${n}' check on ${GITHUB_SHA::7} (dispatch ci on it first)"; exit 1; }
             echo "green: ${n}"
           done

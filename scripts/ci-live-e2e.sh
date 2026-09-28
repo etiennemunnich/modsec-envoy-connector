@@ -7,6 +7,7 @@
 #
 # Env:
 #   SUITES           any of: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full
+#   BODY_MODE        BUFFERED (default) or STREAMED — selects demo/envoy/envoy{,-streamed}.yaml
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
 #   CRS_TAG          CRS tag to load (default: lock pin); fetched into demo/.crs-<tag>
@@ -15,7 +16,7 @@
 #   EXPECT_ARCH      fail unless `uname -m` is this (CI passes the matrix arch)
 #   MIN_*            per-suite floors, see floor() below
 #
-# The demo Envoy config is used unchanged; failure_mode_allow stays false.
+# failure_mode_allow stays false in both Envoy configs.
 # A suite passes only if it exits 0 AND its summary reports at least the
 # floor of passing checks, so a suite that silently runs fewer checks (or a
 # go-ftw include that selects nothing) is a failure, not a green.
@@ -25,6 +26,7 @@ DEMO="${ROOT}/demo/scripts"
 pin() { grep -E "^$1=" "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2; }
 
 SUITES="${SUITES:-smoke fail-closed fail-modes go-ftw-smoke}"
+export BODY_MODE="${BODY_MODE:-BUFFERED}"
 ENVOY_VERSION="${ENVOY_VERSION:-$(pin ENVOY_PIN)}"
 MODSECURITY_PIN="${MODSECURITY_PIN:-$(pin MODSECURITY_PIN)}"
 export CRS_TAG="${CRS_TAG:-$(pin CRS_TAG)}"
@@ -35,12 +37,22 @@ die() { echo "ci-live-e2e: $*" >&2; exit 1; }
 
 arch="$(uname -m)"
 [[ -z "${EXPECT_ARCH:-}" || "${arch}" == "${EXPECT_ARCH}" ]] || die "running on ${arch}, want EXPECT_ARCH=${EXPECT_ARCH}"
+case "${BODY_MODE}" in
+  BUFFERED) envoy_cfg="${ROOT}/demo/envoy/envoy.yaml" ;;
+  STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-streamed.yaml" ;;
+  *) die "BODY_MODE must be BUFFERED or STREAMED (got '${BODY_MODE}')" ;;
+esac
 command -v envoy >/dev/null || die "envoy not on PATH"
 envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
 [[ "${envoy_line}" == *"/${ENVOY_VERSION#v}/"* ]] || die "envoy on PATH is not ${ENVOY_VERSION}: ${envoy_line}"
 modsec_ver="$(pkg-config --modversion modsecurity)"
 [[ "${modsec_ver}" == "${MODSECURITY_PIN#v}" ]] || die "pkg-config reports libmodsecurity ${modsec_ver}, want ${MODSECURITY_PIN}"
-grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy.yaml" || die "demo/envoy/envoy.yaml must keep failure_mode_allow: false"
+grep -q 'failure_mode_allow: false' "${envoy_cfg}" || die "${envoy_cfg} must keep failure_mode_allow: false"
+grep -q "request_body_mode: ${BODY_MODE}" "${envoy_cfg}" || die "${envoy_cfg} must set request_body_mode: ${BODY_MODE}"
+# Full CRS / go-ftw stay on BUFFERED unless explicitly overridden (STREAMED e2e is thin).
+if [[ "${BODY_MODE}" == "STREAMED" && "${SUITES}" == *go-ftw* ]]; then
+  die "go-ftw suites require BODY_MODE=BUFFERED (got STREAMED); keep STREAMED e2e thin"
+fi
 
 "${DEMO}/install-crs.sh" >/dev/null
 crs_got="$(git -C "${CRS_DIR}" describe --tags --exact-match 2>/dev/null || true)"
@@ -51,9 +63,9 @@ trap cleanup EXIT
 
 mkdir -p "$(dirname "${REPORT}")"
 {
-  echo "### live e2e — $(uname -s) ${arch}"
+  echo "### live e2e — $(uname -s) ${arch} · body_mode=${BODY_MODE}"
   echo
-  echo "Envoy \`${ENVOY_VERSION}\` · libmodsecurity \`${MODSECURITY_PIN}\` · CRS \`${CRS_TAG}\` · connector \`$(git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null || echo '?')\`"
+  echo "Envoy \`${ENVOY_VERSION}\` · libmodsecurity \`${MODSECURITY_PIN}\` · CRS \`${CRS_TAG}\` · body_mode \`${BODY_MODE}\` · connector \`$(git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null || echo '?')\`"
   echo
   echo "| Suite | Result | Seconds | Summary |"
   echo "|-------|--------|---------|---------|"
@@ -67,6 +79,7 @@ MIN_FAIL_MODES="${MIN_FAIL_MODES:-57}"
 MIN_FTW_DEMO="${MIN_FTW_DEMO:-8}"
 MIN_FTW_BODY="${MIN_FTW_BODY:-100}"
 MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
+MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 
 # ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
 ftw_success() {
@@ -79,6 +92,10 @@ ftw_success() {
 floor() {
   local n
   case "$1" in
+    smoke)
+      n="$(grep -Eo 'body_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_SMOKE_BODY}" ]] || { echo "body_checks=${n:-0} < ${MIN_SMOKE_BODY}"; return 1; }
+      ;;
     fail-modes)
       n="$(grep -Eo 'summary: PASS=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_FAIL_MODES}" ]] || { echo "PASS=${n:-0} < ${MIN_FAIL_MODES}"; return 1; }

@@ -6,8 +6,9 @@ name: ci
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
-#   e2e-pin × {x86_64, aarch64}        live suites at the pins; push to main, PRs and
-#                                      dispatches (not cursor/** pushes)
+#   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
+#                                      PRs and dispatches (not cursor/** pushes)
+#   e2e-streamed × {x86_64, aarch64}   thin STREAMED smoke + fail-closed (same gate)
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
 # the changes job, so ci-ok still reports; runs on main are never cancelled.
@@ -218,10 +219,22 @@ jobs:
     uses: ./.github/workflows/live-e2e.yml
     with:
       suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
+      body_mode: BUFFERED
+
+  e2e-streamed:
+    name: e2e-streamed
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # Thin STREAMED cell: smoke (incl. chunked body) + fail-closed. Full CRS stays BUFFERED.
+      suites: "smoke fail-closed"
+      body_mode: STREAMED
+      timeout_minutes: 25
 
   ci-ok:
     name: ci-ok
-    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin]
+    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -237,12 +250,13 @@ jobs:
           needs = json.loads(os.environ["NEEDS"])
           docs_only = os.environ["DOCS_ONLY"] == "true"
           e2e_wanted = os.environ["E2E_WANTED"] == "true"
-          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin"}
+          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed"}
+          e2e_jobs = {"e2e-pin", "e2e-streamed"}
           bad = []
           for job, v in needs.items():
               r = v["result"]
               ok = r == "success" or (r == "skipped" and (
-                  (docs_only and job in heavy) or (job == "e2e-pin" and not e2e_wanted)))
+                  (docs_only and job in heavy) or (job in e2e_jobs and not e2e_wanted)))
               print(f"{'ok  ' if ok else 'FAIL'} {job}: {r}")
               if not ok:
                   bad.append(f"{job}={r}")
