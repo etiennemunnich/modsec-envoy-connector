@@ -19,10 +19,10 @@ Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-clo
 
 | Layer | Proves | Where it runs |
 |-------|--------|---------------|
-| **A — Pins + Rust** | pins; engine + connector unit tests; gRPC integration tests against libmodsecurity (allow, deny, redirect, request/response body, REMOTE_ADDR from attributes, fail-closed 500 paths, `/healthz`) | `ci`: `pin-check`, `rust-quality (x86_64)`, `rust-quality (aarch64)`; `cargo test --workspace` locally |
-| **B — Live smoke + fail-closed** | Envoy → connector → libmodsecurity + CRS: benign **200**, SQLi/XSS URL + body **403**, response-body **403**; kill → **500**, hang → **504**, bad rules → **500**; origin untouched on every deny / failure | `ci` → `e2e-pin` × arch; `demo/scripts/smoke.sh`, `fail-closed.sh` |
-| **C — Fail-mode matrix (H1 + H2)** | Fail-closed classes 1–6 over HTTP/1.1 **and** HTTP/2 prior knowledge, protocol proven from the Envoy access log; split `Cookie` crumbs inspected; an attack only in the last chunk / DATA frames still **403**; negative control (`failure_mode_allow: true`) shows the same kill / hang *does* let traffic through, so the checks can see fail-open | `ci` → `e2e-pin` × arch; `demo/scripts/fail-modes.sh` |
-| **D — CRS regression (go-ftw)** | OWASP CRS `tests/regression` through Envoy, HTTP/1.x, judged by status code | smoke: `ci` → `e2e-pin` × arch; full: `crs-full` × arch (monthly); `demo/scripts/go-ftw.sh smoke\|body\|full` |
+| **A — Pins + Rust** | pins; engine + connector unit tests; gRPC integration tests against libmodsecurity (allow, deny, redirect, BUFFERED/STREAMED-style multi-chunk body, REMOTE_ADDR from attributes, class-3 fail-closed 500 paths ≥ 8, trailers safe, `/healthz`) | `ci`: `pin-check`, `rust-quality (x86_64)`, `rust-quality (aarch64)`; `cargo test --workspace` locally |
+| **B — Live smoke + fail-closed** | Envoy → connector → libmodsecurity + CRS: benign **200**, SQLi/XSS URL + body **403**, response-body **403**; kill → **500**, hang → **504**, bad rules → **500**; origin untouched on every deny / failure. Body-path floor ≥ 5. | `ci` → `e2e-pin` × arch (**BUFFERED**); `ci` → `e2e-streamed` × arch (**STREAMED**, smoke + fail-closed only); `BODY_MODE=… ./demo/scripts/up.sh` then `smoke.sh`, `fail-closed.sh` |
+| **C — Fail-mode matrix (H1 + H2)** | Fail-closed classes 1–6 over HTTP/1.1 **and** HTTP/2 prior knowledge, protocol proven from the Envoy access log; split `Cookie` crumbs inspected; an attack only in the last chunk / DATA frames still **403**; class-3 gRPC floor ≥ 8; negative control (`failure_mode_allow: true`) shows the same kill / hang *does* let traffic through, so the checks can see fail-open | `ci` → `e2e-pin` × arch (BUFFERED); `demo/scripts/fail-modes.sh` |
+| **D — CRS regression (go-ftw)** | OWASP CRS `tests/regression` through Envoy, HTTP/1.x, judged by status code (**BUFFERED only**) | smoke: `ci` → `e2e-pin` × arch; full: `crs-full` × arch (monthly); `demo/scripts/go-ftw.sh smoke\|body\|full` |
 | **E — Stable versions** | a new stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x release, and the last three stables of each axis, pass layers B–D with the other axes at their pins | `release-watch` (daily) → `stable-candidate` × arch → issue; `stable-window` × arch (weekly); locally `scripts/ci-live-e2e.sh` with `ENVOY_VERSION` / `MODSECURITY_PIN` / `CRS_TAG`, or `scripts/probe-modsec-pin.sh`, `envoy-candidate-smoke.sh`, `crs-version-probe.sh` |
 | **Trace** | one request followed across every hop by `x-request-id` (Envoy access log → connector phases → CRS matches → origin) | `ci` → `e2e-pin` × arch; `demo/scripts/hop-trace.sh` |
 
@@ -37,11 +37,12 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
-./demo/scripts/up.sh                  # Envoy + connector + CRS + origin
-./demo/scripts/smoke.sh               # allow / deny / body / response path
+./demo/scripts/up.sh                  # Envoy + connector + CRS + origin (BUFFERED)
+./demo/scripts/smoke.sh               # allow / deny / body / response path (body floor ≥ 5)
 ./demo/scripts/fail-closed.sh         # kill → 500, hang → 504, bad rules → 500
-./demo/scripts/fail-modes.sh          # classes 1–6 + controls, H1 and H2
-./demo/scripts/go-ftw.sh smoke        # demo tests + body-heavy CRS SQLi/XSS tests
+./demo/scripts/fail-modes.sh          # classes 1–6 + controls, H1 and H2 (class-3 gRPC floor ≥ 8)
+BODY_MODE=STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh && ./demo/scripts/fail-closed.sh
+./demo/scripts/go-ftw.sh smoke        # demo tests + body-heavy CRS SQLi/XSS tests (BUFFERED)
 ./demo/scripts/go-ftw.sh full         # whole CRS regression tree
 ./demo/scripts/hop-trace.sh --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
 ./demo/scripts/down.sh
@@ -57,7 +58,7 @@ Hosted Linux on both architectures: see [Hosted CI](#measured-2026-09-27-private
 
 | Suite | Result |
 |-------|--------|
-| `cargo test --workspace` | 54 passed, 0 failed |
+| `cargo test --workspace` | 65 passed, 0 failed (class-3 gRPC fail-closed filter: 12) |
 | `smoke.sh` | passed |
 | `fail-closed.sh` | passed |
 | `fail-modes.sh` (H1 + H2) | 59 passed, 0 failed |
@@ -76,7 +77,7 @@ GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarc
 
 | Workflow | Trigger | What runs (× x86_64, aarch64) | Reports |
 |----------|---------|-------------------------------|---------|
-| `ci` | every push to `main` / `cursor/**`, PR, dispatch; runs on `main` are never cancelled | `pin-check` (pins + install-script fallbacks, workflow rules, CI-script tests); `rust-quality` × arch (fmt, clippy, tests, build, all `--locked`, Rust from `rust-toolchain.toml`); `msrv` (`cargo check` at `rust-version`); `supply-chain` (cargo-deny: RustSec, licenses, sources); `protos` (`gen-protos.sh --check`, protoc 25.3); `e2e-pin` × arch = live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke at the pins — on `main` pushes, PRs and dispatches, not `cursor/**` pushes; `ci-ok` = one verdict over all of them. Docs-only changes (`docs/**`, `*.md` except `versions.lock.md`) skip the heavy jobs and still get a `ci-ok` | check status |
+| `ci` | every push to `main` / `cursor/**`, PR, dispatch; runs on `main` are never cancelled | `pin-check` (pins + install-script fallbacks, workflow rules, CI-script tests); `rust-quality` × arch (fmt, clippy, tests, build, all `--locked`, Rust from `rust-toolchain.toml`); `msrv` (`cargo check` at `rust-version`); `supply-chain` (cargo-deny: RustSec, licenses, sources); `protos` (`gen-protos.sh --check`, protoc 25.3); `e2e-pin` × arch = **BUFFERED** live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke; `e2e-streamed` × arch = thin **STREAMED** smoke + fail-closed (no go-ftw); both on `main` pushes, PRs and dispatches, not `cursor/**` pushes; `ci-ok` = one verdict over all of them. Docs-only changes (`docs/**`, `*.md` except `versions.lock.md`) skip the heavy jobs and still get a `ci-ok` | check status |
 | `release-watch` | daily 05:17 UTC, dispatch (`force=<axis>:<tag>`, `dry_run`) | lists stable releases (Envoy `v1.x.y`, libmodsecurity `v3.0.x`, CRS `v4.x.y` — all pages of the release list, never `releases/latest`); the latest stable **and** the top patch of the pinned minor line, when newer than the pin, each get a `stable-candidate` dispatch (the issue is opened after the dispatch succeeds); newer tags outside those patterns are flagged "new line — not tracked"; a tag is retested until its issue has a ✅ result (or 3 ❌) | issue `stable-candidate: <axis> <tag>`; its own failures: issue `release-watch: failing` |
 | `stable-candidate` | dispatch (from `release-watch` or by hand) | that axis at the candidate, the others at their pins; same live suites as `e2e-pin` | comment on the issue: per-arch result, measured minutes, bump lines |
 | `stable-window` | weekly (Mon 04:23 UTC), dispatch (`depth`) | pins + the last 3 stables of each axis + the CRS LTS (`CRS_LTS_TAG`) when outside that window, one axis moved per cell (8 cells); libmodsecurity below v3.0.13 is skipped; live suites | issue `stable-window: failing cells` on failure, closed when green |
@@ -85,7 +86,7 @@ GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarc
 
 Candidates never bump anything: after a green `stable-candidate`, a human or agent edits `versions.lock.md` (plus the offline fallback in that axis's install script, which `pin-check` compares) on `main`, and `ci` re-runs as the gate.
 
-Every live suite must also reach a floor of passing checks, not just exit 0: fail-modes ≥ 57, go-ftw demo tests ≥ 8, CRS body ids ≥ 100, CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.
+Every live suite must also reach a floor of passing checks, not just exit 0: smoke body-path checks ≥ 5, fail-modes ≥ 57 (class-3 gRPC ≥ 8), go-ftw demo tests ≥ 8, CRS body ids ≥ 100, CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.
 
 ### Measured (2026-09-27, private repo, 2-vCPU runners)
 
@@ -106,7 +107,9 @@ Every live suite must also reach a floor of passing checks, not just exit 0: fai
 ## Honest boundaries
 
 - **go-ftw is HTTP/1.x only** and judges by status code. A green run says nothing about HTTP/2; the H2 evidence is `fail-modes.sh --proto h2`.
-- **Class 3** (per-request engine error) cannot be injected through a well-behaved Envoy; `fail-modes.sh` runs the gRPC integration tests for it (real libmodsecurity, no Envoy).
+- **Class 3** (per-request engine error mid-exchange) cannot be injected through a well-behaved Envoy; see [fail-closed.md](./fail-closed.md#why-class-3-has-no-live-envoy-drill). Covered by gRPC tests (real `EngineError` + test-only `fail-inject` feature off in the product binary), floor ≥ 8; `fail-modes.sh` runs them.
+- **STREAMED** is proven live with thin smoke + fail-closed on both arches; full CRS / go-ftw stay on BUFFERED. Phase-2/4 rules still decide at EOS.
+- **Trailers** are not inspected; without a session they fail closed so they cannot open a path alone.
 - **Class 6:** with `SecAuditLog` pointing at an unwritable path, libmodsecurity v3.0.16 still loads the rules; the suite proves decisions are unchanged (attack **403**, origin untouched; benign **200**).
 - **HTTP/3 and WebSocket frames** are not tested and not supported.
 - **Not ported from the experiment lab:** the perf harness, and hop-trace for WebSocket / gRPC origins (the demo origin is plain HTTP).

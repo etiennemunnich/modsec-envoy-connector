@@ -35,7 +35,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 | Gate | Where | What |
 |------|-------|------|
-| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; `e2e-pin` (live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke) on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict |
+| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; `e2e-pin` (BUFFERED: live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke) and thin `e2e-streamed` (STREAMED smoke + fail-closed) on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict |
 | **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; results as issues (see `docs/testing.md`) |
 | **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`; `scripts/ci-live-e2e.sh` runs a CI cell locally |
 | **CRS** | go-ftw | **H1** rule fidelity only |

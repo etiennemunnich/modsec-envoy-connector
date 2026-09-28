@@ -24,7 +24,7 @@ Pins: [`versions.lock.md`](../versions.lock.md). Failure model: [fail-closed.md]
 | — | connector → **libmodsecurity** | in-process FFI (`msc_*` C API, declared in `modsec-engine`) | No |
 | 3 | **Envoy → origin** | HTTP | **Yes — Envoy only**, after Continue |
 
-With `request_body_mode: BUFFERED` Envoy holds the whole request until the connector has inspected the body, so a request-body deny happens before the origin sees anything — including when the attack sits only in the last HTTP/1.1 chunk or the last HTTP/2 DATA frames. The demo's origin records every hit with its `x-request-id`, and the demo suites assert it stays untouched for denied and failed requests. `demo/scripts/hop-trace.sh` shows all hops for one request.
+With `request_body_mode: BUFFERED` (the default demo config) Envoy holds the whole request until the connector has inspected the body, so a request-body deny happens before the origin sees anything — including when the attack sits only in the last HTTP/1.1 chunk or the last HTTP/2 DATA frames. With `STREAMED` (`demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED ./demo/scripts/up.sh`) Envoy delivers body chunks as they arrive; the connector still appends each chunk, checks intervention after every append, and runs `process_*_body` only at `end_of_stream`. A phase-2/4 CRS rule therefore still decides at EOS; earlier chunks may already have been forwarded toward the origin only if the connector Continues each chunk (it does for non-disruptive appends). Body-limit rejects can still fire mid-stream on append. The demo's origin records every hit with its `x-request-id`, and the demo suites assert it stays untouched for denied and failed requests. `demo/scripts/hop-trace.sh` shows all hops for one request.
 
 HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) both go through the same path; Envoy reassembles split HTTP/2 `Cookie` headers before the connector sees them. Envoy's HTTP/1 codec accepts non-standard methods in the demo config (`allow_custom_methods`) so CRS rule 911100 enforces the method policy instead of the codec dropping the request.
 
@@ -54,7 +54,7 @@ One `Process` stream = one HTTP request/response = one ModSecurity transaction.
 | `request_body` | `append_request_body` (intervention checked on every append, so body-limit rejects fire here); at `end_of_stream` runs `process_request_body` (CRS phase 2). | Continue, or terminal reply |
 | `response_headers` | Closes the request body if still open, adds headers, `process_response_headers(:status, protocol)` (phase 3). If `end_of_stream`, also runs the response-body phase. | Continue, or terminal reply |
 | `response_body` | `append_response_body`; at `end_of_stream` runs `process_response_body` (phase 4). | Continue, or terminal reply |
-| trailers | Not inspected (the demo config sets trailer modes to `SKIP`). | Continue |
+| trailers | Not inspected (no SecLang trailer phase). Demo configs set trailer modes to `SKIP`, so Envoy does not send them. If they are sent (`SEND`), Continue only when a session is open / request already allowed / local-reply stream; otherwise fail-closed **500** (trailers alone must not open a path). | Continue, or **500** |
 | `response_headers` **with no `request_headers` on the stream** | Envoy rejected the request itself before the request phase (e.g. a `#fragment` URI → 400, `OPTIONS *` → 404) and ext_proc only sees its local reply. The origin was never contacted. If `:status` is 4xx/5xx it is passed through; anything else fails closed. | Continue (status 4xx/5xx), else **500** |
 
 Stream end drops the session, which runs ModSecurity's logging phase (audit log) and frees the transaction.
@@ -112,9 +112,10 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 
 - `failure_mode_allow: false` and `message_timeout: 2s`.
 - `http_protocol_options.allow_custom_methods: true`, so CRS sees methods like `TEST` (a work-in-progress field in Envoy v1.39; without CRS loaded, custom methods reach the origin).
-- `processing_mode`: headers `SEND`, bodies `BUFFERED`, trailers `SKIP`.
+- `processing_mode`: headers `SEND`, bodies `BUFFERED` (default) or `STREAMED` (`envoy-streamed.yaml`), trailers `SKIP`.
 - `request_attributes`: `source.address`, `source.port`, `destination.address`, `destination.port`, `request.protocol`. Without them, ModSecurity sees `127.0.0.1` as `REMOTE_ADDR` (logged as `conn_source=fallback`) and IP-based rules are wrong.
 - Never enable `observability_mode` on an enforcing filter: Envoy does not wait for answers there, so the connector ignores those messages.
+- Local toggle: `BODY_MODE=STREAMED ./demo/scripts/up.sh` then the same `smoke.sh` / `fail-closed.sh` (CI runs a thin STREAMED cell on both arches; full CRS stays BUFFERED).
 
 ---
 
@@ -129,8 +130,8 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 
 ## Known limits
 
-- **Buffered bodies only are proven.** `STREAMED` mode works mechanically (intervention is checked on every append) but a phase-2/4 rule can only decide at end of stream, after earlier chunks may already have moved on. Envoy's buffer limit (default 1 MiB per stream) caps inspectable body size.
-- **Trailers** are not inspected.
+- **BUFFERED is the default and the full-CRS path.** `STREAMED` is supported by the same connector path (append + intervention per chunk, `process_*_body` at EOS) and proven live with a thin smoke + fail-closed cell (`BODY_MODE=STREAMED`). Phase-2/4 CRS rules still decide at EOS; full go-ftw stays on BUFFERED. Envoy's buffer limit (default 1 MiB per stream) caps BUFFERED inspectable body size; STREAMED moves buffering into the connector/engine.
+- **Trailers** are not inspected. With trailer mode `SKIP` (demo) Envoy never sends them. If `SEND`, an attack only in trailers is not denied by CRS; trailers without a prior session fail closed so they cannot open a path alone.
 - **Pause** interventions are logged and ignored (ext_proc has no delay primitive).
 - **Drop** cannot close the TCP connection through ext_proc; it maps to a stream abort → Envoy 500.
 - `/healthz` probes run through the rules and are counted in `ext_proc_requests_total` / `ext_proc_allow_total`.

@@ -56,12 +56,25 @@ libmodsecurity (in-process FFI)
 |-------|-----------|-----|
 | **1** connector killed | live drill, H1 + H2 | `fail-closed.sh`, `fail-modes.sh` — SIGKILL → Envoy **500** for GET, POST and attack requests; origin hit count unchanged; `failure_mode_allowed` stays 0 |
 | **2** bad rules at boot | live drill + unit test | invalid SecLang or a missing `Include` → connector exits non-zero, nothing listens, healthz down, Envoy **500**; `invalid_seclang_is_rejected`, `rules_are_required` |
-| **3** per-request engine error / protocol violation | gRPC integration tests | body-before-headers, duplicate headers, missing `:status`, empty message, response headers with no request and a non-4xx/5xx status → `ImmediateResponse` **500** (`crates/ext-proc-modsec/tests/grpc.rs`) |
-| **4** rule deny | live, H1 + H2 + tests | `smoke.sh`, `fail-modes.sh` — SQLi/XSS (URL + body) → **403**, response-body rule → **403**, attack only in the last chunk / DATA frames → **403** |
+| **3** per-request engine error / protocol violation | gRPC integration tests only (see below) | Mid-exchange `EngineError` after the session is open (test-only fail-inject; phase-order Err; NUL in header) and protocol violations → `ImmediateResponse` **500**, details `modsec_fail_closed`. Floor ≥ **8** tests matching `fails_closed` / `fail_closed` in `crates/ext-proc-modsec/tests/grpc.rs`. Negative control: same request without inject Continues. |
+| **4** rule deny | live, H1 + H2 + tests | `smoke.sh` (BUFFERED + STREAMED), `fail-modes.sh` — SQLi/XSS (URL + body) → **403**, response-body rule → **403**, attack only in the last chunk / DATA frames → **403** |
 | **5** connector hung | live drill, H1 + H2 | SIGSTOP → Envoy **504** after `message_timeout` 2s; origin unchanged |
 | **6** audit | live drill, H1 + H2 | `SecAuditLog` on an unwritable path: libmodsecurity v3.0.16 still loads; attack **403** with origin untouched, benign **200** |
 
-Class 3 has no live injection hook: a real libmodsecurity transaction error cannot be forced from outside, so it is covered by the in-process gRPC tests that exercise the same code path (`fail_closed` → 500); `fail-modes.sh` runs them as its class-3 step.
+### Why class 3 has no live Envoy drill
+
+A well-behaved Envoy `ext_proc` client only sends ordered headers/body/trailers for a real HTTP exchange. It cannot force libmodsecurity's `msc_*` Transaction API to return a failure code mid-stream: there is no request shape that makes a healthy engine return `Err` after a session is open while still looking like valid HTTP. Protocol-violation cases (body before headers, empty oneof, …) are also not produced by Envoy in normal operation.
+
+So class 3 is proven **only** by gRPC integration tests that drive the same `Exchange::fail_closed` path the product binary uses:
+
+| Case | How Err is forced | Client |
+|------|-------------------|--------|
+| Injected mid-body failure | `modsec-engine` feature `fail-inject` (dev-dependency only; **off** in `cargo build -p ext-proc-modsec`) arms one Transaction step to return `EngineError` after headers Continue | **500** |
+| Same request, inject not armed | Negative control | Continue |
+| Append after body finished / response body before response headers / duplicate response headers / NUL in header | Real `EngineError` from the façade (phase-order / `CString`) | **500** |
+| Body before headers, empty oneof, invalid `:status`, trailers with no session, … | Connector protocol guards → same `fail_closed` | **500** |
+
+`fail-modes.sh` runs those gRPC tests as its class-3 step and asserts the floor. Do not invent a fake live “engine Err” drill through Envoy.
 
 **Negative control:** `fail-modes.sh` temporarily restarts Envoy with `failure_mode_allow: true` and repeats the kill and hang drills. Traffic then reaches the origin (**200**) and `failure_mode_allowed` rises, which shows the drills would catch a fail-open configuration. The product config is restored and re-checked (**500**) before the suite continues.
 
