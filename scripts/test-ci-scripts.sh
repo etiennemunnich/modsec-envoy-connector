@@ -236,5 +236,24 @@ check "e2e floor: real HOP-TRACE-WS-FRAMES PASSED passes" 0 "${ok}"
 ws_floor "${TMP}/wsf-failed.log" >/dev/null && ok=0 || ok=1
 check "e2e floor: HOP-TRACE-WS-FRAMES FAILED fails (negative)" 1 "${ok}"
 
+# --- one-year matrix policy + cartesian guard (offline) --------------------
+[[ -x "${ROOT}/scripts/one-year-matrix.sh" ]] && ok=0 || ok=1
+check "one-year: one-year-matrix.sh executable" 0 "${ok}"
+[[ -f "${ROOT}/versions.one-year.yaml" ]] && ok=0 || ok=1
+check "one-year: versions.one-year.yaml present" 0 "${ok}"
+[[ -f "${ROOT}/.github/workflows/stable-one-year.yml" ]] && ok=0 || ok=1
+check "one-year: stable-one-year.yml present" 0 "${ok}"
+grep -q 'workflow_dispatch:' "${ROOT}/.github/workflows/stable-one-year.yml" && ok=0 || ok=1
+check "one-year: stable-one-year is dispatchable" 0 "${ok}"
+grep -qE '^[[:space:]]*schedule:' "${ROOT}/.github/workflows/stable-one-year.yml" && ok=1 || ok=0
+check "one-year: stable-one-year has no schedule cron" 0 "${ok}"
+# Cartesian without --confirm-cartesian must refuse (no network needed).
+"${ROOT}/scripts/one-year-matrix.sh" plan --strategy cartesian >/dev/null 2>&1 && ok=1 || ok=0
+check "one-year: cartesian without confirm refused" 0 "${ok}"
+# Unknown profile must fail before e2e (no network).
+out="$("${ROOT}/scripts/one-year-matrix.sh" run --profile nosuch 2>&1 || true)"
+echo "${out}" | grep -q "unknown profile" && ok=0 || ok=1
+check "one-year: unknown profile refused" 0 "${ok}"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

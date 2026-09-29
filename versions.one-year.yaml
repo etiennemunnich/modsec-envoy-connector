@@ -1,0 +1,41 @@
+# One-year stable matrix policy — envoy-modsec-connex
+#
+# Enumerate stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x tags from the
+# last `days` days (GitHub Releases published_at; never releases/latest).
+# Default strategy is axis-at-a-time (pin two, vary one). Full Cartesian is
+# opt-in only. Consumed by scripts/one-year-matrix.sh and
+# .github/workflows/stable-one-year.yml. Pins themselves live in versions.lock.md.
+
+days: 365
+
+# libmodsecurity build.rs soft floor — tags below this are skipped.
+modsecurity_floor: v3.0.13
+
+# How Envoy / CRS tags collapse inside the since-window:
+#   top-patch-per-minor — one cell per minor (recommended for Envoy)
+#   all                 — every matching patch tag
+envoy_collapse: top-patch-per-minor
+crs_collapse: top-patch-per-minor
+modsecurity_collapse: all
+
+# Default combination strategy for plan / hosted dispatch.
+#   axis       — pin two axes, vary one (plus a pins cell)
+#   diagonal   — sparse oldest/newest corner pairs
+#   cartesian  — full product (requires --confirm-cartesian / confirm_cartesian=yes)
+strategy: axis
+
+# Suite profiles → space-separated SUITES for scripts/ci-live-e2e.sh
+profiles:
+  smoke: "smoke"
+  fail-closed: "smoke fail-closed"
+  fail-modes: "smoke fail-closed fail-modes"
+  go-ftw-smoke: "smoke fail-closed go-ftw-smoke"
+  full-cell: "smoke fail-closed fail-modes go-ftw-smoke"
+
+# Hosted default profile for live cells (thin profiles stay local/debug).
+default_profile: full-cell
+
+# Rough minute budget notes (warm cache, both arches) — see docs/testing.md.
+#   axis (~21 cells × 2 arches × ~2–3 min): ~90–130 job-minutes
+#   diagonal (~6 × 2): ~25–40
+#   cartesian (~192 × 2): ~800+ — never schedule; opt-in only

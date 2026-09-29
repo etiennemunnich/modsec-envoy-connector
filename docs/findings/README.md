@@ -12,5 +12,6 @@ Distilled from Project Context research (2026-09-21). Evidence and hop artifacts
 | [modsec-only-retest-hops.md](./modsec-only-retest-hops.md) | ModSec-only hop-trace retest (CRS skipped) |
 | [modsec-only-no-crs.md](./modsec-only-no-crs.md) | CRS deferred; engine+connector focus |
 | [coraza-envoy-issues.md](./coraza-envoy-issues.md) | Coraza Envoy issues as **reference only** |
+| [one-year-stable-matrix.md](./one-year-stable-matrix.md) | ~12-month stable Envoy×ModSec×CRS matrix (axis default; Cartesian opt-in) |
 
 **Invariants:** fail-closed absolute; Coraza = reference; not production.

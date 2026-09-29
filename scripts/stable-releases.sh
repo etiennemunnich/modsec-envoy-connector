@@ -9,6 +9,11 @@
 #   ./scripts/stable-releases.sh window <axis> [n]  newest n (default 3): for envoy
 #                                                   and crs the top patch of each of
 #                                                   the newest n minors
+#   ./scripts/stable-releases.sh since  <axis> [days]  stables with published_at in the last
+#                                                   N days (default 365); never releases/latest
+#   ./scripts/stable-releases.sh since-window <axis> [days]
+#                                                   for envoy/crs: top patch per minor among
+#                                                   tags in the since window; modsecurity: all
 #   ./scripts/stable-releases.sh line   <axis> <tag>  highest stable on <tag>'s minor line
 #                                                   (v1.38.3 -> top v1.38.x)
 #   ./scripts/stable-releases.sh untracked <axis>   recent stable tags newer than the pin
@@ -60,6 +65,14 @@ stable_tags() { # every non-draft, non-prerelease tag (all pages unless $2 = "re
   fi
 }
 
+# tag\tpublished_at (ISO) for every non-draft, non-prerelease release (all pages).
+stable_tags_dated() {
+  local repo
+  repo="$(repo_of "$1")"
+  gh api --paginate "repos/${repo}/releases?per_page=100" \
+    -q '.[] | select(.draft | not) | select(.prerelease | not) | [.tag_name, .published_at] | @tsv'
+}
+
 list() {
   local tags
   tags="$(stable_tags "$1" | grep -E "$(pattern_of "$1")" | sort -uV || true)"
@@ -88,13 +101,40 @@ window() {
   esac
 }
 
+# Stables published in the last N days (default 365). Uses published_at from the
+# Releases API — never releases/latest, never git tag dates alone.
+since() {
+  local axis="$1" days="${2:-365}" cutoff tags
+  [[ "${days}" =~ ^[0-9]+$ ]] || { echo "stable-releases: days must be an integer (got '${days}')" >&2; exit 2; }
+  cutoff="$(python3 -c "from datetime import datetime,timezone,timedelta; print((datetime.now(timezone.utc)-timedelta(days=int('${days}'))).strftime('%Y-%m-%dT%H:%M:%SZ'))")"
+  tags="$(stable_tags_dated "${axis}" | awk -F'\t' -v c="${cutoff}" -v pat="$(pattern_of "${axis}")" '
+    $1 ~ pat && $2 >= c { print $1 }
+  ' | sort -uV || true)"
+  [[ -n "${tags}" ]] || { echo "stable-releases: no ${axis} stable in the last ${days} days matching $(pattern_of "${axis}")" >&2; exit 1; }
+  echo "${tags}"
+}
+
+# Envoy/CRS: top patch per minor among since(); ModSec: every since() tag.
+since_window() {
+  local axis="$1" days="${2:-365}"
+  case "${axis}" in
+    modsecurity) since "${axis}" "${days}" | sort -rV ;;
+    *)
+      since "${axis}" "${days}" | awk -F. '{ top[$1"."$2] = $0 } END { for (m in top) print top[m] }' \
+        | sort -rV
+      ;;
+  esac
+}
+
 cmd="${1:-}"
 axis="${2:-}"
-[[ -n "${cmd}" && -n "${axis}" ]] || { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[[ -n "${cmd}" && -n "${axis}" ]] || { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 case "${cmd}" in
   list) list "${axis}" ;;
   latest) list "${axis}" | tail -n 1 ;;
   window) window "${axis}" "${3:-3}" ;;
+  since) since "${axis}" "${3:-365}" ;;
+  since-window) since_window "${axis}" "${3:-365}" ;;
   line)
     [[ "${3:-}" =~ $(pattern_of "${axis}") ]] || { echo "not a stable ${axis} tag: '${3:-}'" >&2; exit 2; }
     prefix="${3%.*}."

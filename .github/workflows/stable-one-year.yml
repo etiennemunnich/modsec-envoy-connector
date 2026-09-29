@@ -1,0 +1,159 @@
+name: stable-one-year
+
+# On-demand (~12-month) stable matrix: Envoy v1.x / libmodsecurity v3.0.x /
+# CRS v4.x tags with published_at in the last N days. Default strategy is
+# axis-at-a-time (pin two, vary one) plus a pins cell — never a silent
+# Cartesian. Full Cartesian requires confirm_cartesian=yes. No schedule
+# (minute budget); GitHub-hosted x86_64 + aarch64 only. Files the issue
+# "stable-one-year: failing cells" on failure and closes it when green.
+# See versions.one-year.yaml and docs/testing.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      strategy:
+        description: "axis (default) | diagonal | cartesian"
+        required: false
+        default: "axis"
+        type: choice
+        options: [axis, diagonal, cartesian]
+      days:
+        description: "Lookback days for published_at (stable tags only)"
+        required: false
+        default: "365"
+        type: string
+      profile:
+        description: "Suite profile from versions.one-year.yaml"
+        required: false
+        default: "full-cell"
+        type: choice
+        options: [smoke, fail-closed, fail-modes, go-ftw-smoke, full-cell]
+      dry_run:
+        description: "Plan cells only (no live e2e)"
+        required: false
+        default: false
+        type: boolean
+      confirm_cartesian:
+        description: "Required yes when strategy=cartesian (expensive)"
+        required: false
+        default: ""
+        type: string
+
+run-name: stable-one-year ${{ inputs.strategy }} ${{ inputs.days }}d ${{ inputs.dry_run && 'dry-run' || inputs.profile }}
+
+concurrency:
+  group: stable-one-year-${{ inputs.strategy }}-${{ inputs.days }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+      suites: ${{ steps.plan.outputs.suites }}
+      dry_run: ${{ steps.plan.outputs.dry_run }}
+      cell_count: ${{ steps.plan.outputs.cell_count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compute one-year cells
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STRATEGY: ${{ inputs.strategy }}
+          DAYS: ${{ inputs.days }}
+          PROFILE: ${{ inputs.profile }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CONFIRM: ${{ inputs.confirm_cartesian }}
+        run: |
+          set -euo pipefail
+          [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "::error::days must be an integer"; exit 1; }
+          [[ "$DAYS" -ge 1 && "$DAYS" -le 730 ]] || { echo "::error::days must be 1–730"; exit 1; }
+          case "$STRATEGY" in
+            axis|diagonal) ;;
+            cartesian)
+              [[ "$CONFIRM" == "yes" ]] || {
+                echo "::error::cartesian requires confirm_cartesian=yes (see versions.one-year.yaml minute budget)"
+                exit 1
+              }
+              ;;
+            *) echo "::error::bad strategy"; exit 1 ;;
+          esac
+          args=(--strategy "$STRATEGY" --days "$DAYS" --json)
+          [[ "$STRATEGY" == cartesian ]] && args+=(--confirm-cartesian)
+          cells="$(./scripts/one-year-matrix.sh plan "${args[@]}")"
+          count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$cells")"
+          [[ "$count" -ge 1 ]] || { echo "::error::empty cell matrix (cannot go green)"; exit 1; }
+          suites="$(PROFILE="$PROFILE" python3 - <<'PY'
+import os, re, pathlib, sys
+profile = os.environ["PROFILE"]
+text = pathlib.Path("versions.one-year.yaml").read_text()
+m = re.search(rf"(?m)^\s+{re.escape(profile)}:\s*[\"']?([^\"'\n]+)[\"']?\s*$", text)
+if not m:
+    sys.exit(f"unknown profile {profile}")
+print(m.group(1).strip())
+PY
+)"
+          {
+            echo "cells<<EOF"
+            echo "$cells"
+            echo "EOF"
+            echo "suites=$suites"
+            echo "dry_run=$DRY_RUN"
+            echo "cell_count=$count"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### stable-one-year plan"
+            echo
+            echo "- strategy: \`$STRATEGY\` · days: \`$DAYS\` · profile: \`$PROFILE\` · suites: \`$suites\`"
+            echo "- cells: **$count** · dry_run: \`$DRY_RUN\`"
+            echo
+            python3 -c 'import json,sys
+for c in json.loads(sys.argv[1]):
+  e=c["envoy"] or "(pin)"; m=c["modsec"] or "(pin)"; r=c["crs"] or "(pin)"
+  print("- %s — envoy=%s modsec=%s crs=%s" % (c["cell"], e, m, r))
+' "$cells"
+            echo
+            echo "Minute budget (warm, both arches): axis ~90–130 · diagonal ~25–40 · cartesian ~800+ job-minutes."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  cell:
+    name: ${{ matrix.cell }}
+    needs: plan
+    if: ${{ needs.plan.outputs.dry_run != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.cells) }}
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      envoy_version: ${{ matrix.envoy }}
+      modsecurity_pin: ${{ matrix.modsec }}
+      crs_tag: ${{ matrix.crs }}
+      suites: ${{ needs.plan.outputs.suites }}
+
+  report:
+    name: report
+    needs: [plan, cell]
+    if: ${{ !cancelled() && needs.plan.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: File or close the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-report.sh --mode on-failure --title "stable-one-year: failing cells"

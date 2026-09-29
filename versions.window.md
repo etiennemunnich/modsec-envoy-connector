@@ -19,3 +19,16 @@ CI computes the window from upstream releases (`scripts/stable-releases.sh windo
 | CRS | `CRS_TAG=v4.28.0 ./scripts/crs-version-probe.sh` | That CRS loads in the pinned engine; smoke and go-ftw pass (`FTW_MODE=full` for the whole regression tree). |
 
 Any axis, locally: `ENVOY_VERSION=… MODSECURITY_PIN=… CRS_TAG=… ./scripts/ci-live-e2e.sh` (what CI runs per cell). After a green `stable-candidate`, bump `versions.lock.md` on `main`.
+
+## ~12-month lookback (on demand)
+
+For stables published in the last year (not just depth 3), see [`versions.one-year.yaml`](./versions.one-year.yaml) and:
+
+```bash
+./scripts/one-year-matrix.sh list
+./scripts/one-year-matrix.sh plan --strategy axis          # default; never silent Cartesian
+./scripts/one-year-matrix.sh plan --strategy diagonal
+gh workflow run stable-one-year.yml -f strategy=axis -f dry_run=true
+```
+
+Axis-at-a-time is the default (~19 cells today). Full Cartesian is opt-in (`--confirm-cartesian` / `confirm_cartesian=yes`) and expensive. Details: [docs/testing.md](./docs/testing.md#hosted-ci), [findings/one-year-stable-matrix.md](./docs/findings/one-year-stable-matrix.md).
