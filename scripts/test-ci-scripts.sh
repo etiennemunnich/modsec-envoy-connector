@@ -169,5 +169,38 @@ check "e2e floor: TRAILERS FAILED fails (negative)" 1 "${ok}"
 trailers_floor "${TMP}/trailers-fake.log" >/dev/null && ok=0 || ok=1
 check "e2e floor: fake trailer_checks without PASSED fails (negative)" 1 "${ok}"
 
+grpc_floor() { # mirrors ci-live-e2e.sh floor hop-trace-grpc
+  local n
+  grep -qE '\bHOP-TRACE-GRPC PASSED\b' "$1" || { echo "missing HOP-TRACE-GRPC PASSED"; return 1; }
+  n="$(grep -Eo 'checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
+  [[ "${n:-0}" -ge 6 ]] || { echo "checks=${n:-0} < 6"; return 1; }
+  return 0
+}
+printf '%s\n' 'HOP-TRACE-GRPC PASSED checks=13 (headers/path only — not protobuf CRS)' >"${TMP}/grpc-ok.log"
+printf '%s\n' 'HOP-TRACE-GRPC FAILED (9 passed)' >"${TMP}/grpc-failed.log"
+printf '%s\n' 'checks=99' >"${TMP}/grpc-fake.log"
+check "e2e summary: HOP-TRACE-GRPC PASSED matches SUMMARY_RE" 1 \
+  "$(grep -cE "${SUMMARY_RE}" "${TMP}/grpc-ok.log")"
+grpc_floor "${TMP}/grpc-ok.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: real HOP-TRACE-GRPC PASSED passes" 0 "${ok}"
+grpc_floor "${TMP}/grpc-failed.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: HOP-TRACE-GRPC FAILED fails (negative)" 1 "${ok}"
+grpc_floor "${TMP}/grpc-fake.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: fake checks without PASSED fails (negative)" 1 "${ok}"
+
+# Thin presence hook for gRPC hop-trace artifacts (no live Envoy).
+[[ -x "${ROOT}/demo/scripts/hop-trace-grpc.sh" ]] && ok=0 || ok=1
+check "demo: hop-trace-grpc.sh executable" 0 "${ok}"
+[[ -f "${ROOT}/demo/envoy/envoy-grpc.yaml" ]] && ok=0 || ok=1
+check "demo: envoy-grpc.yaml present" 0 "${ok}"
+[[ -f "${ROOT}/demo/grpc-echo/echo.proto" ]] && ok=0 || ok=1
+check "demo: grpc-echo proto present" 0 "${ok}"
+[[ -f "${ROOT}/demo/rules/connex-grpc-demo.conf" ]] && ok=0 || ok=1
+check "demo: connex-grpc-demo.conf present" 0 "${ok}"
+grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
+check "demo: envoy-grpc fail-closed" 0 "${ok}"
+grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
+check "demo: envoy-grpc headers-only bodies" 0 "${ok}"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

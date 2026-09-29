@@ -6,7 +6,9 @@
 #   SUITES="smoke fail-closed fail-modes go-ftw-smoke" ./scripts/ci-live-e2e.sh
 #
 # Env:
-#   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace go-ftw-smoke go-ftw-body go-ftw-full
+#   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace
+#                    hop-trace-grpc go-ftw-smoke go-ftw-body go-ftw-full
+#                    (hop-trace-grpc needs go + grpcurl; Mac/local — not default CI)
 #   BODY_MODE        BUFFERED (default) or STREAMED — selects demo/envoy/envoy{,-streamed}.yaml
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
@@ -81,6 +83,7 @@ MIN_FTW_BODY="${MIN_FTW_BODY:-100}"
 MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 MIN_TRAILERS="${MIN_TRAILERS:-5}"
+MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
 
 # Suite summary lines for the report table. Must match mid-line suffixes
 # (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.
@@ -112,6 +115,11 @@ floor() {
       grep -qE '\bTRAILERS PASSED\b' "$2" || { echo "missing TRAILERS PASSED"; return 1; }
       n="$(grep -Eo 'trailer_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_TRAILERS}" ]] || { echo "trailer_checks=${n:-0} < ${MIN_TRAILERS}"; return 1; }
+      ;;
+    hop-trace-grpc)
+      grep -qE '\bHOP-TRACE-GRPC PASSED\b' "$2" || { echo "missing HOP-TRACE-GRPC PASSED"; return 1; }
+      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_GRPC_HOP}" ]] || { echo "checks=${n:-0} < ${MIN_GRPC_HOP}"; return 1; }
       ;;
     go-ftw-smoke)
       n="$(ftw_success "$2" 'demo tests')"
@@ -154,6 +162,7 @@ for suite in ${SUITES}; do
   case "${suite}" in
     smoke | fail-closed | fail-modes | trailers) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
+    hop-trace-grpc) cmd=("${DEMO}/hop-trace-grpc.sh") ;;
     go-ftw-smoke | go-ftw-body | go-ftw-full) cmd=("${DEMO}/go-ftw.sh" "${suite#go-ftw-}") ;;
     *) record "${suite}" FAIL 0 "unknown suite"; continue ;;
   esac

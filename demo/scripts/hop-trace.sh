@@ -15,6 +15,13 @@
 #   Request headers do not reach ModSec request phase; connector may only see
 #   local-reply passthrough on the response. WebSocket *frames* are never inspected.
 #
+# gRPC (honest limits — headers/path/metadata only; NOT protobuf CRS):
+#   Requires demo/scripts/hop-trace-grpc.sh (or equivalent) to have switched Envoy
+#   to demo/envoy/envoy-grpc.yaml and started demo/grpc-echo on :18090.
+#   ./demo/scripts/hop-trace.sh --proto grpc --expect-grpc-ok yes --expect-origin yes
+#   ./demo/scripts/hop-trace.sh --proto grpc --expect-grpc-ok no --expect-origin no \
+#       --grpc-header 'x-connex-grpc-probe: deny'
+#
 # Report: demo/.run/hop-trace/<request-id>.txt
 set -euo pipefail
 # shellcheck source=lib.sh
@@ -23,10 +30,18 @@ source "$(dirname "$0")/lib.sh"
 PROTO=h1
 EXPECT_STATUS=""
 EXPECT_ORIGIN=""
+EXPECT_GRPC_OK=""
+GRPC_METHOD="echo.Echo/Unary"
+GRPC_DATA='{"text":"hop-trace"}'
+GRPC_HEADERS=()
+GRPC_HITS="${RUN}/grpc-origin-hits.log"
+GRPC_ECHO_DIR="${DEMO}/grpc-echo"
 
 usage() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
-  echo "usage: $0 [--proto h1|h2|ws] [--expect-status CODE] [--expect-origin yes|no] PATH [curl args...]" >&2
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  echo "usage: $0 [--proto h1|h2|ws|grpc] [--expect-status CODE] [--expect-origin yes|no]" >&2
+  echo "          [--expect-grpc-ok yes|no] [--grpc-method M] [--grpc-header 'k: v']..." >&2
+  echo "          [PATH [curl args...]]" >&2
   exit 2
 }
 
@@ -35,30 +50,62 @@ while [[ $# -gt 0 ]]; do
     --proto) PROTO="$2"; shift 2 ;;
     --expect-status) EXPECT_STATUS="$2"; shift 2 ;;
     --expect-origin) EXPECT_ORIGIN="$2"; shift 2 ;;
+    --expect-grpc-ok) EXPECT_GRPC_OK="$2"; shift 2 ;;
+    --grpc-method) GRPC_METHOD="$2"; shift 2 ;;
+    --grpc-data) GRPC_DATA="$2"; shift 2 ;;
+    --grpc-header) GRPC_HEADERS+=("$2"); shift 2 ;;
     -h | --help) usage ;;
-    -*) echo "unknown option $1 (curl args go after PATH)" >&2; usage ;;
+    -*)
+      if [[ "${PROTO}" == "grpc" ]]; then
+        echo "unknown option $1" >&2
+        usage
+      fi
+      echo "unknown option $1 (curl args go after PATH)" >&2
+      usage
+      ;;
     *) break ;;
   esac
 done
-[[ $# -ge 1 ]] || usage
-REQ_PATH="$1"
-shift
+
+case "${PROTO}" in
+  h1 | h2 | ws | grpc) ;;
+  *) echo "unsupported --proto ${PROTO} (h1|h2|ws|grpc)" >&2; exit 2 ;;
+esac
+case "${EXPECT_ORIGIN}" in "" | yes | no) ;; *) usage ;; esac
+case "${EXPECT_GRPC_OK}" in "" | yes | no) ;; *) usage ;; esac
+
+REQ_PATH="/"
+CURL_ARGS=()
+if [[ "${PROTO}" != "grpc" ]]; then
+  [[ $# -ge 1 ]] || usage
+  REQ_PATH="$1"
+  shift
+  CURL_ARGS=("$@")
+elif [[ $# -gt 0 ]]; then
+  echo "grpc mode does not take a PATH argument (got: $*)" >&2
+  exit 2
+fi
+
 case "${PROTO}" in
   h1) FLAG=--http1.1 ;;
   h2) FLAG=--http2-prior-knowledge ;;
-  ws) FLAG="" ;;
-  *) echo "unsupported --proto ${PROTO} (h1|h2|ws)" >&2; exit 2 ;;
+  ws | grpc) FLAG="" ;;
 esac
-case "${EXPECT_ORIGIN}" in "" | yes | no) ;; *) usage ;; esac
 
 # WS defaults: demo rejects upgrades at Envoy (upgrade_failed); origin untouched.
 if [[ "${PROTO}" == "ws" ]]; then
   [[ -n "${EXPECT_STATUS}" ]] || EXPECT_STATUS=403
   [[ -n "${EXPECT_ORIGIN}" ]] || EXPECT_ORIGIN=no
-  if [[ $# -gt 0 ]]; then
-    echo "ws mode does not take curl args (got: $*)" >&2
+  if [[ ${#CURL_ARGS[@]} -gt 0 ]]; then
+    echo "ws mode does not take curl args (got: ${CURL_ARGS[*]})" >&2
     exit 2
   fi
+fi
+
+if [[ "${PROTO}" == "grpc" ]]; then
+  command -v grpcurl >/dev/null || { echo "grpcurl not on PATH" >&2; exit 2; }
+  [[ -f "${GRPC_ECHO_DIR}/echo.proto" ]] || { echo "missing ${GRPC_ECHO_DIR}/echo.proto" >&2; exit 2; }
+  [[ -n "${EXPECT_ORIGIN}" ]] || EXPECT_ORIGIN=yes
 fi
 
 wait_http "http://127.0.0.1:${ENVOY_ADMIN_PORT}/ready" 25 \
@@ -75,6 +122,9 @@ bad() { echo "  FAIL $*"; FAIL=1; }
 
 CODE=""
 VER="0"
+GRPC_RC=""
+GRPC_STATUS=""
+
 if [[ "${PROTO}" == "ws" ]]; then
   echo "==> limits  WebSocket hop-trace covers HTTP Upgrade *handshake* only."
   echo "  Not claimed: WebSocket frame CRS, full-duplex WS WAF, or upgrade success."
@@ -126,18 +176,70 @@ PY
 )
 EOF
   VER="1.1"
+elif [[ "${PROTO}" == "grpc" ]]; then
+  echo "==> limits  gRPC hop-trace covers headers / :path / metadata only."
+  echo "  Not claimed: protobuf CRS, streaming RPC WAF, or full gRPC body inspection."
+  GRPC_OUT="${RUN}/hop-trace/${RID}.grpc-out"
+  GRPC_ERR="${RUN}/hop-trace/${RID}.grpc-err"
+  set +e
+  if [[ ${#GRPC_HEADERS[@]} -gt 0 ]]; then
+    hdr_args=()
+    for h in "${GRPC_HEADERS[@]}"; do
+      hdr_args+=(-H "${h}")
+    done
+    grpcurl -plaintext -v \
+      -import-path "${GRPC_ECHO_DIR}" -proto echo.proto \
+      -H "x-request-id: ${RID}" \
+      "${hdr_args[@]}" \
+      -d "${GRPC_DATA}" \
+      "127.0.0.1:18080" "${GRPC_METHOD}" \
+      >"${GRPC_OUT}" 2>"${GRPC_ERR}"
+  else
+    grpcurl -plaintext -v \
+      -import-path "${GRPC_ECHO_DIR}" -proto echo.proto \
+      -H "x-request-id: ${RID}" \
+      -d "${GRPC_DATA}" \
+      "127.0.0.1:18080" "${GRPC_METHOD}" \
+      >"${GRPC_OUT}" 2>"${GRPC_ERR}"
+  fi
+  GRPC_RC=$?
+  set -e
+  GRPC_STATUS="$(grep -i 'grpc-status:' "${GRPC_ERR}" | tail -1 | awk '{print $2}' | tr -d '\r' || true)"
+  CODE="$(grep -iE '^< HTTP/|HTTP/2 ' "${GRPC_ERR}" | tail -1 | awk '{print $2}' | tr -d '\r' || true)"
+  CODE="${CODE:-000}"
+  VER="2"
 else
-  read -r CODE VER < <(curl -s -o /dev/null -w '%{http_code} %{http_version}\n' --max-time 10 \
-    "${FLAG}" -H "x-request-id: ${RID}" "$@" "${BASE}${REQ_PATH}" || echo "000 0")
+  curl_cmd=(curl -s -o /dev/null -w '%{http_code} %{http_version}\n' --max-time 10 \
+    "${FLAG}" -H "x-request-id: ${RID}")
+  if [[ ${#CURL_ARGS[@]} -gt 0 ]]; then
+    curl_cmd+=("${CURL_ARGS[@]}")
+  fi
+  curl_cmd+=("${BASE}${REQ_PATH}")
+  read -r CODE VER < <("${curl_cmd[@]}" || echo "000 0")
 fi
 sleep 0.6
 
-echo "==> client  ${PROTO} ${BASE}${REQ_PATH}  rid=${RID}"
-echo "  HTTP ${CODE} (http_version ${VER})"
-if [[ -n "${EXPECT_STATUS}" && "${CODE}" == "${EXPECT_STATUS}" ]]; then
-  ok "status ${CODE}"
-elif [[ -n "${EXPECT_STATUS}" ]]; then
-  bad "status ${CODE}, want ${EXPECT_STATUS}"
+if [[ "${PROTO}" == "grpc" ]]; then
+  echo "==> client  grpc ${GRPC_METHOD}  rid=${RID}"
+  echo "  grpcurl rc=${GRPC_RC} grpc-status=${GRPC_STATUS:-?} http=${CODE}"
+  if [[ "${EXPECT_GRPC_OK}" == "yes" ]]; then
+    if [[ "${GRPC_RC}" -eq 0 ]]; then ok "grpc OK"; else bad "grpc want OK got rc=${GRPC_RC} status=${GRPC_STATUS:-?}"; fi
+  elif [[ "${EXPECT_GRPC_OK}" == "no" ]]; then
+    if [[ "${GRPC_RC}" -ne 0 ]]; then ok "grpc non-OK as expected (rc=${GRPC_RC})"; else bad "grpc unexpectedly OK"; fi
+  fi
+  if [[ -n "${EXPECT_STATUS}" && "${CODE}" == "${EXPECT_STATUS}" ]]; then
+    ok "http status ${CODE}"
+  elif [[ -n "${EXPECT_STATUS}" ]]; then
+    bad "http status ${CODE}, want ${EXPECT_STATUS}"
+  fi
+else
+  echo "==> client  ${PROTO} ${BASE}${REQ_PATH}  rid=${RID}"
+  echo "  HTTP ${CODE} (http_version ${VER})"
+  if [[ -n "${EXPECT_STATUS}" && "${CODE}" == "${EXPECT_STATUS}" ]]; then
+    ok "status ${CODE}"
+  elif [[ -n "${EXPECT_STATUS}" ]]; then
+    bad "status ${CODE}, want ${EXPECT_STATUS}"
+  fi
 fi
 
 echo "==> Envoy access log"
@@ -205,12 +307,18 @@ if not found:
 PY
 if [[ "${PROTO}" == "ws" ]]; then
   echo "  (WS: frame/body CRS not applicable; handshake never entered ModSec request phase)"
+elif [[ "${PROTO}" == "grpc" ]]; then
+  echo "  (gRPC: protobuf body CRS not claimed; headers/path/metadata only)"
 fi
 
 echo "==> origin"
-if grep -qF "rid=${RID}" "${HITS_FILE}" 2>/dev/null; then
+ORIGIN_FILE="${HITS_FILE}"
+if [[ "${PROTO}" == "grpc" ]]; then
+  ORIGIN_FILE="${GRPC_HITS}"
+fi
+if grep -qF "rid=${RID}" "${ORIGIN_FILE}" 2>/dev/null; then
   origin=yes
-  echo "  $(grep -F "rid=${RID}" "${HITS_FILE}" | tail -1)"
+  echo "  $(grep -F "rid=${RID}" "${ORIGIN_FILE}" | tail -1)"
 else
   origin=no
   echo "  (origin never received ${RID})"
@@ -228,6 +336,8 @@ if [[ "${FAIL}" -ne 0 ]]; then
 fi
 if [[ "${PROTO}" == "ws" ]]; then
   echo "HOP-TRACE OK (ws handshake only — not full WS WAF)"
+elif [[ "${PROTO}" == "grpc" ]]; then
+  echo "HOP-TRACE OK (grpc headers/path only — not protobuf CRS)"
 else
   echo "HOP-TRACE OK"
 fi

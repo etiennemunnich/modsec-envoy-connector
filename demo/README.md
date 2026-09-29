@@ -48,8 +48,9 @@ curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # c
 | [`fail-modes.sh`](./scripts/fail-modes.sh) | The wider failure matrix over **HTTP/1.1 and HTTP/2**: connector kill, bad-rules boot, rule deny, hang, unwritable audit log, split `Cookie` headers, an attack only in the last chunk / DATA frames, and a negative control that temporarily sets `failure_mode_allow: true` to prove the checks can see fail-open. Every check asserts status and origin hits. `--proto h1\|h2`, `--class 1,4,5`. |
 | [`go-ftw.sh`](./scripts/go-ftw.sh) | Runs the OWASP CRS regression tests with [go-ftw](https://github.com/coreruleset/go-ftw) against the demo (HTTP/1.x, status codes only). `smoke` (demo tests + body-heavy CRS SQLi/XSS tests), `body`, or `full`. Results in `demo/.run/go-ftw/`. |
 | [`install-go-ftw.sh`](./scripts/install-go-ftw.sh) | Installs go-ftw (Homebrew tap, or `go install`). |
-| [`hop-trace.sh`](./scripts/hop-trace.sh) | Sends one request and shows every hop by request id: Envoy access log, connector phase decisions, CRS rule matches, and whether the origin received it. `--expect-status`, `--expect-origin yes\|no`, `--proto h1\|h2\|ws`. |
+| [`hop-trace.sh`](./scripts/hop-trace.sh) | Sends one request and shows every hop by request id: Envoy access log, connector phase decisions, CRS rule matches, and whether the origin received it. `--expect-status`, `--expect-origin yes\|no`, `--proto h1\|h2\|ws\|grpc`. |
 | [`hop-trace-ws.sh`](./scripts/hop-trace-ws.sh) | WebSocket **handshake** hop-trace only (stock demo → Envoy `upgrade_failed` 403; origin untouched; ModSec request-phase not entered). **Not** frame CRS / full WS WAF. |
+| [`hop-trace-grpc.sh`](./scripts/hop-trace-grpc.sh) | gRPC hop-trace through Envoy → connector → `demo/grpc-echo` (:18090). Headers/path/metadata only (`envoy-grpc.yaml` body modes `NONE`). Allow + deny + fail-closed + CRS path cell; floor ≥ 6. **Not** protobuf CRS. Needs `go` + `grpcurl`. |
 | [`perf.sh`](./scripts/perf.sh) | Latency samples (p50/p99) on allow/deny GET+POST paths through the live demo. Floors: `PERF_N ≥ 10`, every required WAF path must match expected status for all N samples, ≥ 6 WAF paths. Empty/partial runs fail. Not an SLO. Results in `demo/.run/perf/`. |
 | [`down.sh`](./scripts/down.sh) | Stops everything the demo started. |
 | [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit with its request id), a detach helper, and shared settings. |
@@ -61,6 +62,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | File | Role |
 |------|------|
 | [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, **BUFFERED** request and response bodies, trailers **SKIP**, `request_attributes` for real client IP / protocol, CONNECT answered locally. |
+| [`envoy/envoy-grpc.yaml`](./envoy/envoy-grpc.yaml) | HTTP/2 + headers-only (`NONE` bodies) → `grpc-echo` :18090. Used only by `hop-trace-grpc.sh`. Honest: headers/path/metadata — **not** protobuf CRS. |
 | [`envoy/envoy-streamed.yaml`](./envoy/envoy-streamed.yaml) | Same as above with **STREAMED** request and response bodies (`BODY_MODE=STREAMED`). |
 | [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml) / [`envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Same body modes with trailer modes **SEND** — used only by `trailers.sh` (trailer values still not CRS-inspected). |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
@@ -76,6 +78,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | 18081 | Connector gRPC |
 | 18082 | Connector `/metrics`, `/healthz` |
 | 18098 | Demo origin |
+| 18090 | Demo gRPC echo (started by `hop-trace-grpc.sh` only) |
 
 `up.sh` refuses to start if any of these are taken and tells you by what.
 

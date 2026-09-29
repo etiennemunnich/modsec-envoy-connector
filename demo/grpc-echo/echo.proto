@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package echo;
+
+option go_package = "github.com/etiennemunnich/envoy-modsec-connex/demo/grpc-echo;echo";
+
+// Tiny unary-only service for connex gRPC hop-trace demos.
+// Not a product API — demo origin only.
+service Echo {
+  rpc Unary(EchoRequest) returns (EchoReply);
+}
+
+message EchoRequest {
+  string text = 1;
+}
+
+message EchoReply {
+  string text = 1;
+}
