@@ -1,7 +1,7 @@
-# GHCR stale package versions — cleanup blocked
+# GHCR stale package versions
 
 **Date:** 2026-09-29  
-**Status:** blocked on token scopes (`read:packages` + `delete:packages`)  
+**Status:** cleanup script shipped; delete still needs packages scopes on the operator's `gh` token  
 **Not merge-blocking** for connector work.
 
 ## What remains
@@ -10,57 +10,52 @@ GitHub Release + git tag `v0.1.0-rc.1` are **already deleted** (API 404). Accide
 
 `ghcr.io/etiennemunnich/envoy-modsec-connex`
 
-Targets to remove when scopes allow:
+Allowlisted targets (hard-coded in the script — nothing else is deleted):
 
 | Tag / version name pattern | Why |
 |----------------------------|-----|
 | `v0.1.0-rc.1` | Accidental CI-proof pre-release image |
-| `sha-770ab01-*` (any arch / digest tags from head `770ab01`) | Stale dispatch image from early release path |
+| tags starting `sha-770ab01` | Stale dispatch image from early release path |
 
 Package UI (signed-in):  
 https://github.com/users/etiennemunnich/packages/container/envoy-modsec-connex/versions
 
-## Why agents cannot delete today
+## Script (preferred)
 
-Mac `gh` token scopes (2026-09-29): `gist`, `read:org`, `repo`, `workflow` only.
+Use the repo script — do **not** paste ad-hoc `gh api` delete loops:
+
+```bash
+# Default = dry-run: list allowlisted stale ids + tags only (exit 0 if none)
+./scripts/ghcr-delete-stale.sh
+
+# Optional read-only dump of every package version (debug; never deletes)
+./scripts/ghcr-delete-stale.sh --all-versions
+
+# Delete only allowlisted version ids (prints each id before DELETE)
+./scripts/ghcr-delete-stale.sh --delete
+```
+
+Overrides: `OWNER=… PACKAGE=…` (defaults `etiennemunnich` / `envoy-modsec-connex`).
+
+The script uses `gh api` + the logged-in user. It stores no secrets and does **not** widen auth.
+
+## Scopes (human must refresh once)
+
+Mac `gh` token historically had only `gist`, `read:org`, `repo`, `workflow`. Listing or deleting package versions needs **`read:packages`** (+ **`delete:packages`** for `--delete`):
 
 ```text
 GET /users/etiennemunnich/packages/container/envoy-modsec-connex/versions
 → 403  You need at least read:packages scope to get a package's versions.
 ```
 
-## Exact commands for Etienne
-
-Re-auth (or add a PAT) with **`read:packages`** and **`delete:packages`**, then:
+On 403 the script prints this exact refresh command and exits non-zero:
 
 ```bash
-# List versions (confirm names / ids)
-gh api \
-  "/users/etiennemunnich/packages/container/envoy-modsec-connex/versions?per_page=100" \
-  --jq '.[] | {id, name: .name, tags: .metadata.container.tags, updated: .updated_at}'
-
-# Delete by version id (repeat per stale version)
-# Replace VERSION_ID with each matching id from the list above.
-gh api -X DELETE \
-  "/users/etiennemunnich/packages/container/envoy-modsec-connex/versions/VERSION_ID"
-
-# Optional: filter locally for the known stale tags
-gh api \
-  "/users/etiennemunnich/packages/container/envoy-modsec-connex/versions?per_page=100" \
-  --jq '.[] | select(
-    (.metadata.container.tags // []) as $t
-    | ($t | index("v0.1.0-rc.1") != null)
-      or (any($t[]; startswith("sha-770ab01")))
-  ) | .id' \
-  | while read -r id; do
-      echo "deleting version id=$id"
-      gh api -X DELETE \
-        "/users/etiennemunnich/packages/container/envoy-modsec-connex/versions/$id"
-    done
+gh auth refresh -h github.com -s read:packages,delete:packages,gist,read:org,repo,workflow
 ```
 
-After delete, re-list and confirm those tags are gone. No connector code change is required.
+Then re-run `./scripts/ghcr-delete-stale.sh` (dry-run) and, when the list looks right, `./scripts/ghcr-delete-stale.sh --delete`. Re-list to confirm those tags are gone. No connector code change is required.
 
 ## Issue
 
-Tracking: open/keep a repo issue titled **"GHCR: delete stale v0.1.0-rc.1 and sha-770ab01-* versions"** with a link to this note if one is not already open.
+Tracking: [#9](https://github.com/etiennemunnich/envoy-modsec-connex/issues/9) — **GHCR: delete stale v0.1.0-rc.1 and sha-770ab01-* versions**.

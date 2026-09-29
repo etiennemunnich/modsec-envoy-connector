@@ -64,6 +64,10 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 | Full CRS go-ftw | `crs-full` × arch (monthly) | `./demo/scripts/go-ftw.sh full` |
 | Release artifacts | `release` on a tag that is on `main` with green `ci` (dispatch pushes an image, no Release) | — |
 
+## Ops / cleanup
+
+- **GHCR stale tags:** dry-run then optional delete via `./scripts/ghcr-delete-stale.sh` (allowlisted patterns only; needs `read:packages` / `delete:packages` on your `gh` token — the script does not widen auth). Detail: [`docs/findings/ghcr-stale-tags.md`](./docs/findings/ghcr-stale-tags.md).
+
 ## Versioning
 
 - **Product:** git tag `vX.Y.Z` (+ GitHub Release listing pin axes).
