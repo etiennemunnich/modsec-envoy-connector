@@ -50,6 +50,8 @@ curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # c
 | [`install-go-ftw.sh`](./scripts/install-go-ftw.sh) | Installs go-ftw (Homebrew tap, or `go install`). |
 | [`hop-trace.sh`](./scripts/hop-trace.sh) | Sends one request and shows every hop by request id: Envoy access log, connector phase decisions, CRS rule matches, and whether the origin received it. `--expect-status`, `--expect-origin yes\|no`, `--proto h1\|h2\|ws\|grpc`. |
 | [`hop-trace-ws.sh`](./scripts/hop-trace-ws.sh) | WebSocket **handshake** hop-trace only (stock demo → Envoy `upgrade_failed` 403; origin untouched; ModSec request-phase not entered). **Not** frame CRS / full WS WAF. |
+| [`hop-trace-ws-frames.sh`](./scripts/hop-trace-ws-frames.sh) | Locks the WS **frame** bound: stock `upgrade_failed`; headers-only upgrade → 101 + handshake ModSec; SQLi-shaped **frames echo** (not CRS); fail-closed on handshake; BUFFERED+upgrade hang. Floor ≥ 6. **Not** frame CRS. |
+| [`ws-echo.py`](./scripts/ws-echo.py) | Tiny stdlib WebSocket echo origin (:18091) for the frame-bound suite. |
 | [`hop-trace-grpc.sh`](./scripts/hop-trace-grpc.sh) | gRPC hop-trace through Envoy → connector → `demo/grpc-echo` (:18090). Headers/path/metadata only (`envoy-grpc.yaml` body modes `NONE`). Allow + deny + fail-closed + CRS path cell; floor ≥ 6. **Not** protobuf CRS. Needs `go` + `grpcurl`. |
 | [`perf.sh`](./scripts/perf.sh) | Latency samples (p50/p99) on allow/deny GET+POST paths through the live demo. Floors: `PERF_N ≥ 10`, every required WAF path must match expected status for all N samples, ≥ 6 WAF paths. Empty/partial runs fail. Not an SLO. Results in `demo/.run/perf/`. |
 | [`down.sh`](./scripts/down.sh) | Stops everything the demo started. |
@@ -63,6 +65,8 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 |------|------|
 | [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, **BUFFERED** request and response bodies, trailers **SKIP**, `request_attributes` for real client IP / protocol, CONNECT answered locally. |
 | [`envoy/envoy-grpc.yaml`](./envoy/envoy-grpc.yaml) | HTTP/2 + headers-only (`NONE` bodies) → `grpc-echo` :18090. Used only by `hop-trace-grpc.sh`. Honest: headers/path/metadata — **not** protobuf CRS. |
+| [`envoy/envoy-ws-headers.yaml`](./envoy/envoy-ws-headers.yaml) | `upgrade_configs: websocket` + body `NONE` → `ws-echo` :18091. Handshake ModSec only. |
+| [`envoy/envoy-ws-buffered.yaml`](./envoy/envoy-ws-buffered.yaml) | Same upgrade + **BUFFERED** bodies — hang bound for `hop-trace-ws-frames.sh` only. |
 | [`envoy/envoy-streamed.yaml`](./envoy/envoy-streamed.yaml) | Same as above with **STREAMED** request and response bodies (`BODY_MODE=STREAMED`). |
 | [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml) / [`envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Same body modes with trailer modes **SEND** — used only by `trailers.sh` (trailer values still not CRS-inspected). |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
@@ -79,6 +83,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | 18082 | Connector `/metrics`, `/healthz` |
 | 18098 | Demo origin |
 | 18090 | Demo gRPC echo (started by `hop-trace-grpc.sh` only) |
+| 18091 | Demo WebSocket echo (started by `hop-trace-ws-frames.sh` only) |
 
 `up.sh` refuses to start if any of these are taken and tells you by what.
 

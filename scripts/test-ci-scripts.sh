@@ -202,5 +202,39 @@ check "demo: envoy-grpc fail-closed" 0 "${ok}"
 grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
 check "demo: envoy-grpc headers-only bodies" 0 "${ok}"
 
+# Thin presence hook for WS frame-bound artifacts.
+[[ -x "${ROOT}/demo/scripts/hop-trace-ws-frames.sh" ]] && ok=0 || ok=1
+check "demo: hop-trace-ws-frames.sh executable" 0 "${ok}"
+[[ -x "${ROOT}/demo/scripts/ws-echo.py" ]] && ok=0 || ok=1
+check "demo: ws-echo.py executable" 0 "${ok}"
+[[ -f "${ROOT}/demo/envoy/envoy-ws-headers.yaml" ]] && ok=0 || ok=1
+check "demo: envoy-ws-headers.yaml present" 0 "${ok}"
+[[ -f "${ROOT}/demo/envoy/envoy-ws-buffered.yaml" ]] && ok=0 || ok=1
+check "demo: envoy-ws-buffered.yaml present" 0 "${ok}"
+grep -q 'upgrade_type: websocket' "${ROOT}/demo/envoy/envoy-ws-headers.yaml" && ok=0 || ok=1
+check "demo: envoy-ws-headers upgrade_configs" 0 "${ok}"
+grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-ws-headers.yaml" && ok=0 || ok=1
+check "demo: envoy-ws-headers bodies NONE" 0 "${ok}"
+grep -q 'request_body_mode: BUFFERED' "${ROOT}/demo/envoy/envoy-ws-buffered.yaml" && ok=0 || ok=1
+check "demo: envoy-ws-buffered hang config" 0 "${ok}"
+[[ -f "${ROOT}/demo/rules/connex-ws-demo.conf" ]] && ok=0 || ok=1
+check "demo: connex-ws-demo.conf present" 0 "${ok}"
+
+ws_floor() {
+  local n
+  grep -qE '\bHOP-TRACE-WS-FRAMES PASSED\b' "$1" || { echo "missing HOP-TRACE-WS-FRAMES PASSED"; return 1; }
+  n="$(grep -Eo 'checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
+  [[ "${n:-0}" -ge 6 ]] || { echo "checks=${n:-0} < 6"; return 1; }
+  return 0
+}
+printf '%s\n' 'HOP-TRACE-WS-FRAMES PASSED checks=9 (handshake ModSec yes; frame CRS no)' >"${TMP}/wsf-ok.log"
+printf '%s\n' 'HOP-TRACE-WS-FRAMES FAILED (8 passed)' >"${TMP}/wsf-failed.log"
+check "e2e summary: HOP-TRACE-WS-FRAMES PASSED matches SUMMARY_RE" 1 \
+  "$(grep -cE "${SUMMARY_RE}" "${TMP}/wsf-ok.log")"
+ws_floor "${TMP}/wsf-ok.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: real HOP-TRACE-WS-FRAMES PASSED passes" 0 "${ok}"
+ws_floor "${TMP}/wsf-failed.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: HOP-TRACE-WS-FRAMES FAILED fails (negative)" 1 "${ok}"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"
