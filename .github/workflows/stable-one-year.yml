@@ -90,16 +90,17 @@ jobs:
           cells="$(./scripts/one-year-matrix.sh plan "${args[@]}")"
           count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$cells")"
           [[ "$count" -ge 1 ]] || { echo "::error::empty cell matrix (cannot go green)"; exit 1; }
-          suites="$(PROFILE="$PROFILE" python3 - <<'PY'
-import os, re, pathlib, sys
-profile = os.environ["PROFILE"]
-text = pathlib.Path("versions.one-year.yaml").read_text()
-m = re.search(rf"(?m)^\s+{re.escape(profile)}:\s*[\"']?([^\"'\n]+)[\"']?\s*$", text)
-if not m:
-    sys.exit(f"unknown profile {profile}")
-print(m.group(1).strip())
-PY
-)"
+          # Keep profile→suites inline (must stay indented under run: | — a
+          # column-0 heredoc body terminates the YAML block and leaves GHA
+          # unable to register workflow_dispatch).
+          case "$PROFILE" in
+            smoke) suites="smoke" ;;
+            fail-closed) suites="smoke fail-closed" ;;
+            fail-modes) suites="smoke fail-closed fail-modes" ;;
+            go-ftw-smoke) suites="smoke fail-closed go-ftw-smoke" ;;
+            full-cell) suites="smoke fail-closed fail-modes go-ftw-smoke" ;;
+            *) echo "::error::unknown profile $PROFILE"; exit 1 ;;
+          esac
           {
             echo "cells<<EOF"
             echo "$cells"
@@ -114,11 +115,7 @@ PY
             echo "- strategy: \`$STRATEGY\` · days: \`$DAYS\` · profile: \`$PROFILE\` · suites: \`$suites\`"
             echo "- cells: **$count** · dry_run: \`$DRY_RUN\`"
             echo
-            python3 -c 'import json,sys
-for c in json.loads(sys.argv[1]):
-  e=c["envoy"] or "(pin)"; m=c["modsec"] or "(pin)"; r=c["crs"] or "(pin)"
-  print("- %s — envoy=%s modsec=%s crs=%s" % (c["cell"], e, m, r))
-' "$cells"
+            python3 -c 'import json,sys; cs=json.loads(sys.argv[1]); [print("- %s -- envoy=%s modsec=%s crs=%s" % (c["cell"], c["envoy"] or "(pin)", c["modsec"] or "(pin)", c["crs"] or "(pin)")) for c in cs]' "$cells"
             echo
             echo "Minute budget (warm, both arches): axis ~90–130 · diagonal ~25–40 · cartesian ~800+ job-minutes."
           } | tee -a "$GITHUB_STEP_SUMMARY"
