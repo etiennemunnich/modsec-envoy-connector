@@ -255,5 +255,18 @@ out="$("${ROOT}/scripts/one-year-matrix.sh" run --profile nosuch 2>&1 || true)"
 echo "${out}" | grep -q "unknown profile" && ok=0 || ok=1
 check "one-year: unknown profile refused" 0 "${ok}"
 
+
+# --- go-ftw body staging + version-aware CRS body floor (offline) ----------
+grep -q 'stage_body_tests' "${ROOT}/demo/scripts/go-ftw.sh" && ok=0 || ok=1
+check "go-ftw: stages BODY_INCLUDE rule YAML for smoke/body" 0 "${ok}"
+grep -q 'MIN_FTW_BODY_PIN' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
+check "e2e: version-aware CRS body floor (MIN_FTW_BODY_PIN)" 0 "${ok}"
+grep -q 'count_ftw_body_tests' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
+check "e2e: counts BODY_INCLUDE tests for older CRS floors" 0 "${ok}"
+grep -q 'ftw_body_floor_pin' "${ROOT}/versions.one-year.yaml" && ok=0 || ok=1
+check "one-year: documents ftw_body_floor_pin policy" 0 "${ok}"
+grep -q 'status: \[400\]' "${ROOT}/demo/scripts/go-ftw.sh" && ok=0 || ok=1
+check "go-ftw: documents CRS v4.23.0 status:[400] parse poison" 0 "${ok}"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

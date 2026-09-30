@@ -75,16 +75,47 @@ mkdir -p "$(dirname "${REPORT}")"
 
 # Floors (measured 2026-09-27 at the pins: go-ftw demo 8, body ids 118, full
 # 5091; fail-modes 59). fail-modes is 57 when the engine refuses to boot with
-# an unwritable audit log (class 6 then records 3 checks per protocol, not 4);
-# body ids leave room for older CRS lines in stable-window cells.
+# an unwritable audit log (class 6 then records 3 checks per protocol, not 4).
+#
+# CRS body-id floor is version-aware: the pin bar stays MIN_FTW_BODY_PIN (100).
+# When the installed CRS tag genuinely ships fewer BODY_INCLUDE tests (e.g.
+# v4.19.0 has exactly 92), the floor drops to that available count so the
+# year-axis cell can go green without weakening the pin CRS bar. An empty
+# selection still fails (available < MIN_FTW_BODY_ABS). Explicit MIN_FTW_BODY
+# in the environment always wins.
 MIN_FAIL_MODES="${MIN_FAIL_MODES:-57}"
 MIN_FTW_DEMO="${MIN_FTW_DEMO:-8}"
-MIN_FTW_BODY="${MIN_FTW_BODY:-100}"
+MIN_FTW_BODY_PIN="${MIN_FTW_BODY_PIN:-100}"
+MIN_FTW_BODY_ABS="${MIN_FTW_BODY_ABS:-50}"
 MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 MIN_TRAILERS="${MIN_TRAILERS:-5}"
 MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
 MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
+
+# count_ftw_body_tests — how many tests match the default BODY_INCLUDE rule set.
+count_ftw_body_tests() {
+  local root="${CRS_DIR}/tests/regression/tests" total=0 rule f n
+  [[ -d "${root}" ]] || { echo 0; return 0; }
+  for rule in 942100 942130 942140 942160 942170 941100 941110 941160; do
+    f="$(find "${root}" \( -name "${rule}.yaml" -o -name "${rule}.yml" \) 2>/dev/null | head -1 || true)"
+    [[ -n "${f}" ]] || continue
+    n="$(grep -cE '^[[:space:]]+- test_id:' "${f}" 2>/dev/null || true)"
+    n="${n:-0}"
+    total=$((total + n))
+  done
+  echo "${total}"
+}
+
+if [[ -z "${MIN_FTW_BODY:-}" ]]; then
+  FTW_BODY_AVAILABLE="$(count_ftw_body_tests)"
+  if [[ "${FTW_BODY_AVAILABLE}" -ge "${MIN_FTW_BODY_ABS}" && "${FTW_BODY_AVAILABLE}" -lt "${MIN_FTW_BODY_PIN}" ]]; then
+    MIN_FTW_BODY="${FTW_BODY_AVAILABLE}"
+    echo "ci-live-e2e: CRS ${CRS_TAG} BODY_INCLUDE available=${FTW_BODY_AVAILABLE} < pin floor ${MIN_FTW_BODY_PIN}; using version-aware floor ${MIN_FTW_BODY}"
+  else
+    MIN_FTW_BODY="${MIN_FTW_BODY_PIN}"
+  fi
+fi
 
 # Suite summary lines for the report table. Must match mid-line suffixes
 # (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.

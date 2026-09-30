@@ -97,7 +97,7 @@ A schedule is proven only by a run with `event=schedule` (`gh run view <id> --js
 
 Candidates never bump anything: after a green `stable-candidate`, a human or agent edits `versions.lock.md` (plus the offline fallback in that axis's install script, which `pin-check` compares) on `main`, and `ci` re-runs as the gate.
 
-Every live suite must also reach a floor of passing checks, not just exit 0: smoke body-path checks ≥ 5, fail-modes ≥ 57 (class-3 gRPC ≥ 8), go-ftw demo tests ≥ 8, CRS body ids ≥ 100, CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.
+Every live suite must also reach a floor of passing checks, not just exit 0: smoke body-path checks ≥ 5, fail-modes ≥ 57 (class-3 gRPC ≥ 8), go-ftw demo tests ≥ 8, CRS body ids ≥ **100 at the pin** (version-aware for older CRS tags that ship fewer BODY_INCLUDE tests — e.g. v4.19.0 has 92; empty selection still fails), CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), go-ftw smoke/body stages only the BODY_INCLUDE rule YAML so a one-tag CRS parse poison (v4.23.0 `920640.yaml` `status: [400]` vs go-ftw 2.6) cannot empty the JSON summary. and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.
 
 ### Measured (2026-09-27, private repo, 2-vCPU runners)
 

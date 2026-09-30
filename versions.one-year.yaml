@@ -35,6 +35,18 @@ profiles:
 # Hosted default profile for live cells (thin profiles stay local/debug).
 default_profile: full-cell
 
+# go-ftw smoke CRS body-id floors (scripts/ci-live-e2e.sh).
+# Pin bar stays 100 (pins measure ~118). When an older CRS tag in the year
+# window ships fewer BODY_INCLUDE tests, ci-live-e2e lowers the floor to the
+# available count (≥ ftw_body_floor_abs) — not an exclusion, and not a pin
+# weaken. Documented examples:
+#   v4.19.0 → 92 matching body-id tests (all pass; floor was falsely red at 100)
+# CRS v4.23.0 is kept in the axis: go-ftw.sh stages only BODY_INCLUDE rule
+# YAML so go-ftw 2.6 never loads that tag's 920640.yaml (`status: [400]`),
+# which otherwise aborts with an empty JSON summary. No silent pin exclusion.
+ftw_body_floor_pin: 100
+ftw_body_floor_abs: 50
+
 # Rough minute budget notes (warm cache, both arches) — see docs/testing.md.
 #   axis (~21 cells × 2 arches × ~2–3 min): ~90–130 job-minutes
 #   diagonal (~6 × 2): ~25–40

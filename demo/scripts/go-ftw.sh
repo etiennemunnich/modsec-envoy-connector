@@ -25,7 +25,9 @@ OVERRIDES="${FTW_OVERRIDES:-${FTW_DIR}/envoy-overrides.yaml}"
 CRS_TESTS="${CRS_DIR}/tests/regression/tests"
 OUT_DIR="${RUN}/go-ftw"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-BODY_INCLUDE="${FTW_INCLUDE:-^(942100|942130|942140|942160|942170|941100|941110|941160)-}"
+# Default body-heavy rule ids (SQLi + XSS detectors that exercise POST bodies).
+DEFAULT_BODY_INCLUDE='^(942100|942130|942140|942160|942170|941100|941110|941160)-'
+BODY_INCLUDE="${FTW_INCLUDE:-${DEFAULT_BODY_INCLUDE}}"
 
 FTW="${FTW_BIN:-$(command -v ftw || command -v go-ftw || true)}"
 [[ -n "${FTW}" ]] || { echo "go-ftw not found — run demo/scripts/install-go-ftw.sh" >&2; exit 2; }
@@ -68,25 +70,56 @@ connector_after() {
   echo ok
 }
 
-# run_ftw <tests-dir> <name> [extra go-ftw args...] — sets LAST_SUMMARY.
-run_ftw() {
-  local dir="$1" name="$2"
-  shift 2
-  local json="${OUT_DIR}/${name}-${STAMP}.json" log="${OUT_DIR}/${name}-${STAMP}.log" rc=0 pid se health
-  pid="$(cat "${RUN}/connector.pid" 2>/dev/null || true)"
-  se="$(stream_errors)"
-  [[ -n "${se}" ]] || { LAST_SUMMARY="no-summary connector=UNRESPONSIVE before the run exit=1 log=${log}"; return 1; }
-  "${FTW}" run --config "${CONFIG}" --cloud --dir "${dir}" \
-    --output json --file "${json}" \
-    --wait-for-host "${BASE}/" --wait-for-expect-status-code 200 --wait-for-timeout 30s \
-    "${override_args[@]+"${override_args[@]}"}" "$@" >"${log}" 2>&1 || rc=$?
-  health="$(connector_after "${pid}" "${se}")" || rc=1
-  LAST_SUMMARY="$(summarize "${json}") connector=${health} exit=${rc} log=${log}"
-  return "${rc}"
+# body_rule_ids — numeric rule prefixes implied by BODY_INCLUDE (empty if custom).
+body_rule_ids() {
+  # Default pattern ^(id|id|...)- → extract the alternation. Custom FTW_INCLUDE
+  # that is not this shape returns empty (caller falls back to the full tree).
+  if [[ "${BODY_INCLUDE}" == "${DEFAULT_BODY_INCLUDE}" ]]; then
+    echo "942100 942130 942140 942160 942170 941100 941110 941160"
+    return 0
+  fi
+  local alts
+  alts="$(sed -nE 's/^\^\(([^)]+)\)-.*/\1/p' <<<"${BODY_INCLUDE}")"
+  [[ -n "${alts}" ]] || return 0
+  echo "${alts}" | tr '|' ' '
 }
 
-summarize() {
-  python3 - "$1" <<'PY'
+# stage_body_tests <dest> — symlink only BODY_INCLUDE rule YAML into dest.
+# go-ftw parses every YAML under --dir *before* applying --include, so a
+# single unreadable file elsewhere in the CRS tree (CRS v4.23.0 920640.yaml
+# ships `status: [400]`; go-ftw 2.6.0 rejects that as !!seq→int) aborts the
+# body smoke with an empty JSON summary. Staging keeps smoke/body honest for
+# every tag in the year window without excluding the tag from the matrix.
+stage_body_tests() {
+  local dest="$1" ids rule f n=0
+  mkdir -p "${dest}"
+  ids="$(body_rule_ids)"
+  [[ -n "${ids}" ]] || return 1
+  for rule in ${ids}; do
+    f="$(find "${CRS_TESTS}" \( -name "${rule}.yaml" -o -name "${rule}.yml" \) 2>/dev/null | head -1 || true)"
+    [[ -n "${f}" ]] || continue
+    ln -sfn "${f}" "${dest}/$(basename "${f}")"
+    n=$((n + 1))
+  done
+  [[ "${n}" -ge 1 ]]
+}
+
+# summarize_json <json> [log] — prints success=/failed=… or no-summary with log hint.
+summarize_json() {
+  local json="$1" log="${2:-}"
+  if [[ ! -s "${json}" ]]; then
+    local hint=""
+    if [[ -n "${log}" && -f "${log}" ]]; then
+      hint="$(grep -E -m2 '^(Error:|yaml:)|cannot construct' "${log}" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' || true)"
+    fi
+    if [[ -n "${hint}" ]]; then
+      echo "no-summary (empty json; ${hint})"
+    else
+      echo "no-summary (empty json)"
+    fi
+    return 0
+  fi
+  python3 - "${json}" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1]) as fh:
@@ -104,19 +137,57 @@ if failed:
 PY
 }
 
+# run_ftw <tests-dir> <name> [extra go-ftw args...] — sets LAST_SUMMARY.
+run_ftw() {
+  local dir="$1" name="$2"
+  shift 2
+  local json="${OUT_DIR}/${name}-${STAMP}.json" log="${OUT_DIR}/${name}-${STAMP}.log" rc=0 pid se health
+  pid="$(cat "${RUN}/connector.pid" 2>/dev/null || true)"
+  se="$(stream_errors)"
+  [[ -n "${se}" ]] || { LAST_SUMMARY="no-summary connector=UNRESPONSIVE before the run exit=1 log=${log}"; return 1; }
+  : >"${json}"
+  "${FTW}" run --config "${CONFIG}" --cloud --dir "${dir}" \
+    --output json --file "${json}" \
+    --wait-for-host "${BASE}/" --wait-for-expect-status-code 200 --wait-for-timeout 30s \
+    "${override_args[@]+"${override_args[@]}"}" "$@" >"${log}" 2>&1 || rc=$?
+  health="$(connector_after "${pid}" "${se}")" || rc=1
+  LAST_SUMMARY="$(summarize_json "${json}" "${log}") connector=${health} exit=${rc} log=${log}"
+  return "${rc}"
+}
+
+# Resolve the CRS tests dir for body-id runs (staged when possible).
+BODY_TESTS_DIR="${CRS_TESTS}"
+BODY_STAGE=""
+cleanup_body_stage() {
+  [[ -n "${BODY_STAGE}" && -d "${BODY_STAGE}" ]] && rm -rf "${BODY_STAGE}" || true
+}
+if [[ "${MODE}" == "smoke" || "${MODE}" == "body" ]]; then
+  BODY_STAGE="$(mktemp -d "${OUT_DIR}/body-stage.XXXXXX")"
+  trap cleanup_body_stage EXIT
+  if stage_body_tests "${BODY_STAGE}"; then
+    BODY_TESTS_DIR="${BODY_STAGE}"
+  else
+    echo "go-ftw: body-stage empty (custom FTW_INCLUDE?); using full CRS tree" >&2
+    cleanup_body_stage
+    BODY_STAGE=""
+    trap - EXIT
+  fi
+fi
+
 echo "==> $("${FTW}" -v 2>&1 | head -1) mode=${MODE} target=${BASE}"
 echo "    CRS $(git -C "${CRS_DIR}" describe --tags 2>/dev/null || echo '?')  overrides=${OVERRIDES}"
+[[ "${BODY_TESTS_DIR}" == "${CRS_TESTS}" ]] || echo "    body tests staged from BODY_INCLUDE rule files (avoids unrelated YAML parse poison)"
 
 rc=0
 case "${MODE}" in
   smoke)
     run_ftw "${FTW_DIR}" smoke-demo --glob "demo-tests.yaml" || rc=1
     echo "demo tests:     ${LAST_SUMMARY}"
-    run_ftw "${CRS_TESTS}" smoke-crs --include "${BODY_INCLUDE}" || rc=1
+    run_ftw "${BODY_TESTS_DIR}" smoke-crs --include "${BODY_INCLUDE}" || rc=1
     echo "CRS body ids:   ${LAST_SUMMARY}"
     ;;
   body)
-    run_ftw "${CRS_TESTS}" body --include "${BODY_INCLUDE}" || rc=1
+    run_ftw "${BODY_TESTS_DIR}" body --include "${BODY_INCLUDE}" || rc=1
     echo "CRS body ids:   ${LAST_SUMMARY}"
     ;;
   full)
