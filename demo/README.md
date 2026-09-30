@@ -1,11 +1,11 @@
-# Demo — Envoy + ModSecurity + CRS
+# Demo: Envoy + ModSecurity + CRS
 
-Run the connector locally behind Envoy with libmodsecurity and the OWASP Core Rule Set, then watch it allow, block and fail closed.
+Run the connector locally behind Envoy with libmodsecurity and the OWASP Core Rule Set, then watch it allow, block, and fail closed.
 
 Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.1**, libmodsecurity **v3.0.16**, CRS **v4.29.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
 
 ```text
-curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 ──FFI──► libmodsecurity + CRS
+curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 ──C API──► libmodsecurity + CRS
             │                                  (metrics / healthz :18082)
             └──► demo origin :18098   (only after the connector says Continue)
 ```
@@ -64,14 +64,14 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | File | Role |
 |------|------|
 | [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, **BUFFERED** request and response bodies, trailers **SKIP**, `request_attributes` for real client IP / protocol, CONNECT answered locally. |
-| [`envoy/envoy-grpc.yaml`](./envoy/envoy-grpc.yaml) | HTTP/2 + headers-only (`NONE` bodies) → `grpc-echo` :18090. Used only by `hop-trace-grpc.sh`. Honest: headers/path/metadata — **not** protobuf CRS. |
+| [`envoy/envoy-grpc.yaml`](./envoy/envoy-grpc.yaml) | HTTP/2 + headers-only (`NONE` bodies) → `grpc-echo` :18090. Used only by `hop-trace-grpc.sh`. Headers/path/metadata only; **not** protobuf CRS. |
 | [`envoy/envoy-ws-headers.yaml`](./envoy/envoy-ws-headers.yaml) | `upgrade_configs: websocket` + body `NONE` → `ws-echo` :18091. Handshake ModSec only. |
-| [`envoy/envoy-ws-buffered.yaml`](./envoy/envoy-ws-buffered.yaml) | Same upgrade + **BUFFERED** bodies — hang bound for `hop-trace-ws-frames.sh` only. |
+| [`envoy/envoy-ws-buffered.yaml`](./envoy/envoy-ws-buffered.yaml) | Same upgrade + **BUFFERED** bodies (hang bound for `hop-trace-ws-frames.sh` only). |
 | [`envoy/envoy-streamed.yaml`](./envoy/envoy-streamed.yaml) | Same as above with **STREAMED** request and response bodies (`BODY_MODE=STREAMED`). |
-| [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml) / [`envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Same body modes with trailer modes **SEND** — used only by `trailers.sh` (trailer values still not CRS-inspected). |
+| [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml) / [`envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Same body modes with trailer modes **SEND**, used only by `trailers.sh` (trailer values still not CRS-inspected). |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
 | [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `CONNEX-LEAK-MARKER`, to show the response path. |
-| [`ftw/`](./ftw/) | go-ftw config, demo test cases, and `envoy-overrides.yaml` — measured Envoy platform differences, same pattern as CRS's own nginx overrides. |
+| [`ftw/`](./ftw/) | go-ftw config, demo test cases, and `envoy-overrides.yaml` (measured Envoy platform differences, same pattern as CRS's own nginx overrides). |
 
 ## Ports
 
@@ -136,4 +136,4 @@ ext-proc-modsec --listen 0.0.0.0:18081 --metrics-listen 127.0.0.1:18082 \
 
 ---
 
-Copyright © 2026 Etienne Munnich. Licensed under the Apache License, Version 2.0 — see [LICENSE](../LICENSE).
+Copyright © 2026 Etienne Munnich. Licensed under the Apache License, Version 2.0. See [LICENSE](../LICENSE).

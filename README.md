@@ -2,10 +2,10 @@
 
 Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and the **OWASP Core Rule Set (CRS)**.
 
-Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and lets Envoy allow or block traffic before it reaches your origin.
+Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and lets Envoy allow or block traffic before it reaches your origin. The connector loads libmodsecurity in-process and calls its C API from Rust.
 
 ```text
-Client ──► Envoy ──ext_proc gRPC──► ext-proc-modsec ──FFI──► libmodsecurity (+ CRS)
+Client ──► Envoy ──ext_proc gRPC──► ext-proc-modsec ──C API──► libmodsecurity (+ CRS)
               │
               └──► your origin   (only after the connector says Continue)
 ```
@@ -122,7 +122,7 @@ Point Envoy's `ext_proc` filter (HTTP/2 cluster) at that listen address, with `f
 
 | Link | Topic |
 |------|--------|
-| [docs/how-it-works.md](./docs/how-it-works.md) | Request path, body modes, fail-closed, honesty bounds |
+| [docs/how-it-works.md](./docs/how-it-works.md) | Request path, body modes, fail-closed, what is not inspected |
 | [docs/fail-closed.md](./docs/fail-closed.md) | Behaviour when the connector or engine fails |
 | [docs/testing.md](./docs/testing.md) | How the project is tested |
 | [demo/README.md](./demo/README.md) | Full demo scripts, ports, Envoy configs |
@@ -132,4 +132,4 @@ Point Envoy's `ext_proc` filter (HTTP/2 cluster) at that listen address, with `f
 
 ---
 
-Copyright © 2026 Etienne Munnich. Licensed under the Apache License, Version 2.0 — see [LICENSE](./LICENSE).
+Copyright © 2026 Etienne Munnich. Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE).

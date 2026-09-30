@@ -1,7 +1,7 @@
-# Pinned versions — envoy-modsec-connex
+# Pinned versions - envoy-modsec-connex
 
-Source of truth for coding agents and CI. Bump deliberately; never invent tip flags.
-Product releases use git tags `vX.Y.Z` + Release notes that quote these axes — **not** GitHub issue labels as versions.
+Source of truth for Envoy, libmodsecurity, CRS, and related tools used by this tree.
+Product releases use git tags `vX.Y.Z` + Release notes that quote these axes, **not** GitHub issue labels as versions.
 
 | Axis | Field | Pin | Notes |
 |------|-------|-----|-------|
@@ -27,4 +27,4 @@ PRODUCT_VERSION=v0.1.0
 - ModSecurity: https://github.com/owasp-modsecurity/ModSecurity/releases/tag/v3.0.16
 - CRS: https://github.com/coreruleset/coreruleset/releases/tag/v4.29.0
 
-Verified alignment with experiment lab tip pins (2026-09-26). Re-check GitHub Releases before bumps.
+Re-check GitHub Releases before bumps.

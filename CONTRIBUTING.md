@@ -1,6 +1,6 @@
 # Contributing
 
-Short guide for humans and agents. Standards for agents: **[AGENTS.md](./AGENTS.md)**. Pins: **[versions.lock.md](./versions.lock.md)**.
+Short guide for contributors. Coding-agent checklist: **[AGENTS.md](./AGENTS.md)**. Pins: **[versions.lock.md](./versions.lock.md)**.
 
 ## Setup
 
@@ -25,16 +25,16 @@ CI builds with the toolchain in `rust-toolchain.toml`; rustup picks it up locall
 
 ## Pull requests
 
-**Do not push product, docs, or CI changes straight to `main`.** Bootstrap used direct-to-`main`; remaining work uses PRs.
+**Do not push product, docs, or CI changes straight to `main`.** Use pull requests.
 
-1. Branch from current `main`: `cursor/<short-name>` (agent branches may append a short suffix).
+1. Branch from current `main`: `cursor/<short-name>` (automation branches may append a short suffix).
 2. Keep the PR focused; one concern per PR when possible so CI can be judged in isolation.
 3. Open the PR → wait for **`ci-ok` green on both architectures** for the PR head SHA.
-4. **Squash-merge** into `main`. Then update any Project store status docs with the merge SHA.
+4. **Squash-merge** into `main`.
 5. Prefer ordered stacks (merge + prove A before opening B) when later work depends on earlier gates.
 
 - Use the [PR template](./.github/PULL_REQUEST_TEMPLATE.md) checklist.
-- Update `README.md` only for product-facing behavior (README stays product-only — no CI/pin theater). Agent and contributor detail lives here and in `AGENTS.md` / `docs/`.
+- Update `README.md` only for product-facing behavior (README stays product-only; no CI/pin theater). Contributor and agent detail lives here and in `AGENTS.md` / `docs/`.
 - Update `versions.lock.md` when pins change.
 - Do not set `failure_mode_allow: true` on enforcement configs in the PR.
 
@@ -42,12 +42,12 @@ CI builds with the toolchain in `rust-toolchain.toml`; rustup picks it up locall
 
 - [ ] Fail-closed preserved (no enforcement fail-open; no `Continue` after ModSec/FFI Err)
 - [ ] Pins in `versions.lock.md` still accurate (or bumped deliberately)
-- [ ] Local gates: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace --locked` — or mark **docs-only**
+- [ ] Local gates: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace --locked`, or mark **docs-only**
 - [ ] If `.github/` or `scripts/ci-*.sh` changed: `./scripts/check-workflows.sh` / `./scripts/test-ci-scripts.sh`
 - [ ] Live proof when needed (smoke, fail-closed, fail-modes, hop-trace, go-ftw): Mac log path and/or Actions run URL with `gh run view <id> --json event,conclusion,headSha`
 - [ ] **`ci-ok` green on both arches** for this PR before squash-merge
 - [ ] No vacuous asserts; floors still hold (see `AGENTS.md` CI rules)
-- [ ] Honest claims only — cite runs; do not invent schedule/`workflow_dispatch` labels
+- [ ] Honest claims only: cite runs; do not invent schedule/`workflow_dispatch` labels
 
 ## Test matrix
 
@@ -62,30 +62,27 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 | New stable Envoy / libmodsecurity / CRS | `release-watch` (daily) → `stable-candidate` × arch → issue | `ENVOY_VERSION=… ./scripts/ci-live-e2e.sh` |
 | Last 3 stables per axis | `stable-window` × arch (weekly) | same, per cell |
 | Full CRS go-ftw | `crs-full` × arch (monthly) | `./demo/scripts/go-ftw.sh full` |
-| Release artifacts | `release` on a tag that is on `main` with green `ci` (dispatch pushes an image, no Release) | — |
+| Release artifacts | `release` on a tag that is on `main` with green `ci` (dispatch pushes an image, no Release) | - |
 
 ## Ops / cleanup
 
-- **GHCR stale tags:** dry-run then optional delete via `./scripts/ghcr-delete-stale.sh` (allowlisted patterns only; needs `read:packages` / `delete:packages` on your `gh` token — the script does not widen auth). Detail: [`docs/findings/ghcr-stale-tags.md`](./docs/findings/ghcr-stale-tags.md).
+- **GHCR stale tags:** dry-run then optional delete via `./scripts/ghcr-delete-stale.sh` (allowlisted patterns only; needs `read:packages` / `delete:packages` on your `gh` token; the script does not widen auth). Detail: [`docs/findings/ghcr-stale-tags.md`](./docs/findings/ghcr-stale-tags.md).
 
 ## Versioning
 
 - **Product:** git tag `vX.Y.Z` (+ GitHub Release listing pin axes).
-- **Pins:** Envoy / ModSec / CRS / connector in `versions.lock.md` — **not** issue labels as versions.
+- **Pins:** Envoy / ModSec / CRS / connector in `versions.lock.md`, not issue labels as versions.
 - Optional triage labels (`pin:envoy`, `fail-closed`, …) are fine for PR filtering only.
 
 ## License
 
 Copyright (c) 2026 Etienne Munnich. This project is licensed under the
-**Apache License, Version 2.0** — see [LICENSE](./LICENSE) (add full Apache-2.0
-text in Phase 0 if missing). Optional `NOTICE` may list the same copyright.
+**Apache License, Version 2.0**. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 
-**Why not MIT-0:** CRS, ModSecurity, ModSecurity-nginx, and Envoy are all
-Apache-2.0. Matching Apache-2 keeps ecosystem friction low and retains
-attribution; copyright stays with Etienne either way. MIT is a fine
-permissive alternative; MIT-0 (zero attribution) is rarely wise for a named
-product. Full comparison: Project store
-`docs/connex-license-and-contribute.md`.
+CRS, ModSecurity, ModSecurity-nginx, and Envoy are all Apache-2.0. Matching
+Apache-2 keeps ecosystem friction low and retains attribution; copyright stays
+with Etienne either way. MIT is a fine permissive alternative; MIT-0 (zero
+attribution) is a poor fit for a named product.
 
 ## Developer Certificate of Origin (DCO)
 

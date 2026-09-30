@@ -1,11 +1,11 @@
-# Agent standards — envoy-modsec-connex
+# Agent standards - envoy-modsec-connex
 
-Mandatory for coding agents working in this repo. Keep it short; deep tables live in `docs/` and the experiment lab.
+Mandatory for coding agents working in this repo. Keep it short; deep tables live in `docs/` and lab notes outside this tree.
 
 ## Product
 
-- **Shape:** Rust Envoy `ext_proc` gRPC sidecar → FFI → **libmodsecurity** (+ optional OWASP CRS). Not Coraza-as-product; not a Rust Envoy dynamic module.
-- **Fail-closed is absolute** — connector down, gRPC error, panic/abort, hang/timeout, ModSec init/rules fail, ExtProc unreachable, or per-request ModSec `Err` → traffic must **not** reach origin as OK. Body mode (BUFFERED/STREAMED) does **not** relax this.
+- **Shape:** Rust Envoy `ext_proc` gRPC sidecar → in-process C API → **libmodsecurity** (+ optional OWASP CRS). Not Coraza-as-product; not a Rust Envoy dynamic module.
+- **Fail-closed is absolute:** connector down, gRPC error, panic/abort, hang/timeout, ModSec init/rules fail, ExtProc unreachable, or per-request ModSec `Err` → traffic must **not** reach origin as OK. Body mode (BUFFERED/STREAMED) does **not** relax this.
 - **Hops:** Client → Envoy → (side-call) connector; **Envoy alone** forwards to origin after `Continue`. Connector / libmodsecurity never dial origin.
 
 ## Pins (source of truth)
@@ -71,7 +71,7 @@ Apache-2.0 — `Copyright (c) 2026 Etienne Munnich`. See `LICENSE` and `CONTRIBU
 1. Branch from current `main`: `cursor/<short-name>` (agents may use `cursor/<short-name>-…`).
 2. Commit + push the branch; open a PR against `main`.
 3. Wait for **`ci-ok` green on both arches** (x86_64 + aarch64) for that PR head SHA.
-4. **Squash-merge** only after the checklist below is satisfied. Record the merge SHA when updating Project store status docs.
+4. **Squash-merge** only after the checklist below is satisfied.
 5. Do **not** push commits straight to `main` for product/docs/CI work unless Etienne explicitly overrides for an emergency.
 
 After a **validated** moderate slice on the feature branch: `git commit` + `git push` (to the branch). No force-push to shared branches unless Etienne asks. No secrets in commits.
@@ -96,4 +96,4 @@ Copy into the PR body (or tick the PR template). Skip rows that truly do not app
 - `proto/` → `crates/ext-proc-modsec/src/pb/` — vendored Envoy ext_proc proto closure and its committed generated code; never hand-edit `pb/`, rerun `scripts/gen-protos.sh`.
 - No new crates without a reason in the commit; the runtime set is tokio, tokio-stream, tonic (server + codegen), prost, tonic-prost, tracing.
 
-Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`, `perf.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `scripts/probe-modsec-pin.sh`, `scripts/envoy-candidate-smoke.sh`, `scripts/crs-version-probe.sh`. Ops cleanup: `scripts/ghcr-delete-stale.sh` (default dry-run; `--delete` allowlisted GHCR versions only — see `docs/findings/ghcr-stale-tags.md`; do not paste ad-hoc delete loops). Anything else from `modsec-envoy-experiement` (WebSocket / gRPC hop tracing) — port deliberately; do not dump experiment history wholesale.
+Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`, `perf.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `scripts/probe-modsec-pin.sh`, `scripts/envoy-candidate-smoke.sh`, `scripts/crs-version-probe.sh`. Ops cleanup: `scripts/ghcr-delete-stale.sh` (default dry-run; `--delete` allowlisted GHCR versions only; see `docs/findings/ghcr-stale-tags.md`; do not paste ad-hoc delete loops).
