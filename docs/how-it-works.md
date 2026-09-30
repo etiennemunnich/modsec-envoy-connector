@@ -11,7 +11,7 @@ license: see LICENSE
 
 This page is the cold-reader brief: what the product is, where it sits, how an HTTP request moves through it, and what you see when something is blocked or the WAF cannot decide.
 
-Pins: [`versions.lock.md`](../versions.lock.md). Failure model: [fail-closed.md](./fail-closed.md). Tests: [testing.md](./testing.md). Runnable demo: [`demo/README.md`](../demo/README.md).
+Pins: [`versions.lock.md`](../versions.lock.md). Failure model: [fail-closed.md](./fail-closed.md). Tests: [testing.md](./testing.md). Local PoC (build → exercise → tear down): [README Getting Started](../README.md#getting-started-local-poc). Deeper demo notes: [`demo/README.md`](../demo/README.md).
 
 ---
 
