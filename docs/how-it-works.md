@@ -1,7 +1,7 @@
 ---
 title: How it works — ModSec × Envoy × Rust ext_proc
 audience: operators + contributors
-date: 2026-09-27
+date: 2026-09-30
 pins: Envoy v1.39.1 · libmodsecurity v3.0.16 · CRS v4.29.0 · failure_mode_allow:false · message_timeout 2s
 product: Rust ext_proc → FFI → libmodsecurity
 license: see LICENSE
@@ -9,24 +9,203 @@ license: see LICENSE
 
 # How it works
 
-Envoy cannot run ModSecurity itself. `ext-proc-modsec` is a small Rust gRPC server that Envoy's `ext_proc` filter calls for every HTTP exchange. It feeds request headers, request body, response headers and response body into **one libmodsecurity transaction** and answers each step with **Continue**, a rule-driven **local reply** (403, redirect, …), or a fail-closed **500**. The connector never talks to your origin; only Envoy does, and only after the connector has said Continue.
+This page is the cold-reader brief: what the product is, where it sits, how an HTTP request moves through it, and what you see when something is blocked or the WAF cannot decide.
 
 Pins: [`versions.lock.md`](../versions.lock.md). Failure model: [fail-closed.md](./fail-closed.md). Tests: [testing.md](./testing.md). Runnable demo: [`demo/README.md`](../demo/README.md).
 
 ---
 
-## Hops
+## What this is
+
+**envoy-modsec-connex** protects HTTP workloads that sit behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and (optionally) the **OWASP Core Rule Set (CRS)**.
+
+Envoy cannot run ModSecurity itself. This project is a small Rust gRPC server (`ext-proc-modsec`) that Envoy's **External Processing** (`ext_proc`) filter calls for every HTTP exchange. The connector feeds request headers, request body, response headers, and response body into **one libmodsecurity transaction** and answers each step with:
+
+- **Continue** — Envoy may proceed (and only then may contact the origin on the request path),
+- a rule-driven **local reply** (typically **403**, or a redirect), or
+- a fail-closed **500** when the engine cannot produce a trustworthy decision.
+
+The connector never dials your origin. Only Envoy does, and only after Continue.
+
+---
+
+## Where it sits
+
+Three network hops, plus one in-process call:
 
 | Hop | From → To | Protocol | Reaches origin? |
 |-----|-----------|----------|-----------------|
 | 1 | Client → **Envoy** | HTTP/1.1, HTTP/2 | No |
 | 2 | **Envoy ↔ connector** | gRPC bidi `envoy.service.ext_proc.v3.ExternalProcessor/Process` | No — side-call |
-| — | connector → **libmodsecurity** | in-process FFI (`msc_*` C API, declared in `modsec-engine`) | No |
+| — | connector → **libmodsecurity** | in-process FFI (`msc_*` C API in `modsec-engine`) | No |
 | 3 | **Envoy → origin** | HTTP | **Yes — Envoy only**, after Continue |
 
-With `request_body_mode: BUFFERED` (the default demo config) Envoy holds the whole request until the connector has inspected the body, so a request-body deny happens before the origin sees anything — including when the attack sits only in the last HTTP/1.1 chunk or the last HTTP/2 DATA frames. With `STREAMED` (`demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED ./demo/scripts/up.sh`) Envoy delivers body chunks as they arrive; the connector still appends each chunk, checks intervention after every append, and runs `process_*_body` only at `end_of_stream`. A phase-2/4 CRS rule therefore still decides at EOS; earlier chunks may already have been forwarded toward the origin only if the connector Continues each chunk (it does for non-disruptive appends). Body-limit rejects can still fire mid-stream on append. The demo's origin records every hit with its `x-request-id`, and the demo suites assert it stays untouched for denied and failed requests. `demo/scripts/hop-trace.sh` shows all hops for one request.
+Demo ports (local): Envoy `:18080`, connector `:18081`, metrics/healthz `:18082`, origin `:18098`.
 
-HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) both go through the same path; Envoy reassembles split HTTP/2 `Cookie` headers before the connector sees them. Envoy's HTTP/1 codec accepts non-standard methods in the demo config (`allow_custom_methods`) so CRS rule 911100 enforces the method policy instead of the codec dropping the request.
+```mermaid
+flowchart LR
+  C[Client] -->|HTTP| E[Envoy<br/>ext_proc filter]
+  E <-->|gRPC Process| R[Rust connector<br/>ext-proc-modsec]
+  R -->|in-process FFI| M[libmodsecurity<br/>+ optional CRS]
+  E -->|only after Continue| U[Origin]
+```
+
+Enforcement settings that must not be relaxed on a protecting filter:
+
+- `failure_mode_allow: false` — connector down or stream error → Envoy local **500**
+- `message_timeout: 2s` — connector hung → Envoy local **504**
+- Never enable `observability_mode` for enforcement — Envoy does not wait for answers there
+
+---
+
+## Request path
+
+One `Process` stream = one HTTP request/response = **one ModSecurity transaction**.
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant E as Envoy
+  participant R as Rust connector
+  participant M as libmodsecurity
+  participant U as Origin
+
+  C->>E: HTTP request
+  Note over E: ext_proc before router<br/>failure_mode_allow: false<br/>message_timeout: 2s
+
+  E->>R: request_headers
+  R->>M: process_connection / process_uri / process_request_headers
+  alt Phase-1 deny / redirect
+    R-->>E: ImmediateResponse (e.g. 403)
+    E-->>C: local reply — origin never contacted
+  else Engine / protocol error
+    R-->>E: ImmediateResponse 500
+    E-->>C: local 500
+  else Allow
+    R-->>E: Continue
+  end
+
+  E->>R: request_body (BUFFERED whole entity, or STREAMED chunks)
+  R->>M: append_request_body (every chunk)<br/>process_request_body at end_of_stream
+  alt Phase-2 deny / body-limit / fail-closed
+    R-->>E: ImmediateResponse 403 or 500
+    E-->>C: local reply
+  else Allow
+    R-->>E: Continue
+    E->>U: forward request
+    U-->>E: response
+  end
+
+  E->>R: response_headers / response_body
+  R->>M: process_response_headers / append + process_response_body
+  alt Phase-3/4 deny
+    R-->>E: ImmediateResponse 403
+    E-->>C: local 403
+  else Allow
+    R-->>E: Continue
+    E-->>C: origin response
+  end
+```
+
+HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) use the same connector path. Envoy reassembles split HTTP/2 `Cookie` headers before the connector sees them. The demo enables `allow_custom_methods` so CRS rule 911100 enforces method policy instead of the codec dropping non-standard methods.
+
+`demo/scripts/hop-trace.sh` walks one request across Envoy, the connector, and the origin by `x-request-id`.
+
+---
+
+## Body modes that change the path
+
+The connector code path is the same for both modes: **append every chunk, check intervention on every append, run `process_*_body` at `end_of_stream`**. What changes is when Envoy is willing to forward bytes toward the origin.
+
+| Mode | Envoy behaviour | Origin exposure on request deny | Demo / CI |
+|------|-----------------|----------------------------------|-----------|
+| **BUFFERED** (default) | Holds the full request (and response) entity until the connector has inspected it | A request-body deny happens **before** the origin sees anything — including when the attack sits only in the last chunk or last HTTP/2 DATA frames | `demo/envoy/envoy.yaml`; full CRS / go-ftw |
+| **STREAMED** | Delivers body chunks as they arrive | Non-disruptive Continues may let early chunks move toward the origin before phase-2/4 decides at EOS; body-limit rejects can still fire mid-stream on append | `demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED ./demo/scripts/up.sh`; thin smoke + fail-closed |
+
+```mermaid
+flowchart TB
+  subgraph buffered [BUFFERED — default / full CRS]
+    B1[Envoy buffers full request body] --> B2[Connector append + process_request_body]
+    B2 -->|deny / fail-closed| B3[Local 403 / 500 — origin untouched]
+    B2 -->|Continue| B4[Envoy forwards to origin]
+  end
+
+  subgraph streamed [STREAMED]
+    S1[Envoy sends body chunks as they arrive] --> S2[Connector append + intervention per chunk]
+    S2 -->|disruptive on append| S3[Local 403 / 500]
+    S2 -->|Continue chunk| S4[Chunk may proceed toward origin]
+    S2 -->|end_of_stream| S5[process_request_body — phase 2]
+    S5 -->|deny| S3
+    S5 -->|Continue| S6[Request settled]
+  end
+```
+
+Envoy's buffer limit (default 1 MiB per stream) caps BUFFERED inspectable body size; STREAMED moves buffering into the connector/engine. Full go-ftw stays on BUFFERED. Phase-2/4 CRS rules still decide at EOS in both modes.
+
+---
+
+## One exchange, step by step
+
+| Envoy sends | Connector does | Answers |
+|-------------|----------------|---------|
+| `request_headers` | Opens the transaction (id = `x-request-id`). Runs `process_connection` (client/server IP:port from Envoy attributes), `process_uri`, adds non-pseudo headers (`host` from `:authority` if missing), `process_request_headers`. If `end_of_stream`, also runs the request-body phase. | Continue, or terminal reply |
+| `request_body` | `append_request_body` (intervention checked on every append); at `end_of_stream` runs `process_request_body` (CRS phase 2). | Continue, or terminal reply |
+| `response_headers` | Closes an unfinished request body if needed, adds headers, `process_response_headers` (phase 3). If `end_of_stream`, also runs the response-body phase. | Continue, or terminal reply |
+| `response_body` | `append_response_body`; at `end_of_stream` runs `process_response_body` (phase 4). | Continue, or terminal reply |
+| trailers | Trailer *values* are not CRS-inspected (no SecLang trailer phase). Default demo keeps trailer modes `SKIP`. With `SEND`, unfinished body is finalized when trailers mark EOS, then Continue. Without a session → fail-closed **500**. | Continue, body deny **403**, or **500** |
+| `response_headers` with **no** prior `request_headers` | Envoy rejected the request itself before the request phase (e.g. `#fragment` → 400) and ext_proc only sees that local reply. Origin was never contacted. 4xx/5xx pass through; anything else fails closed. | Continue (4xx/5xx), else **500** |
+
+Stream end drops the session, which runs ModSecurity's logging phase (audit log) and frees the transaction. Out-of-order or malformed messages fail closed with **500**.
+
+---
+
+## Fail-closed (path-level)
+
+**Deny ≠ fail.** A rule deny (**403**) means the WAF decided. **500** / **504** means it could not decide — and traffic must not reach the origin as OK.
+
+| Case | Who enforces | Client |
+|------|--------------|--------|
+| Connector not running / crashed / stream error | Envoy (`failure_mode_allow: false`) | **500** |
+| Connector hung past `message_timeout` (2s) | Envoy | **504** |
+| Rules fail to load at boot | Connector exits non-zero before binding; Envoy then returns 500 | **500** |
+| Per-request engine error / phase-order / malformed message | Connector `ImmediateResponse` 500 (`modsec_fail_closed`) | **500** |
+| Rule deny | Connector `ImmediateResponse` (rule status, validated) | typically **403** |
+
+There is **no** code path that answers Continue after an engine error. Body mode (BUFFERED / STREAMED) does not relax fail-closed. Details and drills: [fail-closed.md](./fail-closed.md).
+
+---
+
+## What is not inspected
+
+These bounds are intentional and proven by demo suites — do not read them as temporary gaps to paper over in a README.
+
+| Surface | What happens | Bound |
+|---------|--------------|-------|
+| **gRPC protobuf bodies** | Headers / path / metadata hop-trace works (`hop-trace-grpc.sh`, `envoy-grpc.yaml` with body `NONE`). Fail-closed holds. | **Not** protobuf CRS / streaming RPC WAF. Stock CRS may still deny HTTP-shaped paths on the gRPC codec; that is not “gRPC body CRS.” |
+| **WebSocket frames** | Handshake can be ModSec-inspected with headers-only + upgrade config. Post-upgrade frames are opaque (SQLi-shaped frames echo). | **Not** frame CRS. BUFFERED+upgrade can hang; fail-closed still applies on the handshake path. |
+| **HTTP/3** | No QUIC listener in the product demo. | Not supported. |
+| **Trailer values** | No SecLang trailer phase. | Not CRS-inspected; product default is `SKIP`. |
+| **Envoy local replies before request phase** | Connector only sees the local reply stream. | Not ModSec-inspected; 4xx/5xx pass through. |
+| **Pause interventions** | Logged and ignored. | ext_proc has no delay primitive. |
+| **Drop → TCP reset** | Maps to gRPC stream abort → Envoy **500**. | ImmediateResponse cannot close the TCP connection. |
+
+---
+
+## What you see when blocked
+
+| Engine / path result | Connector answer | Client sees | Ops signal |
+|----------------------|------------------|-------------|------------|
+| No disruptive intervention | Continue | Origin response | phase log `action=allow` |
+| Deny with status 4xx/5xx | `ImmediateResponse` with that status, generic body | e.g. **403** `Forbidden` | Envoy `%RESPONSE_CODE_DETAILS%` = `modsecurity_intervention`; connector log + ModSecurity audit log hold rule detail |
+| Deny with any other status (1–399, ≥ 600, or unknown to Envoy) | `ImmediateResponse` **403** | **403** | same — statuses are validated because Envoy v1.39 would otherwise send an invalid ImmediateResponse as **HTTP 200** |
+| Redirect | `ImmediateResponse` 3xx (302 if the rule's status is not 3xx) + `Location` | **302** | `action=redirect` |
+| Drop (intervention status 0) | Stream aborted with gRPC `ABORTED` | Envoy local **500** | deny metric; not status 0 |
+| Engine / protocol failure | `ImmediateResponse` **500**, details `modsec_fail_closed` | **500** | `action=fail_closed` |
+| `CONNECT` | `ImmediateResponse` **403**, details `connect_rejected` | **403** | CONNECT never reaches a BUFFERED body hang |
+| Connector down | *(no answer)* | Envoy **500** | `ext_proc_error_*`; `failure_mode_allowed` must stay **0** |
+| Connector hung | *(no answer in time)* | Envoy **504** | `message_timeouts` |
+
+The deny body is always generic (`Forbidden`). Rule ids and matched data go only to the connector log and the ModSecurity audit log — never to the client. After any terminal answer the connector closes the stream.
 
 ---
 
@@ -34,108 +213,39 @@ HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) both go through the 
 
 | Crate / file | Role |
 |--------------|------|
-| `crates/modsec-engine/src/lib.rs`, `ffi.rs`, `build.rs` | The only crate with `unsafe`. `ffi.rs` declares the ~25 libmodsecurity v3 `msc_*` functions used; `build.rs` links the system library via the `pkg-config` tool (≥ 3.0.13). `Engine` = one `ModSecurity` + `RulesSet` loaded at boot (shared via `Arc`; rule parsing and teardown serialised by a global lock). `InspectionSession` = one `Transaction` per exchange; enforces phase order; reads the intervention after every step; maps it to `Decision` (`Allow` / `Block` / `Redirect` / `Drop`). |
-| `crates/ext-proc-modsec/src/processor.rs` | `ModSecProcessor` (tonic service). One `Exchange` per gRPC stream holds the session, `x-request-id`, and connection metadata; turns each `ProcessingRequest` into a `Step`. Envoy's messages are read only while tonic asks for the next reply. |
-| `crates/ext-proc-modsec/src/pb/` | Generated prost/tonic code for `envoy.service.ext_proc.v3` and its imports (committed; no `protoc` at build time). Source: `proto/` (Envoy v1.39.1 API closure); regenerate with `scripts/gen-protos.sh`. |
-| `crates/ext-proc-modsec/src/responses.rs` | Builds Continue / `ImmediateResponse` messages; validates statuses. |
-| `crates/ext-proc-modsec/src/connection_meta.rs` | Reads Envoy `request_attributes` (`source.*`, `destination.*`, `request.protocol`) for `process_connection` / `process_uri`. |
+| `crates/modsec-engine/` | The only crate with `unsafe`. Declares the libmodsecurity v3 `msc_*` API; `Engine` loads rules at boot; `InspectionSession` is one transaction and maps interventions to `Decision`. |
+| `crates/ext-proc-modsec/src/processor.rs` | `ModSecProcessor` (tonic). One `Exchange` per gRPC stream; turns each `ProcessingRequest` into Continue / terminal reply / abort. |
+| `crates/ext-proc-modsec/src/responses.rs` | Builds Continue / `ImmediateResponse`; validates statuses. |
+| `crates/ext-proc-modsec/src/connection_meta.rs` | Reads Envoy `request_attributes` for `process_connection` / URI protocol. |
 | `crates/ext-proc-modsec/src/metrics.rs`, `metrics_server.rs` | Prometheus counters/histograms; `GET /metrics`, `GET /healthz`. |
-| `crates/ext-proc-modsec/src/config.rs`, `logging.rs`, `main.rs` | CLI/env config; stderr log formatter for `tracing`; fail-closed boot; SIGINT/SIGTERM shutdown. |
-
----
-
-## One exchange, step by step
-
-One `Process` stream = one HTTP request/response = one ModSecurity transaction.
-
-| Envoy sends | Connector does | Answers |
-|-------------|----------------|---------|
-| `request_headers` | Opens the transaction (id = `x-request-id`). Runs `process_connection` (real client/server IP:port from attributes), `process_uri` (method, `:path`, HTTP version), adds non-pseudo headers (`host` from `:authority` if missing), `process_request_headers`. If `end_of_stream`, also runs the request-body phase. | Continue, or terminal reply |
-| `request_body` | `append_request_body` (intervention checked on every append, so body-limit rejects fire here); at `end_of_stream` runs `process_request_body` (CRS phase 2). | Continue, or terminal reply |
-| `response_headers` | Closes the request body if still open, adds headers, `process_response_headers(:status, protocol)` (phase 3). If `end_of_stream`, also runs the response-body phase. | Continue, or terminal reply |
-| `response_body` | `append_response_body`; at `end_of_stream` runs `process_response_body` (phase 4). | Continue, or terminal reply |
-| trailers | Trailer *values* are not CRS-inspected (no SecLang trailer phase). Default demo configs keep trailer modes `SKIP`. With `SEND` (`envoy-trailers.yaml` / `envoy-streamed-trailers.yaml`, `demo/scripts/trailers.sh`), unfinished body is finalized when trailers mark EOS (Coraza #289 class), then Continue. Without a session → fail-closed **500**. Attack only in trailers is not denied. | Continue, body deny **403**, or **500** |
-| `response_headers` **with no `request_headers` on the stream** | Envoy rejected the request itself before the request phase (e.g. a `#fragment` URI → 400, `OPTIONS *` → 404) and ext_proc only sees its local reply. The origin was never contacted. If `:status` is 4xx/5xx it is passed through; anything else fails closed. | Continue (status 4xx/5xx), else **500** |
-
-Stream end drops the session, which runs ModSecurity's logging phase (audit log) and frees the transaction.
-
----
-
-## Decisions → what the client sees
-
-| Engine result | Connector answer | Client |
-|---------------|------------------|--------|
-| No disruptive intervention | Continue | Origin response |
-| Deny with status 4xx/5xx | `ImmediateResponse` with that status, generic body, details `modsecurity_intervention` | e.g. **403** |
-| Deny with any other status (1–399, ≥ 600, or unknown to Envoy) | `ImmediateResponse` **403** | **403** |
-| Redirect | `ImmediateResponse` 3xx (302 if the rule's status is not 3xx) + `Location` | **302** |
-| Drop (intervention status 0) | Stream aborted with gRPC `ABORTED` | Envoy local **500** |
-| Engine error / phase-order violation / malformed message | `ImmediateResponse` **500**, details `modsec_fail_closed` | **500** |
-| `CONNECT` | `ImmediateResponse` **403**, details `connect_rejected` | **403** |
-| Envoy local reply 4xx/5xx with no request on the stream | Continue for its headers and body (not inspected; counted in `ext_proc_local_reply_passthrough_total`) | Envoy's own status, e.g. **400** |
-| Response headers with no request on the stream and any other status | `ImmediateResponse` **500**, details `modsec_fail_closed` | **500** |
-
-Why statuses are validated: Envoy v1.39 sends an `ImmediateResponse` whose status is missing or invalid (including 0) as **HTTP 200** (`DefaultImmediateStatus` in `ext_proc.cc`). The connector therefore never passes through an unchecked status. That is also why a drop becomes a stream abort (which Envoy fails closed) rather than status 0.
-
-The deny body is always generic (`Forbidden`). ModSecurity's intervention message (rule id, matched data) goes only to the connector log and the ModSecurity audit log, never to the client.
-
-After any terminal answer the connector closes the stream; nothing is ever sent as Continue after an engine error.
-
----
-
-## Failure behaviour (summary)
-
-| Case | Who enforces | Client |
-|------|--------------|--------|
-| Connector not running / crashed / stream error | Envoy (`failure_mode_allow: false`) | **500** |
-| Connector hung past `message_timeout` (2s) | Envoy | **504** |
-| Rules fail to load at boot | Connector exits non-zero before binding; Envoy then returns 500 | **500** |
-| Per-request engine error | Connector `ImmediateResponse` 500 | **500** |
-
-Details and drills: [fail-closed.md](./fail-closed.md).
+| `crates/ext-proc-modsec/src/pb/` | Committed prost/tonic for `envoy.service.ext_proc.v3` (Envoy v1.39.1 API closure). |
 
 ---
 
 ## Configuration
 
-`ext-proc-modsec` flags (each also readable from the environment):
+Connector flags (each also readable from the environment):
 
 | Flag | Env | Default | Notes |
 |------|-----|---------|-------|
 | `--listen` | `EXT_PROC_LISTEN` | `127.0.0.1:18081` | gRPC address Envoy's `modsec_ext_proc` cluster targets (HTTP/2). |
 | `--metrics-listen` | `EXT_PROC_METRICS_LISTEN` | `127.0.0.1:18082` | `/metrics` and `/healthz`. |
-| `--modsec-rules` | `MODSEC_RULES` | *(required)* | One or more files (repeat or comma-separate), loaded in order, e.g. engine directives → `crs-setup.conf` → `rules/*.conf`. |
+| `--modsec-rules` | `MODSEC_RULES` | *(required)* | One or more files, loaded in order (engine directives → `crs-setup.conf` → `rules/*.conf`). |
 
-`--help` and `--version` print usage and the version. Logging uses `RUST_LOG`: a comma-separated list of a default level and `target=level` overrides (default `info`), e.g. `RUST_LOG=info,modsecurity=debug`; ModSecurity's own messages are under target `modsecurity` at `debug`.
+Logging: `RUST_LOG` (default `info`); ModSecurity's own messages are under target `modsecurity` at `debug`.
 
 Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/envoy/envoy.yaml)):
 
-- `failure_mode_allow: false` and `message_timeout: 2s`.
-- `http_protocol_options.allow_custom_methods: true`, so CRS sees methods like `TEST` (a work-in-progress field in Envoy v1.39; without CRS loaded, custom methods reach the origin).
-- `processing_mode`: headers `SEND`, bodies `BUFFERED` (default) or `STREAMED` (`envoy-streamed.yaml`), trailers `SKIP` (product default). Safety suite uses `SEND` via `envoy-trailers.yaml` / `envoy-streamed-trailers.yaml`.
-- `request_attributes`: `source.address`, `source.port`, `destination.address`, `destination.port`, `request.protocol`. Without them, ModSecurity sees `127.0.0.1` as `REMOTE_ADDR` (logged as `conn_source=fallback`) and IP-based rules are wrong.
-- Never enable `observability_mode` on an enforcing filter: Envoy does not wait for answers there, so the connector ignores those messages.
-- Local toggle: `BODY_MODE=STREAMED ./demo/scripts/up.sh` then the same `smoke.sh` / `fail-closed.sh` (CI runs a thin STREAMED cell on both arches; full CRS stays BUFFERED). Trailer safety: `./demo/scripts/trailers.sh` (temporarily restarts Envoy with trailer `SEND`).
+- `failure_mode_allow: false` and `message_timeout: 2s`
+- `processing_mode`: headers `SEND`, bodies `BUFFERED` (default) or `STREAMED`, trailers `SKIP` (product default)
+- `request_attributes`: `source.address`, `source.port`, `destination.address`, `destination.port`, `request.protocol` — without them ModSecurity sees `127.0.0.1` as `REMOTE_ADDR`
+- `http_protocol_options.allow_custom_methods: true` so CRS sees methods like `TEST`
 
 ---
 
 ## Observability
 
-- **Logs** (structured, `tracing`): one line per phase with `request_id`, `phase`, `action` (`allow`/`deny`/`redirect`/`drop`), `latency_ms`, `body_bytes`, and for request headers the client/server endpoints and their source. Fail-closed lines carry `action="fail_closed"` and the error.
-- **Metrics** (`GET /metrics`, Prometheus text): `ext_proc_requests_total`, `ext_proc_allow_total`, `ext_proc_deny_total`, `ext_proc_fail_closed_total`, `ext_proc_stream_errors_total`, `ext_proc_local_reply_passthrough_total`, `ext_proc_{request,response}_body_bytes_total`, and `ext_proc_phase_{request_headers,request_body,response_headers,response_body}_seconds` histograms.
-- **Readiness** (`GET /healthz`): returns 200 only if, within 2s, the gRPC listener completes an HTTP/2 preface + SETTINGS exchange **and** a headers-only `GET /__connex_healthz` run through a fresh per-stream `Exchange` (the same code `Process` runs, with the loaded rules) answers Continue. The connector ships no gRPC client, so the probe does not send a full `Process` RPC over the wire. Rules are always loaded before the server starts.
-- **Envoy side**: `%RESPONSE_CODE_DETAILS%` shows `modsecurity_intervention` / `modsec_fail_closed` (and `ext_proc_error_*` when Envoy itself fails the call, e.g. connector down or timed out); ext_proc stats live under `http.<prefix>.ext_proc.modsec_ext_proc.*` (`streams_failed`, `message_timeouts`, `failure_mode_allowed` must stay 0).
-
----
-
-## Known limits
-
-- **BUFFERED is the default and the full-CRS path.** `STREAMED` is supported by the same connector path (append + intervention per chunk, `process_*_body` at EOS) and proven live with a thin smoke + fail-closed cell (`BODY_MODE=STREAMED`). Phase-2/4 CRS rules still decide at EOS; full go-ftw stays on BUFFERED. Envoy's buffer limit (default 1 MiB per stream) caps BUFFERED inspectable body size; STREAMED moves buffering into the connector/engine.
-- **Trailers** are not CRS-inspected. Product demo keeps trailer mode `SKIP`. With `SEND`, trailers mark true body end when the last body chunk had `end_of_stream=false` — the connector finalizes unfinished body (phase 2/4) then Continues; an attack only in trailer values is not denied. Trailers without a prior session fail closed (**500**, gRPC-proven; Envoy never sends trailers alone). Live cells: `demo/scripts/trailers.sh` (floor ≥ 4).
-- **Pause** interventions are logged and ignored (ext_proc has no delay primitive).
-- **Drop** cannot close the TCP connection through ext_proc; it maps to a stream abort → Envoy 500.
-- `/healthz` probes run through the rules and are counted in `ext_proc_requests_total` / `ext_proc_allow_total`.
-- **Envoy local replies before the request phase are not inspected.** When Envoy rejects a request itself before ext_proc sees its headers, the connector only sees the local reply. A 4xx/5xx passes through with Envoy's status; the request never reached ModSecurity or the origin, so there is nothing to decide. The pass-through relies on `request_header_mode: SEND` (Envoy never forwards a request to the origin without a request-headers message first). A stream-level 1xx–3xx without a request is still failed closed.
-- HTTP/3 and WebSocket frame inspection are not supported. WebSocket **handshake** hop-trace: `demo/scripts/hop-trace-ws.sh` (stock demo → Envoy `upgrade_failed`; ModSec request-phase not entered). Frame bound locked by `demo/scripts/hop-trace-ws-frames.sh`: headers-only + `upgrade_configs` can 101 with handshake ModSec; post-upgrade frames are opaque (SQLi-shaped frames echo — not CRS); BUFFERED+upgrade hangs; fail-closed on handshake.
-- **gRPC** (demo): headers/path/metadata hop-trace via `demo/scripts/hop-trace-grpc.sh` + `demo/envoy/envoy-grpc.yaml` (HTTP/2, body modes `NONE`) + `demo/grpc-echo`. Fail-closed holds. **Not** claimed: protobuf CRS / streaming RPC WAF. Stock CRS can still deny HTTP-shaped paths on the gRPC codec; that is not “gRPC body CRS.”
-- **CRS on WebSocket upgrade without phase-1 deny:** measured — headers Continue then anomaly block at phase 2 can let the origin see `UPGRADE` before the client gets 403. The frame suite loads `connex-ws-demo.conf` (phase-1 UNION deny) so handshake deny keeps the origin clean.
+- **Logs** (`tracing`): one line per phase with `request_id`, `phase`, `action` (`allow` / `deny` / `redirect` / `drop` / `fail_closed`), `latency_ms`, `body_bytes`.
+- **Metrics** (`GET /metrics`): `ext_proc_requests_total`, `ext_proc_allow_total`, `ext_proc_deny_total`, `ext_proc_fail_closed_total`, `ext_proc_stream_errors_total`, `ext_proc_local_reply_passthrough_total`, body-byte counters, and per-phase latency histograms.
+- **Readiness** (`GET /healthz`): 200 only if, within 2s, the gRPC listener completes an HTTP/2 preface + SETTINGS exchange **and** a headers-only probe through a fresh in-process `Exchange` answers Continue.
+- **Envoy side**: `%RESPONSE_CODE_DETAILS%` shows `modsecurity_intervention` / `modsec_fail_closed` / `ext_proc_error_*`; watch `http.<prefix>.ext_proc.modsec_ext_proc.*` (`streams_failed`, `message_timeouts`, `failure_mode_allowed` must stay 0).
