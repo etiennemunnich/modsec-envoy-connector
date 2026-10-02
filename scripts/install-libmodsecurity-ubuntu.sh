@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Build/install libmodsecurity from source on Ubuntu (CI and Linux demo hosts).
 # Distro packages on Ubuntu 24.04 (Noble) ship 3.0.12, which fails
-# modsecurity-sys. Lab pin is v3.0.16 — latest stable v3 as of 2026-09-25
-# (see versions.lock.md). No newer v3.x release to bump to.
+# modsecurity-sys. Lab pin is v3.0.17 — latest stable v3 (see versions.lock.md).
 #
 # Usage (CI):
 #   PREFIX=$HOME/.local ./scripts/install-libmodsecurity-ubuntu.sh
 # Then export PKG_CONFIG_PATH / LD_LIBRARY_PATH / LIBRARY_PATH for cargo.
 set -euo pipefail
 
-PIN="${MODSECURITY_PIN:-v3.0.16}"
+PIN="${MODSECURITY_PIN:-v3.0.17}"
 PREFIX="${PREFIX:-$HOME/.local}"
 SRC_DIR="${MODSECURITY_SRC_DIR:-$HOME/src/ModSecurity}"
 

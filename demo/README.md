@@ -2,7 +2,7 @@
 
 Run the connector locally behind Envoy with libmodsecurity and the OWASP Core Rule Set, then watch it allow, block, and fail closed.
 
-Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.1**, libmodsecurity **v3.0.16**, CRS **v4.29.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
+Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.1**, libmodsecurity **v3.0.17**, CRS **v4.29.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
 
 ```text
 curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 ──C API──► libmodsecurity + CRS
@@ -39,7 +39,7 @@ curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # c
 | Script | What it does |
 |--------|--------------|
 | [`install-envoy.sh`](./scripts/install-envoy.sh) | Checks `envoy --version` against the pin. On Linux, downloads the official release binary into `~/.local/bin` and checks its sha256 against the release checksums. `ENVOY_VERSION=vX.Y.Z` selects another release. |
-| [`install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh) | macOS: Homebrew. Linux: builds v3.0.16 from source via [`scripts/install-libmodsecurity-ubuntu.sh`](../scripts/install-libmodsecurity-ubuntu.sh). |
+| [`install-libmodsecurity.sh`](./scripts/install-libmodsecurity.sh) | macOS: Homebrew. Linux: builds v3.0.17 from source via [`scripts/install-libmodsecurity-ubuntu.sh`](../scripts/install-libmodsecurity-ubuntu.sh). |
 | [`install-crs.sh`](./scripts/install-crs.sh) | Shallow-clones CRS at the pin into `demo/.crs` and creates `crs-setup.conf` from the example. `CRS_TAG` / `CRS_DIR` select another tag and directory. |
 | [`up.sh`](./scripts/up.sh) | Generates `demo/.run/modsec.conf` (engine directives → CRS → demo rules), builds the connector, starts the origin, connector and Envoy detached, and waits for `/healthz` and Envoy `/ready`. `DEMO_CRS=0` skips CRS. `BODY_MODE=STREAMED` selects [`envoy/envoy-streamed.yaml`](./envoy/envoy-streamed.yaml). |
 | [`smoke.sh`](./scripts/smoke.sh) | Live assertions: benign GET/POST/JSON → **200**; SQLi/XSS/traversal in the URL → **403**; SQLi/XSS in form and JSON bodies → **403**; response-body leak → **403**. STREAMED adds a chunked last-chunk SQLi cell. Body-path floor ≥ 5. Origin hit count checked every time. |

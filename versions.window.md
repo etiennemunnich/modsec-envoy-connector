@@ -5,7 +5,7 @@ Candidate versions to probe before bumping a pin. The pins themselves live in [`
 | Axis | Pin | Window (checked 2026-09-27 against upstream tags) |
 |------|-----|----------------------------------------------------|
 | Envoy | `v1.39.1` | `v1.39.1`, `v1.38.4`, `v1.37.6` |
-| libmodsecurity | `v3.0.16` | `v3.0.16`, `v3.0.15`, `v3.0.14` |
+| libmodsecurity | `v3.0.17` | `v3.0.17`, `v3.0.16`, `v3.0.15` |
 | CRS | `v4.29.0` | `v4.29.0`, `v4.28.0`, `v4.27.0` |
 
 ## Probes

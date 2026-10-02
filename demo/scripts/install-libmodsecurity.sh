@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install / verify libmodsecurity at the pin in versions.lock.md (v3.0.16).
+# Install / verify libmodsecurity at the pin in versions.lock.md (v3.0.17).
 #   macOS: Homebrew bottle.
 #   Linux: builds the pinned tag from source via scripts/install-libmodsecurity-ubuntu.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PIN="$(grep -E '^MODSECURITY_PIN=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)"
-PIN="${PIN:-v3.0.16}"
+PIN="${PIN:-v3.0.17}"
 WANT="${PIN#v}"
 
 echo "libmodsecurity pin ${PIN}"
