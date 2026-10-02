@@ -136,8 +136,9 @@ else
 fi
 
 # Prove Envoy delivered request_trailers (connector logs trailers_continue).
+# Use grep (not ripgrep): GitHub-hosted runners do not ship `rg`.
 echo "==> live trailers delivered to connector"
-if rg -q 'action="trailers_continue"' "${RUN}/connector.log"; then
+if grep -q 'action="trailers_continue"' "${RUN}/connector.log"; then
   pass "[envoy→connector] request_trailers delivered (trailers_continue logged)"
 else
   fail "[envoy→connector] no trailers_continue in connector.log — Envoy may not have sent trailers"

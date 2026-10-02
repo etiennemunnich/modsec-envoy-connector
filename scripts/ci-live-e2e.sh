@@ -58,12 +58,11 @@ if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" ]]; then
   grep -q 'per_connection_buffer_limit_bytes: 1048576' "${envoy_cfg}" \
     || die "${envoy_cfg} must set per_connection_buffer_limit_bytes: 1048576 (1 MiB PARTIAL)"
 fi
-# Full CRS / go-ftw-full stay on BUFFERED. STREAMED stays thin (no go-ftw).
-# BUFFERED_PARTIAL may run go-ftw-smoke/body (under-limit CRS) but never go-ftw-full
-# (would pretend PARTIAL equals BUFFERED CRS fidelity).
-if [[ "${BODY_MODE}" == "STREAMED" && "${SUITES}" == *go-ftw* ]]; then
-  die "go-ftw suites require BODY_MODE=BUFFERED (got STREAMED); keep STREAMED e2e thin"
-fi
+# STREAMED may run go-ftw-smoke/body (local tip parity with BUFFERED). Hosted
+# go-ftw-full stays on BUFFERED (crs-full / monthly) for Actions cost — not a
+# STREAMED correctness refuse. BUFFERED_PARTIAL may run go-ftw-smoke/body
+# (under-limit CRS) but never go-ftw-full (would pretend PARTIAL equals
+# BUFFERED CRS fidelity).
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
 fi

@@ -10,7 +10,7 @@ license: see LICENSE (Apache-2.0)
 
 **Date:** 2026-09-21 (snapshot)  
 **Audience:** Etienne  
-**Status:** Prep notes from before the private connex tree landed live CI and honesty suites. Several checklist items below are **done or superseded** on tip (STREAMED thin smoke + fail-closed in CI; hop-trace in `e2e-pin`; gRPC/WS honesty scripts; Apache-2.0 license). Treat this file as history, not the live claim surface.
+**Status:** Prep notes from before the private connex tree landed live CI and honesty suites. Several checklist items below are **done or superseded** on tip (STREAMED product suites in CI; hop-trace + trailers in `e2e-pin`/`e2e-streamed`; gRPC/WS honesty scripts; Apache-2.0 license). Treat this file as history, not the live claim surface.
 
 **Current product truth:** [how-it-works.md](./how-it-works.md) · [testing.md](./testing.md) · [fail-closed.md](./fail-closed.md) · [`versions.lock.md`](../versions.lock.md) · [`demo/README.md`](../demo/README.md)
 
@@ -42,7 +42,7 @@ BoE pages reviewed (no catalog submit):
 
 **One-liner (then):** Design is sound for a **lab-proven HTTP BUFFERED ModSec connector** with honest protocol limits; it is **not** ready to claim multi-protocol full WAF or BoE catalog production.
 
-**Tip today (see testing.md):** STREAMED has thin live smoke + fail-closed on both arches; full CRS / go-ftw stay on BUFFERED. Do not read the 2026-09-21 "STREAMED deferred" line as current product truth.
+**Tip today (see testing.md):** STREAMED has the same hosted product suites as BUFFERED (`e2e-streamed`); full CRS / go-ftw-full stay on BUFFERED `crs-full`. Do not read the 2026-09-21 "STREAMED deferred" line as current product truth.
 
 ---
 
@@ -56,7 +56,7 @@ Items marked **(done on tip)** are covered by `demo/scripts/` and hosted `ci` / 
 4. **CRS reload / ModSec-only toggle**  -  switch ModSec-only vs CRS without breaking fail-closed. *(ops polish; `DEMO_CRS=0` exists)*
 5. **gRPC honesty suite** **(done on tip)**  -  `hop-trace-grpc.sh`; not protobuf CRS.
 6. **WebSocket honesty suite** **(done on tip)**  -  `hop-trace-ws.sh` / `hop-trace-ws-frames.sh`.
-7. **STREAMED** **(thin live on tip; full CRS still BUFFERED)**  -  smoke + fail-closed via `BODY_MODE=STREAMED` / `e2e-streamed`.
+7. **STREAMED** **(product live on tip; full CRS still BUFFERED hosted)**  -  same suites as BUFFERED via `BODY_MODE=STREAMED` / `e2e-streamed`.
 8. **Client IP / connection attrs** **(done on tip)**  -  Envoy `request_attributes` → `process_connection`.
 9. **Soak / memory**  -  double-buffer Envoy+ModSec under sustained BUFFERED load. *(still open)*
 10. **Ubuntu CI-parity** **(done on tip)**  -  hosted x86_64 + aarch64.

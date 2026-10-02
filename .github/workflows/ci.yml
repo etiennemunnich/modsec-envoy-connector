@@ -8,7 +8,8 @@ name: ci
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
 #   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
 #                                      PRs and dispatches (not cursor/** pushes)
-#   e2e-streamed × {x86_64, aarch64}   thin STREAMED smoke + fail-closed (same gate)
+#   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
+#                                      go-ftw-full stays BUFFERED via crs-full)
 #   e2e-buffered-partial × {arch}      PARTIAL smoke + fail-closed + go-ftw-smoke +
 #                                      1 MiB honesty (not full CRS fidelity)
 #   ci-ok                              one verdict over all of the above
@@ -220,7 +221,8 @@ jobs:
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
+      # Product BUFFERED contract. trailers last (restarts Envoy with SEND, then restores).
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers"
       body_mode: BUFFERED
 
   e2e-streamed:
@@ -229,10 +231,11 @@ jobs:
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
-      # Thin STREAMED cell: smoke (incl. chunked body) + fail-closed. Full CRS stays BUFFERED.
-      suites: "smoke fail-closed"
+      # STREAMED matches BUFFERED product contract (local tip parity). go-ftw-full stays
+      # on BUFFERED crs-full / monthly — not this PR cell.
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers"
       body_mode: STREAMED
-      timeout_minutes: 25
+      timeout_minutes: 45
 
   e2e-buffered-partial:
     name: e2e-buffered-partial

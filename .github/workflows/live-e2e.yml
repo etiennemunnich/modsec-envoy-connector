@@ -17,7 +17,7 @@ on:
         type: string
         default: ""
       suites:
-        description: "space-separated: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full partial-honesty"
+        description: "space-separated: smoke fail-closed fail-modes trailers hop-trace go-ftw-smoke go-ftw-body go-ftw-full partial-honesty"
         type: string
         default: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
       body_mode:
@@ -136,5 +136,6 @@ jobs:
             demo/.run/fail-modes/
             demo/.run/go-ftw/
             demo/.run/hop-trace/
+            demo/.run/trailers/
           retention-days: 5
           if-no-files-found: ignore

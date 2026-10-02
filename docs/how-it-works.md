@@ -121,7 +121,7 @@ The connector code path is the same for both modes: **append every chunk, check 
 | Mode | Envoy behaviour | Origin exposure on request deny | Demo / CI |
 |------|-----------------|----------------------------------|-----------|
 | **BUFFERED** (default) | Holds the full request (and response) entity until the connector has inspected it | A request-body deny happens **before** the origin sees anything, including when the attack sits only in the last chunk or last HTTP/2 DATA frames | `demo/envoy/envoy.yaml`; full CRS / go-ftw |
-| **STREAMED** | Delivers body chunks as they arrive | Non-disruptive Continues may let early chunks move toward the origin before phase-2/4 decides at EOS; body-limit rejects can still fire mid-stream on append | `demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED ./demo/scripts/up.sh`; thin smoke + fail-closed |
+| **STREAMED** | Delivers body chunks as they arrive | Non-disruptive Continues may let early chunks move toward the origin before phase-2/4 decides at EOS; body-limit rejects can still fire mid-stream on append | `demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED ./demo/scripts/up.sh`; hosted `e2e-streamed` = same product suites as `e2e-pin` (go-ftw-full stays BUFFERED `crs-full`) |
 
 ```mermaid
 flowchart TB
