@@ -9,6 +9,8 @@ name: ci
 #   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
 #                                      PRs and dispatches (not cursor/** pushes)
 #   e2e-streamed × {x86_64, aarch64}   thin STREAMED smoke + fail-closed (same gate)
+#   e2e-buffered-partial × {arch}      PARTIAL smoke + fail-closed + go-ftw-smoke +
+#                                      1 MiB honesty (not full CRS fidelity)
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
 # the changes job, so ci-ok still reports; runs on main are never cancelled.
@@ -232,9 +234,21 @@ jobs:
       body_mode: STREAMED
       timeout_minutes: 25
 
+  e2e-buffered-partial:
+    name: e2e-buffered-partial
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # PARTIAL cell: under-limit CRS smoke + fail-closed + 1 MiB prefix-honesty.
+      # Not go-ftw-full — PARTIAL ≠ BUFFERED CRS fidelity (ProcessPartial class).
+      suites: "smoke fail-closed go-ftw-smoke partial-honesty"
+      body_mode: BUFFERED_PARTIAL
+      timeout_minutes: 45
+
   ci-ok:
     name: ci-ok
-    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed]
+    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -250,8 +264,8 @@ jobs:
           needs = json.loads(os.environ["NEEDS"])
           docs_only = os.environ["DOCS_ONLY"] == "true"
           e2e_wanted = os.environ["E2E_WANTED"] == "true"
-          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed"}
-          e2e_jobs = {"e2e-pin", "e2e-streamed"}
+          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial"}
+          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial"}
           bad = []
           for job, v in needs.items():
               r = v["result"]

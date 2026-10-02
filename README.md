@@ -63,7 +63,7 @@ That generates rules under `demo/.run/`, runs `cargo build -p ext-proc-modsec`, 
 | 18098 | Demo origin |
 | 18089 | Envoy admin (`/ready`) |
 
-Optional: `DEMO_CRS=0 ./demo/scripts/up.sh` skips CRS (demo rules only). `BODY_MODE=STREAMED ./demo/scripts/up.sh` uses streamed bodies instead of the default buffered path.
+Optional: `DEMO_CRS=0 ./demo/scripts/up.sh` skips CRS (demo rules only). `BODY_MODE=STREAMED ./demo/scripts/up.sh` uses streamed bodies; `BODY_MODE=BUFFERED_PARTIAL ./demo/scripts/up.sh` uses prefix-only bodies (1 MiB listener buffer — **not** full CRS fidelity; see `demo/scripts/partial-honesty.sh`).
 
 ### 3. Exercise
 

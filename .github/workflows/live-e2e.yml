@@ -17,11 +17,11 @@ on:
         type: string
         default: ""
       suites:
-        description: "space-separated: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full"
+        description: "space-separated: smoke fail-closed fail-modes hop-trace go-ftw-smoke go-ftw-body go-ftw-full partial-honesty"
         type: string
         default: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
       body_mode:
-        description: "Envoy ext_proc body mode: BUFFERED (default) or STREAMED"
+        description: "Envoy ext_proc body mode: BUFFERED (default), STREAMED, or BUFFERED_PARTIAL"
         type: string
         default: "BUFFERED"
       timeout_minutes:

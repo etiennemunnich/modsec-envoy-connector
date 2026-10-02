@@ -85,8 +85,9 @@ sequenceDiagram
     R-->>E: Continue
   end
 
-  E->>R: request_body (BUFFERED whole entity, or STREAMED chunks)
+  E->>R: request_body (BUFFERED whole entity, STREAMED chunks, or BUFFERED_PARTIAL prefix)
   R->>M: append_request_body (every chunk)<br/>process_request_body at end_of_stream
+  Note over E,R: BUFFERED_PARTIAL sends at most per_connection_buffer_limit_bytes<br/>(demo: 1 MiB). Trailing attacks past that prefix can miss — not full CRS.
   alt Phase-2 deny / body-limit / fail-closed
     R-->>E: ImmediateResponse 403 or 500
     E-->>C: local reply

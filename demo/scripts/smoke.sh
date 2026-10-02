@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live smoke through Envoy → connector → libmodsecurity (+ CRS) → origin.
 # Requires ./demo/scripts/up.sh. Exits non-zero on any failed expectation.
-# Works for BODY_MODE=BUFFERED (default) and BODY_MODE=STREAMED.
+# Works for BODY_MODE=BUFFERED (default), STREAMED, and BUFFERED_PARTIAL.
 # Floors: ≥ 5 body-path checks (benign form/json + 3 body attacks) must PASS.
 set -euo pipefail
 # shellcheck source=lib.sh

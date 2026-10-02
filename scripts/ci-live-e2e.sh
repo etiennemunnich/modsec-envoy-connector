@@ -8,8 +8,10 @@
 # Env:
 #   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace
 #                    hop-trace-grpc hop-trace-ws-frames go-ftw-smoke go-ftw-body go-ftw-full
+#                    partial-honesty (BUFFERED_PARTIAL only)
 #                    (hop-trace-grpc needs go + grpcurl; Mac/local — not default CI)
-#   BODY_MODE        BUFFERED (default) or STREAMED — selects demo/envoy/envoy{,-streamed}.yaml
+#   BODY_MODE        BUFFERED (default) | STREAMED | BUFFERED_PARTIAL
+#                    selects demo/envoy/envoy{,-streamed,-buffered-partial}.yaml
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
 #   CRS_TAG          CRS tag to load (default: lock pin); fetched into demo/.crs-<tag>
@@ -18,7 +20,7 @@
 #   EXPECT_ARCH      fail unless `uname -m` is this (CI passes the matrix arch)
 #   MIN_*            per-suite floors, see floor() below
 #
-# failure_mode_allow stays false in both Envoy configs.
+# failure_mode_allow stays false in all Envoy configs.
 # A suite passes only if it exits 0 AND its summary reports at least the
 # floor of passing checks, so a suite that silently runs fewer checks (or a
 # go-ftw include that selects nothing) is a failure, not a green.
@@ -42,7 +44,8 @@ arch="$(uname -m)"
 case "${BODY_MODE}" in
   BUFFERED) envoy_cfg="${ROOT}/demo/envoy/envoy.yaml" ;;
   STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-streamed.yaml" ;;
-  *) die "BODY_MODE must be BUFFERED or STREAMED (got '${BODY_MODE}')" ;;
+  BUFFERED_PARTIAL) envoy_cfg="${ROOT}/demo/envoy/envoy-buffered-partial.yaml" ;;
+  *) die "BODY_MODE must be BUFFERED, STREAMED, or BUFFERED_PARTIAL (got '${BODY_MODE}')" ;;
 esac
 command -v envoy >/dev/null || die "envoy not on PATH"
 envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
@@ -51,9 +54,18 @@ modsec_ver="$(pkg-config --modversion modsecurity)"
 [[ "${modsec_ver}" == "${MODSECURITY_PIN#v}" ]] || die "pkg-config reports libmodsecurity ${modsec_ver}, want ${MODSECURITY_PIN}"
 grep -q 'failure_mode_allow: false' "${envoy_cfg}" || die "${envoy_cfg} must keep failure_mode_allow: false"
 grep -q "request_body_mode: ${BODY_MODE}" "${envoy_cfg}" || die "${envoy_cfg} must set request_body_mode: ${BODY_MODE}"
-# Full CRS / go-ftw stay on BUFFERED unless explicitly overridden (STREAMED e2e is thin).
+if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" ]]; then
+  grep -q 'per_connection_buffer_limit_bytes: 1048576' "${envoy_cfg}" \
+    || die "${envoy_cfg} must set per_connection_buffer_limit_bytes: 1048576 (1 MiB PARTIAL)"
+fi
+# Full CRS / go-ftw-full stay on BUFFERED. STREAMED stays thin (no go-ftw).
+# BUFFERED_PARTIAL may run go-ftw-smoke/body (under-limit CRS) but never go-ftw-full
+# (would pretend PARTIAL equals BUFFERED CRS fidelity).
 if [[ "${BODY_MODE}" == "STREAMED" && "${SUITES}" == *go-ftw* ]]; then
   die "go-ftw suites require BODY_MODE=BUFFERED (got STREAMED); keep STREAMED e2e thin"
+fi
+if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
+  die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
 fi
 
 "${DEMO}/install-crs.sh" >/dev/null
@@ -92,6 +104,7 @@ MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 MIN_TRAILERS="${MIN_TRAILERS:-5}"
 MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
 MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
+MIN_PARTIAL_HONESTY="${MIN_PARTIAL_HONESTY:-3}"
 
 # count_ftw_body_tests — how many tests match the default BODY_INCLUDE rule set.
 count_ftw_body_tests() {
@@ -120,7 +133,7 @@ fi
 # Suite summary lines for the report table. Must match mid-line suffixes
 # (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.
 # Shared with scripts/test-ci-scripts.sh (keep in sync).
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS'
+SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS|PARTIAL-HONESTY'
 
 # ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
 ftw_success() {
@@ -157,6 +170,11 @@ floor() {
       grep -qE '\bHOP-TRACE-WS-FRAMES PASSED\b' "$2" || { echo "missing HOP-TRACE-WS-FRAMES PASSED"; return 1; }
       n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_WS_FRAMES}" ]] || { echo "checks=${n:-0} < ${MIN_WS_FRAMES}"; return 1; }
+      ;;
+    partial-honesty)
+      grep -qE '\bPARTIAL-HONESTY PASSED\b' "$2" || { echo "missing PARTIAL-HONESTY PASSED"; return 1; }
+      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_PARTIAL_HONESTY}" ]] || { echo "checks=${n:-0} < ${MIN_PARTIAL_HONESTY}"; return 1; }
       ;;
     go-ftw-smoke)
       n="$(ftw_success "$2" 'demo tests')"
@@ -197,7 +215,7 @@ for suite in ${SUITES}; do
   echo "==> ${suite}"
   log="${ROOT}/demo/.run/e2e-${suite}.log"
   case "${suite}" in
-    smoke | fail-closed | fail-modes | trailers) cmd=("${DEMO}/${suite}.sh") ;;
+    smoke | fail-closed | fail-modes | trailers | partial-honesty) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
     hop-trace-grpc) cmd=("${DEMO}/hop-trace-grpc.sh") ;;
     hop-trace-ws-frames) cmd=("${DEMO}/hop-trace-ws-frames.sh") ;;
