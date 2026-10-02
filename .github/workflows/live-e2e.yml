@@ -21,7 +21,7 @@ on:
         type: string
         default: "smoke fail-closed fail-modes hop-trace go-ftw-smoke"
       body_mode:
-        description: "Envoy ext_proc body mode: BUFFERED, STREAMED, BUFFERED_PARTIAL, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, REQ_STREAMED_RESP_BUFFERED"
+        description: "Envoy ext_proc body mode: BUFFERED, STREAMED, BUFFERED_PARTIAL, NONE, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, REQ_STREAMED_RESP_BUFFERED"
         type: string
         default: "BUFFERED"
       timeout_minutes:

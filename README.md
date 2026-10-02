@@ -63,7 +63,7 @@ That generates rules under `demo/.run/`, runs `cargo build -p ext-proc-modsec`, 
 | 18098 | Demo origin |
 | 18089 | Envoy admin (`/ready`) |
 
-Optional: `DEMO_CRS=0 ./demo/scripts/up.sh` skips CRS (demo rules only). `BODY_MODE=STREAMED ./demo/scripts/up.sh` uses streamed bodies; `BODY_MODE=BUFFERED_PARTIAL ./demo/scripts/up.sh` uses prefix-only bodies (1 MiB listener buffer — **not** full CRS fidelity; see `demo/scripts/partial-honesty.sh`); `BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh` uses full-duplex streamed bodies (`StreamedBodyResponse`, trailer SEND; hang→504 N/A).
+Optional: `DEMO_CRS=0 ./demo/scripts/up.sh` skips CRS (demo rules only). `BODY_MODE=STREAMED ./demo/scripts/up.sh` uses streamed bodies; `BODY_MODE=BUFFERED_PARTIAL ./demo/scripts/up.sh` uses prefix-only bodies (1 MiB listener buffer — **not** full CRS fidelity; see `demo/scripts/partial-honesty.sh`); `BODY_MODE=NONE ./demo/scripts/up.sh` is headers-only (body CRS n/a; body attacks reach origin); `BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh` uses full-duplex streamed bodies (`StreamedBodyResponse`, trailer SEND; hang→504 N/A).
 
 ### 3. Exercise
 

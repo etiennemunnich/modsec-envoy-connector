@@ -10,11 +10,12 @@ name: ci
 #                                      PRs and dispatches (not cursor/** pushes);
 #                                      includes buffered-oversize + connect-assert
 #   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
-#                                      go-ftw-full stays BUFFERED via crs-full)
+#                                      go-ftw-full via crs-full matrix incl. STREAMED)
 #   e2e-buffered-partial × {arch}      PARTIAL smoke + fail-closed + go-ftw-smoke +
 #                                      1 MiB honesty (not full CRS fidelity)
 #   e2e-full-duplex × {x86_64, aarch64} FULL_DUPLEX product contract (same suites as
-#                                      e2e-streamed; hang→504 N/A; go-ftw-full local only)
+#                                      e2e-streamed; hang→504 N/A; go-ftw-full via crs-full)
+#   e2e-none × {arch}                  NONE headers-only (smoke + fail-closed; no body CRS)
 #   e2e-asymm-* × {arch}               independent req/resp body-mode labs
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
@@ -236,8 +237,8 @@ jobs:
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
-      # STREAMED matches BUFFERED product contract (local tip parity). go-ftw-full stays
-      # on BUFFERED crs-full / monthly — not this PR cell. connect-assert is in smoke too.
+      # STREAMED matches BUFFERED product contract. Full CRS is hosted via
+      # crs-full matrix (BUFFERED + STREAMED + FULL_DUPLEX), not this PR cell.
       suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
       body_mode: STREAMED
       timeout_minutes: 45
@@ -260,12 +261,22 @@ jobs:
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
-      # FULL_DUPLEX matches STREAMED product contract after local deep proof
-      # (fail-modes hang→504 N/A — Envoy disables message_timeout).
-      # go-ftw-full stays local lab only (hang budget loss; not push CI).
+      # FULL_DUPLEX matches STREAMED product contract (fail-modes hang→504 N/A —
+      # Envoy disables message_timeout). go-ftw-full via crs-full matrix.
       suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
       body_mode: FULL_DUPLEX_STREAMED
       timeout_minutes: 45
+
+  e2e-none:
+    name: e2e-none
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # NONE headers-only: query/header CRS + fail-closed. No body CRS / go-ftw.
+      suites: "smoke fail-closed connect-assert"
+      body_mode: NONE
+      timeout_minutes: 30
 
   e2e-asymm-req-buf-resp-str:
     name: e2e-asymm-req-buf-resp-str
@@ -291,7 +302,7 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial, e2e-full-duplex, e2e-asymm-req-buf-resp-str, e2e-asymm-req-str-resp-buf]
+    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial, e2e-full-duplex, e2e-none, e2e-asymm-req-buf-resp-str, e2e-asymm-req-str-resp-buf]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -307,8 +318,8 @@ jobs:
           needs = json.loads(os.environ["NEEDS"])
           docs_only = os.environ["DOCS_ONLY"] == "true"
           e2e_wanted = os.environ["E2E_WANTED"] == "true"
-          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
-          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
+          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-none", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
+          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-none", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
           bad = []
           for job, v in needs.items():
               r = v["result"]

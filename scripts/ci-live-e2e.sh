@@ -11,8 +11,9 @@
 #                    partial-honesty (BUFFERED_PARTIAL only)
 #                    buffered-oversize (BUFFERED only) connect-assert
 #                    (hop-trace-grpc needs go + grpcurl; Mac/local — not default CI)
-#   BODY_MODE        BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
-#                    | REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED
+#   BODY_MODE        BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | NONE |
+#                    FULL_DUPLEX_STREAMED | REQ_BUFFERED_RESP_STREAMED |
+#                    REQ_STREAMED_RESP_BUFFERED
 #                    selects demo/envoy YAML (asymmetric = independent req/resp axes)
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
@@ -47,6 +48,7 @@ case "${BODY_MODE}" in
   BUFFERED) envoy_cfg="${ROOT}/demo/envoy/envoy.yaml"; req_mode=BUFFERED; resp_mode=BUFFERED ;;
   STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-streamed.yaml"; req_mode=STREAMED; resp_mode=STREAMED ;;
   BUFFERED_PARTIAL) envoy_cfg="${ROOT}/demo/envoy/envoy-buffered-partial.yaml"; req_mode=BUFFERED_PARTIAL; resp_mode=BUFFERED_PARTIAL ;;
+  NONE) envoy_cfg="${ROOT}/demo/envoy/envoy-none.yaml"; req_mode=NONE; resp_mode=NONE ;;
   FULL_DUPLEX_STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-full-duplex.yaml"; req_mode=FULL_DUPLEX_STREAMED; resp_mode=FULL_DUPLEX_STREAMED ;;
   REQ_BUFFERED_RESP_STREAMED)
     envoy_cfg="${ROOT}/demo/envoy/envoy-req-buffered-resp-streamed.yaml"
@@ -56,7 +58,7 @@ case "${BODY_MODE}" in
     envoy_cfg="${ROOT}/demo/envoy/envoy-req-streamed-resp-buffered.yaml"
     req_mode=STREAMED; resp_mode=BUFFERED
     ;;
-  *) die "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" ;;
+  *) die "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, NONE, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" ;;
 esac
 command -v envoy >/dev/null || die "envoy not on PATH"
 envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
@@ -74,24 +76,27 @@ if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
   grep -q 'request_trailer_mode: SEND' "${envoy_cfg}" \
     || die "${envoy_cfg} must set request_trailer_mode: SEND for FULL_DUPLEX_STREAMED"
 fi
-# STREAMED may run go-ftw-smoke/body (local tip parity with BUFFERED). Hosted
-# go-ftw-full stays on BUFFERED (crs-full / monthly) for Actions cost — not a
-# STREAMED correctness refuse. BUFFERED_PARTIAL may run go-ftw-smoke/body
-# (under-limit CRS) but never go-ftw-full (would pretend PARTIAL equals
-# BUFFERED CRS fidelity). FULL_DUPLEX_STREAMED may run go-ftw-smoke/body;
-# go-ftw-full stays a local/deep lab (push CI product suites match e2e-streamed;
-# hang→504 N/A under duplex). Asymmetric modes may run smoke/FC/go-ftw-smoke; not go-ftw-full.
+# Envoy implements BUFFERED / STREAMED / BUFFERED_PARTIAL / NONE /
+# FULL_DUPLEX_STREAMED. go-ftw-full is allowed for BUFFERED, STREAMED, and
+# FULL_DUPLEX_STREAMED (crs-full matrix). BUFFERED_PARTIAL never gets
+# go-ftw-full (ProcessPartial ≠ full CRS). NONE never gets body go-ftw
+# (headers-only). FULL_DUPLEX hang→504 remains N/A (Envoy disables
+# message_timeout). Asymmetric modes stay lab cells (no go-ftw-full).
+# GRPC BodySendMode is [#not-implemented-hide:] on Envoy v1.39.1 — out of scope.
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
 fi
-if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" && "${SUITES}" == *go-ftw-full* ]]; then
-  die "go-ftw-full is not allowed under BODY_MODE=FULL_DUPLEX_STREAMED in CI (local lab only; hang budget loss)"
+if [[ "${BODY_MODE}" == "NONE" && "${SUITES}" == *go-ftw* ]]; then
+  die "go-ftw suites are not allowed under BODY_MODE=NONE (body CRS n/a; headers-only)"
 fi
 if [[ "${BODY_MODE}" == REQ_* && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under asymmetric BODY_MODE=${BODY_MODE} in CI (lab cell)"
 fi
 if [[ "${SUITES}" == *buffered-oversize* && "${BODY_MODE}" != "BUFFERED" ]]; then
   die "buffered-oversize requires BODY_MODE=BUFFERED (got '${BODY_MODE}')"
+fi
+if [[ "${SUITES}" == *partial-honesty* && "${BODY_MODE}" != "BUFFERED_PARTIAL" ]]; then
+  die "partial-honesty requires BODY_MODE=BUFFERED_PARTIAL (got '${BODY_MODE}')"
 fi
 
 "${DEMO}/install-crs.sh" >/dev/null
@@ -127,6 +132,7 @@ MIN_FTW_BODY_PIN="${MIN_FTW_BODY_PIN:-100}"
 MIN_FTW_BODY_ABS="${MIN_FTW_BODY_ABS:-50}"
 MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
+MIN_SMOKE_HEADER="${MIN_SMOKE_HEADER:-5}"
 MIN_TRAILERS="${MIN_TRAILERS:-5}"
 MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
 MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
@@ -177,8 +183,14 @@ floor() {
     smoke)
       # Require an explicit SMOKE PASSED line (not just body_checks=N from a fake log).
       grep -qE '\bSMOKE PASSED\b' "$2" || { echo "missing SMOKE PASSED"; return 1; }
-      n="$(grep -Eo 'body_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_SMOKE_BODY}" ]] || { echo "body_checks=${n:-0} < ${MIN_SMOKE_BODY}"; return 1; }
+      if grep -qE 'header_checks=[0-9]+' "$2"; then
+        # NONE (headers-only): floor on header denials; body_checks may be 0.
+        n="$(grep -Eo 'header_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+        [[ "${n:-0}" -ge "${MIN_SMOKE_HEADER}" ]] || { echo "header_checks=${n:-0} < ${MIN_SMOKE_HEADER}"; return 1; }
+      else
+        n="$(grep -Eo 'body_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+        [[ "${n:-0}" -ge "${MIN_SMOKE_BODY}" ]] || { echo "body_checks=${n:-0} < ${MIN_SMOKE_BODY}"; return 1; }
+      fi
       ;;
     fail-modes)
       n="$(grep -Eo 'summary: PASS=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"

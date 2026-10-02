@@ -1,8 +1,10 @@
 name: crs-full
 
 # Monthly: the whole OWASP CRS go-ftw regression tree (HTTP/1.x, status codes,
-# demo/ftw/envoy-overrides.yaml) at the pins on x86_64 + aarch64. Files the
-# issue "crs-full: go-ftw failing" on failure and closes it when green again.
+# demo/ftw/envoy-overrides.yaml) at the pins on x86_64 + aarch64, for every
+# Envoy BodySendMode that honestly supports full CRS (BUFFERED, STREAMED,
+# FULL_DUPLEX_STREAMED). BUFFERED_PARTIAL and NONE are excluded on purpose.
+# Files the issue "crs-full: go-ftw failing" on failure and closes it when green.
 
 on:
   schedule:
@@ -18,11 +20,16 @@ permissions:
 
 jobs:
   full:
-    name: go-ftw full
+    name: go-ftw full (${{ matrix.body_mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        body_mode: [BUFFERED, STREAMED, FULL_DUPLEX_STREAMED]
     uses: ./.github/workflows/live-e2e.yml
     with:
       suites: "go-ftw-full"
-      timeout_minutes: 60
+      body_mode: ${{ matrix.body_mode }}
+      timeout_minutes: 90
 
   report:
     name: report

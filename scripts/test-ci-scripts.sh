@@ -202,6 +202,20 @@ check "demo: envoy-grpc fail-closed" 0 "${ok}"
 grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
 check "demo: envoy-grpc headers-only bodies" 0 "${ok}"
 
+# Stock HTTP NONE BodySendMode (Envoy default; headers-only product cell).
+[[ -f "${ROOT}/demo/envoy/envoy-none.yaml" ]] && ok=0 || ok=1
+check "demo: envoy-none.yaml present" 0 "${ok}"
+grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 || ok=1
+check "demo: envoy-none bodies NONE" 0 "${ok}"
+grep -q 'response_body_mode: NONE' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 || ok=1
+check "demo: envoy-none response bodies NONE" 0 "${ok}"
+grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 || ok=1
+check "demo: envoy-none fail-closed" 0 "${ok}"
+grep -q 'e2e-none' "${ROOT}/.github/workflows/ci.yml" && ok=0 || ok=1
+check "ci: e2e-none job present" 0 "${ok}"
+grep -q 'body_mode: \[BUFFERED, STREAMED, FULL_DUPLEX_STREAMED\]' "${ROOT}/.github/workflows/crs-full.yml" && ok=0 || ok=1
+check "crs-full: Envoy full-CRS body_mode matrix" 0 "${ok}"
+
 # Thin presence hook for WS frame-bound artifacts.
 [[ -x "${ROOT}/demo/scripts/hop-trace-ws-frames.sh" ]] && ok=0 || ok=1
 check "demo: hop-trace-ws-frames.sh executable" 0 "${ok}"

@@ -6,16 +6,18 @@ DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
 
-# BODY_MODE selects Envoy request/response body modes:
-#   BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
+# BODY_MODE selects Envoy request/response body modes (Envoy BodySendMode):
+#   BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | NONE | FULL_DUPLEX_STREAMED
 #   REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED  (asymmetric labs)
 # `up.sh` writes demo/.run/body_mode so later scripts (smoke, fail-closed) match
 # the running Envoy without re-exporting BODY_MODE.
 # BUFFERED_PARTIAL is ProcessPartial-class: under-limit CRS can pass; over-limit
 # trailing body attacks may miss. Not a full-CRS fidelity mode.
+# NONE is headers-only: body CRS / go-ftw body suites are n/a (bypass expected).
 # FULL_DUPLEX_STREAMED requires connector --body-reply streamed (StreamedBodyResponse)
 # and trailer modes SEND; Envoy disables message_timeout under this mode.
 # Asymmetric modes keep request/response axes independent (matrix gap close).
+# GRPC BodySendMode (enum 5) is [#not-implemented-hide:] on Envoy v1.39.1 — not a selector.
 if [[ -z "${BODY_MODE:-}" && -f "${RUN}/body_mode" ]]; then
   BODY_MODE="$(tr -d '[:space:]' <"${RUN}/body_mode")"
 fi
@@ -27,6 +29,7 @@ case "${BODY_MODE}" in
   BUFFERED) ENVOY_CFG="${DEMO}/envoy/envoy.yaml" ;;
   STREAMED) ENVOY_CFG="${DEMO}/envoy/envoy-streamed.yaml" ;;
   BUFFERED_PARTIAL) ENVOY_CFG="${DEMO}/envoy/envoy-buffered-partial.yaml" ;;
+  NONE) ENVOY_CFG="${DEMO}/envoy/envoy-none.yaml" ;;
   FULL_DUPLEX_STREAMED)
     ENVOY_CFG="${DEMO}/envoy/envoy-full-duplex.yaml"
     BODY_REPLY=streamed
@@ -42,7 +45,7 @@ case "${BODY_MODE}" in
     RESPONSE_BODY_MODE=BUFFERED
     ;;
   *)
-    echo "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" >&2
+    echo "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, NONE, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" >&2
     return 2 2>/dev/null || exit 2
     ;;
 esac

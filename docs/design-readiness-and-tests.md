@@ -42,7 +42,7 @@ BoE pages reviewed (no catalog submit):
 
 **One-liner (then):** Design is sound for a **lab-proven HTTP BUFFERED ModSec connector** with honest protocol limits; it is **not** ready to claim multi-protocol full WAF or BoE catalog production.
 
-**Tip today (see testing.md):** STREAMED has the same hosted product suites as BUFFERED (`e2e-streamed`); full CRS / go-ftw-full stay on BUFFERED `crs-full`. Do not read the 2026-09-21 "STREAMED deferred" line as current product truth.
+**Tip today (see testing.md):** STREAMED has the same hosted product suites as BUFFERED (`e2e-streamed`); full CRS / go-ftw-full is hosted for BUFFERED + STREAMED + FULL_DUPLEX via the `crs-full` matrix (Envoy-aligned). Do not read the 2026-09-21 "STREAMED deferred" line as current product truth.
 
 ---
 
@@ -56,7 +56,7 @@ Items marked **(done on tip)** are covered by `demo/scripts/` and hosted `ci` / 
 4. **CRS reload / ModSec-only toggle**  -  switch ModSec-only vs CRS without breaking fail-closed. *(ops polish; `DEMO_CRS=0` exists)*
 5. **gRPC honesty suite** **(done on tip)**  -  `hop-trace-grpc.sh`; not protobuf CRS.
 6. **WebSocket honesty suite** **(done on tip)**  -  `hop-trace-ws.sh` / `hop-trace-ws-frames.sh`.
-7. **STREAMED** **(product live on tip; full CRS still BUFFERED hosted)**  -  same suites as BUFFERED via `BODY_MODE=STREAMED` / `e2e-streamed`.
+7. **STREAMED** **(product live on tip; full CRS hosted via `crs-full` matrix)**  -  same suites as BUFFERED via `BODY_MODE=STREAMED` / `e2e-streamed`.
 8. **Client IP / connection attrs** **(done on tip)**  -  Envoy `request_attributes` → `process_connection`.
 9. **Soak / memory**  -  double-buffer Envoy+ModSec under sustained BUFFERED load. *(still open)*
 10. **Ubuntu CI-parity** **(done on tip)**  -  hosted x86_64 + aarch64.

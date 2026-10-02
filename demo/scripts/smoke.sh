@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 # Live smoke through Envoy → connector → libmodsecurity (+ CRS) → origin.
 # Requires ./demo/scripts/up.sh. Exits non-zero on any failed expectation.
-# Works for BODY_MODE=BUFFERED (default), STREAMED, and BUFFERED_PARTIAL.
-# Floors: ≥ 5 body-path checks (benign form/json + 3 body attacks) must PASS.
+# Works for BODY_MODE=BUFFERED (default), STREAMED, BUFFERED_PARTIAL, NONE,
+# and FULL_DUPLEX_STREAMED.
+# Floors: ≥ 5 body-path checks for body modes; under NONE, ≥ 5 header/query
+# denials and explicit body-bypass honesty (body CRS is n/a).
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
 FAIL=0
 BODY_PASS=0
+HEADER_PASS=0
 MIN_BODY_CHECKS="${MIN_BODY_CHECKS:-5}"
+MIN_HEADER_CHECKS="${MIN_HEADER_CHECKS:-5}"
 pass() { echo "  PASS $*"; }
 fail() { echo "  FAIL $*"; FAIL=1; }
 body_pass() { pass "$@"; BODY_PASS=$((BODY_PASS + 1)); }
+header_pass() { pass "$@"; HEADER_PASS=$((HEADER_PASS + 1)); }
 
-# expect <name> <want-code> <want-origin-delta> [--body] <curl args...>
+# expect <name> <want-code> <want-origin-delta> [--body|--header] <curl args...>
 expect() {
   local name="$1" want="$2" want_delta="$3"
   shift 3
-  local body_cell=0
-  if [[ "${1:-}" == "--body" ]]; then body_cell=1; shift; fi
+  local cell=plain
+  if [[ "${1:-}" == "--body" ]]; then cell=body; shift; fi
+  if [[ "${1:-}" == "--header" ]]; then cell=header; shift; fi
   local before after code delta
   before="$(origin_hits)"
   code="$(http_code "$@")"
@@ -27,11 +33,11 @@ expect() {
   after="$(origin_hits)"
   delta=$((after - before))
   if [[ "$code" == "$want" && "$delta" == "$want_delta" ]]; then
-    if [[ "$body_cell" -eq 1 ]]; then
-      body_pass "[$name] HTTP $code, origin hits +$delta"
-    else
-      pass "[$name] HTTP $code, origin hits +$delta"
-    fi
+    case "${cell}" in
+      body) body_pass "[$name] HTTP $code, origin hits +$delta" ;;
+      header) header_pass "[$name] HTTP $code, origin hits +$delta" ;;
+      *) pass "[$name] HTTP $code, origin hits +$delta" ;;
+    esac
   else
     fail "[$name] HTTP $code (want $want), origin hits +$delta (want +$want_delta)"
   fi
@@ -53,19 +59,30 @@ expect "post-json" 200 1 --body -X POST -H 'Content-Type: application/json' \
   --data-binary '{"name":"alice","qty":2}' "${BASE}/api/order"
 
 echo "==> request-line attacks (CRS; expect 403, never reach origin)"
-expect "sqli-query" 403 0 "${BASE}/search?q=1%27%20UNION%20SELECT%20username,password%20FROM%20users--"
-expect "sqli-tautology" 403 0 "${BASE}/item?id=1%27%20OR%20%271%27=%271"
-expect "xss-query" 403 0 "${BASE}/page?q=%3Cscript%3Ealert(document.cookie)%3C/script%3E"
-expect "xss-img" 403 0 "${BASE}/page?q=%3Cimg%20src=x%20onerror=alert(1)%3E"
-expect "path-traversal" 403 0 "${BASE}/download?file=../../../../etc/passwd"
+expect "sqli-query" 403 0 --header "${BASE}/search?q=1%27%20UNION%20SELECT%20username,password%20FROM%20users--"
+expect "sqli-tautology" 403 0 --header "${BASE}/item?id=1%27%20OR%20%271%27=%271"
+expect "xss-query" 403 0 --header "${BASE}/page?q=%3Cscript%3Ealert(document.cookie)%3C/script%3E"
+expect "xss-img" 403 0 --header "${BASE}/page?q=%3Cimg%20src=x%20onerror=alert(1)%3E"
+expect "path-traversal" 403 0 --header "${BASE}/download?file=../../../../etc/passwd"
 
-echo "==> request-body attacks (${BODY_MODE} → phase 2; expect 403, never reach origin)"
-expect "sqli-form-body" 403 0 --body -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-binary "user=admin'%20UNION%20SELECT%201,2,3--" "${BASE}/login"
-expect "xss-form-body" 403 0 --body -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-binary 'comment=<script>alert(1)</script>' "${BASE}/comment"
-expect "sqli-json-body" 403 0 --body -X POST -H 'Content-Type: application/json' \
-  --data-binary "{\"q\":\"1' UNION SELECT password FROM users--\"}" "${BASE}/api/search"
+if [[ "${BODY_MODE}" == "NONE" ]]; then
+  # Bodies are not sent to ext_proc — attacks in the entity must reach origin.
+  echo "==> request-body attacks (NONE → body bypass honesty; expect 200, origin +1)"
+  expect "sqli-form-body-bypass" 200 1 -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-binary "user=admin'%20UNION%20SELECT%201,2,3--" "${BASE}/login"
+  expect "xss-form-body-bypass" 200 1 -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-binary 'comment=<script>alert(1)</script>' "${BASE}/comment"
+  expect "sqli-json-body-bypass" 200 1 -X POST -H 'Content-Type: application/json' \
+    --data-binary "{\"q\":\"1' UNION SELECT password FROM users--\"}" "${BASE}/api/search"
+else
+  echo "==> request-body attacks (${BODY_MODE} → phase 2; expect 403, never reach origin)"
+  expect "sqli-form-body" 403 0 --body -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-binary "user=admin'%20UNION%20SELECT%201,2,3--" "${BASE}/login"
+  expect "xss-form-body" 403 0 --body -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-binary 'comment=<script>alert(1)</script>' "${BASE}/comment"
+  expect "sqli-json-body" 403 0 --body -X POST -H 'Content-Type: application/json' \
+    --data-binary "{\"q\":\"1' UNION SELECT password FROM users--\"}" "${BASE}/api/search"
+fi
 
 if [[ "${REQUEST_BODY_MODE}" == "STREAMED" ]]; then
   echo "==> STREAMED chunked body (attack only in last chunk; expect 403, origin untouched)"
@@ -106,8 +123,13 @@ PY
   fi
 fi
 
-echo "==> response path (origin answers; phase-4 rule blocks the leak)"
-expect "response-body-leak" 403 1 --body "${BASE}/leak"
+if [[ "${BODY_MODE}" == "NONE" ]]; then
+  echo "==> response path (NONE → no response body to ModSec; leak reaches client)"
+  expect "response-body-leak-bypass" 200 1 "${BASE}/leak"
+else
+  echo "==> response path (origin answers; phase-4 rule blocks the leak)"
+  expect "response-body-leak" 403 1 --body "${BASE}/leak"
+fi
 
 echo "==> CONNECT carve-out (direct 403; ext_proc disabled)"
 before="$(origin_hits)"
@@ -157,17 +179,33 @@ m="$(curl -s "${METRICS}/metrics")"
 echo "${m}" | grep -E '^ext_proc_(requests|allow|deny|fail_closed)_total ' | sed 's/^/  /'
 deny="$(echo "${m}" | awk '/^ext_proc_deny_total /{print $2}')"
 fc="$(echo "${m}" | awk '/^ext_proc_fail_closed_total /{print $2}')"
-want_deny=9
-[[ "${REQUEST_BODY_MODE}" == "STREAMED" ]] && want_deny=10
+if [[ "${BODY_MODE}" == "NONE" ]]; then
+  # Header/query denials only (5); body attacks bypass under NONE.
+  want_deny=5
+else
+  want_deny=9
+  [[ "${REQUEST_BODY_MODE}" == "STREAMED" ]] && want_deny=10
+fi
 [[ "${deny:-0}" -ge "${want_deny}" ]] && pass "[metrics] deny_total=${deny}" || fail "[metrics] deny_total=${deny:-?} (want ≥ ${want_deny})"
 [[ "${fc:-0}" -eq 0 ]] && pass "[metrics] fail_closed_total=0" || fail "[metrics] fail_closed_total=${fc}"
 
-[[ "${BODY_PASS}" -ge "${MIN_BODY_CHECKS}" ]] \
-  && pass "[floor] body-path checks PASS=${BODY_PASS} (≥ ${MIN_BODY_CHECKS})" \
-  || fail "[floor] body-path checks PASS=${BODY_PASS} < ${MIN_BODY_CHECKS}"
+if [[ "${BODY_MODE}" == "NONE" ]]; then
+  [[ "${HEADER_PASS}" -ge "${MIN_HEADER_CHECKS}" ]] \
+    && pass "[floor] header-path checks PASS=${HEADER_PASS} (≥ ${MIN_HEADER_CHECKS})" \
+    || fail "[floor] header-path checks PASS=${HEADER_PASS} < ${MIN_HEADER_CHECKS}"
+else
+  [[ "${BODY_PASS}" -ge "${MIN_BODY_CHECKS}" ]] \
+    && pass "[floor] body-path checks PASS=${BODY_PASS} (≥ ${MIN_BODY_CHECKS})" \
+    || fail "[floor] body-path checks PASS=${BODY_PASS} < ${MIN_BODY_CHECKS}"
+fi
 
 if [[ "$FAIL" -ne 0 ]]; then
   echo "SMOKE FAILED body_mode=${BODY_MODE}"
   exit 1
 fi
-echo "SMOKE PASSED body_mode=${BODY_MODE} body_checks=${BODY_PASS}"
+if [[ "${BODY_MODE}" == "NONE" ]]; then
+  # body_checks=0: body CRS is n/a under NONE (ci-live-e2e floors on header_checks).
+  echo "SMOKE PASSED body_mode=${BODY_MODE} body_checks=0 header_checks=${HEADER_PASS}"
+else
+  echo "SMOKE PASSED body_mode=${BODY_MODE} body_checks=${BODY_PASS}"
+fi
