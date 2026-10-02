@@ -67,12 +67,13 @@ expect "xss-form-body" 403 0 --body -X POST -H 'Content-Type: application/x-www-
 expect "sqli-json-body" 403 0 --body -X POST -H 'Content-Type: application/json' \
   --data-binary "{\"q\":\"1' UNION SELECT password FROM users--\"}" "${BASE}/api/search"
 
-if [[ "${BODY_MODE}" == "STREAMED" ]]; then
+if [[ "${REQUEST_BODY_MODE}" == "STREAMED" ]]; then
   echo "==> STREAMED chunked body (attack only in last chunk; expect 403, origin untouched)"
   before="$(origin_hits)"
   chunked_code="$(
-    python3 - <<'PY'
-import socket
+    python3 - "${ENVOY_PORT}" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
 head = b"name=alice&q="
 tail = b"1' UNION SELECT password FROM users--"
 req = (
@@ -83,7 +84,7 @@ req = (
 for chunk in (head, tail):
     req += b"%x\r\n" % len(chunk) + chunk + b"\r\n"
 req += b"0\r\n\r\n"
-s = socket.create_connection(("127.0.0.1", 18080), timeout=10)
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
 s.sendall(req)
 data = b""
 while True:
@@ -108,13 +109,56 @@ fi
 echo "==> response path (origin answers; phase-4 rule blocks the leak)"
 expect "response-body-leak" 403 1 --body "${BASE}/leak"
 
+echo "==> CONNECT carve-out (direct 403; ext_proc disabled)"
+before="$(origin_hits)"
+connect_result="$(
+  python3 - "${ENVOY_PORT}" <<'PY'
+import socket, time, sys
+port = int(sys.argv[1])
+req = (
+    b"CONNECT example.com:443 HTTP/1.1\r\n"
+    b"Host: example.com:443\r\n"
+    b"Connection: close\r\n\r\n"
+)
+t0 = time.monotonic()
+s = socket.create_connection(("127.0.0.1", port), timeout=5)
+s.settimeout(5)
+s.sendall(req)
+data = b""
+try:
+    while True:
+        part = s.recv(4096)
+        if not part:
+            break
+        data += part
+        if b"\r\n\r\n" in data:
+            break
+except socket.timeout:
+    pass
+elapsed = time.monotonic() - t0
+s.close()
+code = data.split(b" ", 2)[1].decode() if data.startswith(b"HTTP/") else "000"
+print(f"{code} {elapsed:.3f}")
+PY
+)"
+connect_code="${connect_result%% *}"
+connect_elapsed="${connect_result##* }"
+sleep 0.1
+delta=$(( $(origin_hits) - before ))
+if [[ "${connect_code}" == "403" && "${delta}" == "0" ]] \
+  && python3 -c "import sys; sys.exit(0 if float('${connect_elapsed}') < 1.5 else 1)"; then
+  pass "[connect] HTTP 403 origin +0 in ${connect_elapsed}s"
+else
+  fail "[connect] HTTP ${connect_code} origin +${delta} elapsed=${connect_elapsed}s (want 403 / +0 / <1.5s)"
+fi
+
 echo "==> connector metrics"
 m="$(curl -s "${METRICS}/metrics")"
 echo "${m}" | grep -E '^ext_proc_(requests|allow|deny|fail_closed)_total ' | sed 's/^/  /'
 deny="$(echo "${m}" | awk '/^ext_proc_deny_total /{print $2}')"
 fc="$(echo "${m}" | awk '/^ext_proc_fail_closed_total /{print $2}')"
 want_deny=9
-[[ "${BODY_MODE}" == "STREAMED" ]] && want_deny=10
+[[ "${REQUEST_BODY_MODE}" == "STREAMED" ]] && want_deny=10
 [[ "${deny:-0}" -ge "${want_deny}" ]] && pass "[metrics] deny_total=${deny}" || fail "[metrics] deny_total=${deny:-?} (want ≥ ${want_deny})"
 [[ "${fc:-0}" -eq 0 ]] && pass "[metrics] fail_closed_total=0" || fail "[metrics] fail_closed_total=${fc}"
 

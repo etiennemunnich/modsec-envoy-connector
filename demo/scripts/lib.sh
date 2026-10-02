@@ -6,19 +6,23 @@ DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
 
-# BODY_MODE=BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
-# — selects Envoy body mode.
+# BODY_MODE selects Envoy request/response body modes:
+#   BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
+#   REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED  (asymmetric labs)
 # `up.sh` writes demo/.run/body_mode so later scripts (smoke, fail-closed) match
 # the running Envoy without re-exporting BODY_MODE.
 # BUFFERED_PARTIAL is ProcessPartial-class: under-limit CRS can pass; over-limit
 # trailing body attacks may miss. Not a full-CRS fidelity mode.
 # FULL_DUPLEX_STREAMED requires connector --body-reply streamed (StreamedBodyResponse)
 # and trailer modes SEND; Envoy disables message_timeout under this mode.
+# Asymmetric modes keep request/response axes independent (matrix gap close).
 if [[ -z "${BODY_MODE:-}" && -f "${RUN}/body_mode" ]]; then
   BODY_MODE="$(tr -d '[:space:]' <"${RUN}/body_mode")"
 fi
 BODY_MODE="${BODY_MODE:-BUFFERED}"
 BODY_REPLY=common
+REQUEST_BODY_MODE="${BODY_MODE}"
+RESPONSE_BODY_MODE="${BODY_MODE}"
 case "${BODY_MODE}" in
   BUFFERED) ENVOY_CFG="${DEMO}/envoy/envoy.yaml" ;;
   STREAMED) ENVOY_CFG="${DEMO}/envoy/envoy-streamed.yaml" ;;
@@ -27,17 +31,50 @@ case "${BODY_MODE}" in
     ENVOY_CFG="${DEMO}/envoy/envoy-full-duplex.yaml"
     BODY_REPLY=streamed
     ;;
-  *) echo "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, or FULL_DUPLEX_STREAMED (got '${BODY_MODE}')" >&2; return 2 2>/dev/null || exit 2 ;;
+  REQ_BUFFERED_RESP_STREAMED)
+    ENVOY_CFG="${DEMO}/envoy/envoy-req-buffered-resp-streamed.yaml"
+    REQUEST_BODY_MODE=BUFFERED
+    RESPONSE_BODY_MODE=STREAMED
+    ;;
+  REQ_STREAMED_RESP_BUFFERED)
+    ENVOY_CFG="${DEMO}/envoy/envoy-req-streamed-resp-buffered.yaml"
+    REQUEST_BODY_MODE=STREAMED
+    RESPONSE_BODY_MODE=BUFFERED
+    ;;
+  *)
+    echo "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" >&2
+    return 2 2>/dev/null || exit 2
+    ;;
 esac
 CONNECTOR_BIN="${ROOT}/target/debug/ext-proc-modsec"
 RULES_FILE="${RUN}/modsec.conf"
 HITS_FILE="${RUN}/origin-hits.log"
 
-BASE="http://127.0.0.1:18080"
-CONNECTOR_LISTEN="127.0.0.1:18081"
-METRICS="http://127.0.0.1:18082"
-ORIGIN_PORT=18098
-ENVOY_ADMIN_PORT=18089
+# DEMO_PORT_BASE remaps the demo ports (default 18080). Use e.g. 18380 to
+# avoid colliding with another agent on the stock ports.
+DEMO_PORT_BASE="${DEMO_PORT_BASE:-18080}"
+ENVOY_PORT="${DEMO_PORT_BASE}"
+CONNECTOR_PORT=$((DEMO_PORT_BASE + 1))
+METRICS_PORT=$((DEMO_PORT_BASE + 2))
+ENVOY_ADMIN_PORT=$((DEMO_PORT_BASE + 9))
+ORIGIN_PORT=$((DEMO_PORT_BASE + 18))
+
+BASE="http://127.0.0.1:${ENVOY_PORT}"
+CONNECTOR_LISTEN="127.0.0.1:${CONNECTOR_PORT}"
+METRICS="http://127.0.0.1:${METRICS_PORT}"
+
+# When using a non-default port base, materialize a remapped Envoy YAML under .run/
+if [[ "${DEMO_PORT_BASE}" != "18080" ]]; then
+  mkdir -p "${RUN}"
+  REMAPPED_ENVOY_CFG="${RUN}/envoy-port-remap.yaml"
+  sed \
+    -e "s/port_value: 18089/port_value: ${ENVOY_ADMIN_PORT}/g" \
+    -e "s/port_value: 18080/port_value: ${ENVOY_PORT}/g" \
+    -e "s/port_value: 18081/port_value: ${CONNECTOR_PORT}/g" \
+    -e "s/port_value: 18098/port_value: ${ORIGIN_PORT}/g" \
+    "${ENVOY_CFG}" >"${REMAPPED_ENVOY_CFG}"
+  ENVOY_CFG="${REMAPPED_ENVOY_CFG}"
+fi
 
 port_pid() {
   lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -1 || true
@@ -70,7 +107,7 @@ start_connector() {
   local rules="${CONNECTOR_RULES:-${RULES_FILE}}"
   daemonize "${RUN}/connector.log" "${RUN}/connector.pid" "${CONNECTOR_BIN}" \
     --listen "${CONNECTOR_LISTEN}" \
-    --metrics-listen "127.0.0.1:18082" \
+    --metrics-listen "127.0.0.1:${METRICS_PORT}" \
     --modsec-rules "${rules}" \
     --body-reply "${BODY_REPLY}" \
     "$@"
@@ -85,7 +122,7 @@ daemonize() {
 
 ports_free_or_die() {
   local port pid
-  for port in 18080 18081 18082 "${ORIGIN_PORT}" "${ENVOY_ADMIN_PORT}"; do
+  for port in "${ENVOY_PORT}" "${CONNECTOR_PORT}" "${METRICS_PORT}" "${ORIGIN_PORT}" "${ENVOY_ADMIN_PORT}"; do
     pid="$(port_pid "$port")"
     if [[ -n "$pid" ]]; then
       echo "port ${port} is in use by: $(ps -p "$pid" -o command= | cut -c1-120)" >&2

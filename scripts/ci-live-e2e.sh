@@ -9,9 +9,11 @@
 #   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace
 #                    hop-trace-grpc hop-trace-ws-frames go-ftw-smoke go-ftw-body go-ftw-full
 #                    partial-honesty (BUFFERED_PARTIAL only)
+#                    buffered-oversize (BUFFERED only) connect-assert
 #                    (hop-trace-grpc needs go + grpcurl; Mac/local — not default CI)
 #   BODY_MODE        BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
-#                    selects demo/envoy/envoy{,-streamed,-buffered-partial,-full-duplex}.yaml
+#                    | REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED
+#                    selects demo/envoy YAML (asymmetric = independent req/resp axes)
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
 #   CRS_TAG          CRS tag to load (default: lock pin); fetched into demo/.crs-<tag>
@@ -42,11 +44,19 @@ die() { echo "ci-live-e2e: $*" >&2; exit 1; }
 arch="$(uname -m)"
 [[ -z "${EXPECT_ARCH:-}" || "${arch}" == "${EXPECT_ARCH}" ]] || die "running on ${arch}, want EXPECT_ARCH=${EXPECT_ARCH}"
 case "${BODY_MODE}" in
-  BUFFERED) envoy_cfg="${ROOT}/demo/envoy/envoy.yaml" ;;
-  STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-streamed.yaml" ;;
-  BUFFERED_PARTIAL) envoy_cfg="${ROOT}/demo/envoy/envoy-buffered-partial.yaml" ;;
-  FULL_DUPLEX_STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-full-duplex.yaml" ;;
-  *) die "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, or FULL_DUPLEX_STREAMED (got '${BODY_MODE}')" ;;
+  BUFFERED) envoy_cfg="${ROOT}/demo/envoy/envoy.yaml"; req_mode=BUFFERED; resp_mode=BUFFERED ;;
+  STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-streamed.yaml"; req_mode=STREAMED; resp_mode=STREAMED ;;
+  BUFFERED_PARTIAL) envoy_cfg="${ROOT}/demo/envoy/envoy-buffered-partial.yaml"; req_mode=BUFFERED_PARTIAL; resp_mode=BUFFERED_PARTIAL ;;
+  FULL_DUPLEX_STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-full-duplex.yaml"; req_mode=FULL_DUPLEX_STREAMED; resp_mode=FULL_DUPLEX_STREAMED ;;
+  REQ_BUFFERED_RESP_STREAMED)
+    envoy_cfg="${ROOT}/demo/envoy/envoy-req-buffered-resp-streamed.yaml"
+    req_mode=BUFFERED; resp_mode=STREAMED
+    ;;
+  REQ_STREAMED_RESP_BUFFERED)
+    envoy_cfg="${ROOT}/demo/envoy/envoy-req-streamed-resp-buffered.yaml"
+    req_mode=STREAMED; resp_mode=BUFFERED
+    ;;
+  *) die "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" ;;
 esac
 command -v envoy >/dev/null || die "envoy not on PATH"
 envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
@@ -54,7 +64,8 @@ envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
 modsec_ver="$(pkg-config --modversion modsecurity)"
 [[ "${modsec_ver}" == "${MODSECURITY_PIN#v}" ]] || die "pkg-config reports libmodsecurity ${modsec_ver}, want ${MODSECURITY_PIN}"
 grep -q 'failure_mode_allow: false' "${envoy_cfg}" || die "${envoy_cfg} must keep failure_mode_allow: false"
-grep -q "request_body_mode: ${BODY_MODE}" "${envoy_cfg}" || die "${envoy_cfg} must set request_body_mode: ${BODY_MODE}"
+grep -q "request_body_mode: ${req_mode}" "${envoy_cfg}" || die "${envoy_cfg} must set request_body_mode: ${req_mode}"
+grep -q "response_body_mode: ${resp_mode}" "${envoy_cfg}" || die "${envoy_cfg} must set response_body_mode: ${resp_mode}"
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" ]]; then
   grep -q 'per_connection_buffer_limit_bytes: 1048576' "${envoy_cfg}" \
     || die "${envoy_cfg} must set per_connection_buffer_limit_bytes: 1048576 (1 MiB PARTIAL)"
@@ -69,12 +80,18 @@ fi
 # (under-limit CRS) but never go-ftw-full (would pretend PARTIAL equals
 # BUFFERED CRS fidelity). FULL_DUPLEX_STREAMED may run go-ftw-smoke/body;
 # go-ftw-full stays a local/deep lab (push CI uses smoke + fail-closed +
-# go-ftw-smoke).
+# go-ftw-smoke). Asymmetric modes may run smoke/FC/go-ftw-smoke; not go-ftw-full.
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
 fi
 if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=FULL_DUPLEX_STREAMED in CI (local lab only; hang budget loss)"
+fi
+if [[ "${BODY_MODE}" == REQ_* && "${SUITES}" == *go-ftw-full* ]]; then
+  die "go-ftw-full is not allowed under asymmetric BODY_MODE=${BODY_MODE} in CI (lab cell)"
+fi
+if [[ "${SUITES}" == *buffered-oversize* && "${BODY_MODE}" != "BUFFERED" ]]; then
+  die "buffered-oversize requires BODY_MODE=BUFFERED (got '${BODY_MODE}')"
 fi
 
 "${DEMO}/install-crs.sh" >/dev/null
@@ -114,6 +131,8 @@ MIN_TRAILERS="${MIN_TRAILERS:-5}"
 MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
 MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
 MIN_PARTIAL_HONESTY="${MIN_PARTIAL_HONESTY:-3}"
+MIN_BUFFERED_OVERSIZE="${MIN_BUFFERED_OVERSIZE:-4}"
+MIN_CONNECT_ASSERT="${MIN_CONNECT_ASSERT:-1}"
 
 # count_ftw_body_tests — how many tests match the default BODY_INCLUDE rule set.
 count_ftw_body_tests() {
@@ -142,7 +161,7 @@ fi
 # Suite summary lines for the report table. Must match mid-line suffixes
 # (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.
 # Shared with scripts/test-ci-scripts.sh (keep in sync).
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS|PARTIAL-HONESTY'
+SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS|PARTIAL-HONESTY|BUFFERED-OVERSIZE|CONNECT-ASSERT'
 
 # ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
 ftw_success() {
@@ -185,6 +204,16 @@ floor() {
       n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_PARTIAL_HONESTY}" ]] || { echo "checks=${n:-0} < ${MIN_PARTIAL_HONESTY}"; return 1; }
       ;;
+    buffered-oversize)
+      grep -qE '\bBUFFERED-OVERSIZE PASSED\b' "$2" || { echo "missing BUFFERED-OVERSIZE PASSED"; return 1; }
+      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_BUFFERED_OVERSIZE}" ]] || { echo "checks=${n:-0} < ${MIN_BUFFERED_OVERSIZE}"; return 1; }
+      ;;
+    connect-assert)
+      grep -qE '\bCONNECT-ASSERT PASSED\b' "$2" || { echo "missing CONNECT-ASSERT PASSED"; return 1; }
+      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
+      [[ "${n:-0}" -ge "${MIN_CONNECT_ASSERT}" ]] || { echo "checks=${n:-0} < ${MIN_CONNECT_ASSERT}"; return 1; }
+      ;;
     go-ftw-smoke)
       n="$(ftw_success "$2" 'demo tests')"
       [[ "${n}" -ge "${MIN_FTW_DEMO}" ]] || { echo "demo tests success=${n} < ${MIN_FTW_DEMO}"; return 1; }
@@ -213,7 +242,7 @@ record() {
 mkdir -p "${ROOT}/demo/.run"
 t0=$SECONDS
 if "${DEMO}/up.sh" >"${ROOT}/demo/.run/e2e-up.log" 2>&1; then
-  record up PASS $((SECONDS - t0)) "Envoy :18080 → connector :18081 → origin :18098"
+  record up PASS $((SECONDS - t0)) "Envoy → connector → origin (body_mode=${BODY_MODE})"
 else
   cat "${ROOT}/demo/.run/e2e-up.log" >&2
   record up FAIL $((SECONDS - t0)) "demo did not start"
@@ -224,7 +253,7 @@ for suite in ${SUITES}; do
   echo "==> ${suite}"
   log="${ROOT}/demo/.run/e2e-${suite}.log"
   case "${suite}" in
-    smoke | fail-closed | fail-modes | trailers | partial-honesty) cmd=("${DEMO}/${suite}.sh") ;;
+    smoke | fail-closed | fail-modes | trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
     hop-trace-grpc) cmd=("${DEMO}/hop-trace-grpc.sh") ;;
     hop-trace-ws-frames) cmd=("${DEMO}/hop-trace-ws-frames.sh") ;;

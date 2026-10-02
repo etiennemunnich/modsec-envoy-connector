@@ -7,11 +7,14 @@ name: ci
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
 #   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
-#                                      PRs and dispatches (not cursor/** pushes)
+#                                      PRs and dispatches (not cursor/** pushes);
+#                                      includes buffered-oversize + connect-assert
 #   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
 #                                      go-ftw-full stays BUFFERED via crs-full)
 #   e2e-buffered-partial × {arch}      PARTIAL smoke + fail-closed + go-ftw-smoke +
 #                                      1 MiB honesty (not full CRS fidelity)
+#   e2e-full-duplex × {arch}           FULL_DUPLEX_STREAMED smoke + fail-closed + go-ftw-smoke
+#   e2e-asymm-* × {arch}               independent req/resp body-mode labs
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
 # the changes job, so ci-ok still reports; runs on main are never cancelled.
@@ -222,7 +225,8 @@ jobs:
     uses: ./.github/workflows/live-e2e.yml
     with:
       # Product BUFFERED contract. trailers last (restarts Envoy with SEND, then restores).
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers"
+      # buffered-oversize before trailers (also restarts Envoy); connect-assert is cheap.
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke buffered-oversize connect-assert trailers"
       body_mode: BUFFERED
 
   e2e-streamed:
@@ -232,8 +236,8 @@ jobs:
     uses: ./.github/workflows/live-e2e.yml
     with:
       # STREAMED matches BUFFERED product contract (local tip parity). go-ftw-full stays
-      # on BUFFERED crs-full / monthly — not this PR cell.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers"
+      # on BUFFERED crs-full / monthly — not this PR cell. connect-assert is in smoke too.
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
       body_mode: STREAMED
       timeout_minutes: 45
 
@@ -245,7 +249,7 @@ jobs:
     with:
       # PARTIAL cell: under-limit CRS smoke + fail-closed + 1 MiB prefix-honesty.
       # Not go-ftw-full — PARTIAL ≠ BUFFERED CRS fidelity (ProcessPartial class).
-      suites: "smoke fail-closed go-ftw-smoke partial-honesty"
+      suites: "smoke fail-closed go-ftw-smoke partial-honesty connect-assert"
       body_mode: BUFFERED_PARTIAL
       timeout_minutes: 45
 
@@ -257,13 +261,35 @@ jobs:
     with:
       # FULL_DUPLEX cell: smoke + fail-closed (hang→504 N/A — no message_timeout) + go-ftw-smoke.
       # Requires connector --body-reply streamed + trailer SEND. Not go-ftw-full in push CI.
-      suites: "smoke fail-closed go-ftw-smoke"
+      suites: "smoke fail-closed go-ftw-smoke connect-assert"
       body_mode: FULL_DUPLEX_STREAMED
+      timeout_minutes: 45
+
+  e2e-asymm-req-buf-resp-str:
+    name: e2e-asymm-req-buf-resp-str
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # Asymmetric lab: request BUFFERED + response STREAMED (independent axes).
+      suites: "smoke fail-closed go-ftw-smoke connect-assert"
+      body_mode: REQ_BUFFERED_RESP_STREAMED
+      timeout_minutes: 45
+
+  e2e-asymm-req-str-resp-buf:
+    name: e2e-asymm-req-str-resp-buf
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # Asymmetric inverse: request STREAMED + response BUFFERED.
+      suites: "smoke fail-closed go-ftw-smoke connect-assert"
+      body_mode: REQ_STREAMED_RESP_BUFFERED
       timeout_minutes: 45
 
   ci-ok:
     name: ci-ok
-    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial, e2e-full-duplex]
+    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial, e2e-full-duplex, e2e-asymm-req-buf-resp-str, e2e-asymm-req-str-resp-buf]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -279,8 +305,8 @@ jobs:
           needs = json.loads(os.environ["NEEDS"])
           docs_only = os.environ["DOCS_ONLY"] == "true"
           e2e_wanted = os.environ["E2E_WANTED"] == "true"
-          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex"}
-          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex"}
+          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
+          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
           bad = []
           for job, v in needs.items():
               r = v["result"]

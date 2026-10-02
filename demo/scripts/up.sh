@@ -54,8 +54,10 @@ if ! wait_http "${METRICS}/healthz" 100; then
   exit 1
 fi
 
-grep -q "request_body_mode: ${BODY_MODE}" "${ENVOY_CFG}" \
-  || { echo "${ENVOY_CFG} must set request_body_mode: ${BODY_MODE}" >&2; exit 2; }
+grep -q "request_body_mode: ${REQUEST_BODY_MODE}" "${ENVOY_CFG}" \
+  || { echo "${ENVOY_CFG} must set request_body_mode: ${REQUEST_BODY_MODE}" >&2; exit 2; }
+grep -q "response_body_mode: ${RESPONSE_BODY_MODE}" "${ENVOY_CFG}" \
+  || { echo "${ENVOY_CFG} must set response_body_mode: ${RESPONSE_BODY_MODE}" >&2; exit 2; }
 if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
   grep -q 'request_trailer_mode: SEND' "${ENVOY_CFG}" \
     || { echo "${ENVOY_CFG} must set request_trailer_mode: SEND for FULL_DUPLEX_STREAMED" >&2; exit 2; }
@@ -63,7 +65,7 @@ if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
     || { echo "FULL_DUPLEX_STREAMED requires BODY_REPLY=streamed" >&2; exit 2; }
 fi
 
-echo "==> envoy :18080 ($(envoy --version 2>&1 | grep -o '1\.[0-9]*\.[0-9]*' | head -1)) body_mode=${BODY_MODE}"
+echo "==> envoy :${ENVOY_PORT} ($(envoy --version 2>&1 | grep -o '1\.[0-9]*\.[0-9]*' | head -1)) body_mode=${BODY_MODE} (req=${REQUEST_BODY_MODE} resp=${RESPONSE_BODY_MODE})"
 daemonize "${RUN}/envoy.log" "${RUN}/envoy.pid" envoy -c "${ENVOY_CFG}" --concurrency 2 --log-level warn --file-flush-interval-msec 200
 if ! wait_http "http://127.0.0.1:${ENVOY_ADMIN_PORT}/ready" 100; then
   echo "envoy failed to become ready:" >&2
