@@ -55,14 +55,20 @@ drill "killed-post" "500" -X POST -H 'Content-Type: application/x-www-form-urlen
 drill "killed-attack" "500" "${BASE}/search?q=1%27%20UNION%20SELECT%201--"
 restore && pass "[restore] connector ready" || fail "[restore] connector not ready"
 
-echo "==> 2. connector hung (SIGSTOP; Envoy message_timeout 2s)"
-kill -STOP "$(connector_pid)"
-t0=$(date +%s)
-drill "hung-get" "504" "${BASE}/"
-t1=$(date +%s)
-echo "  (answered in $((t1 - t0))s)"
-kill -CONT "$(connector_pid)"
-restore && pass "[restore] connector ready" || fail "[restore] connector not ready"
+if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
+  # Envoy disables message_timeout under FULL_DUPLEX_STREAMED — hang→504 is N/A.
+  echo "==> 2. connector hung (SKIPPED under FULL_DUPLEX_STREAMED — no message_timeout)"
+  pass "[hung-get] skipped (Envoy disables message_timeout for FULL_DUPLEX_STREAMED)"
+else
+  echo "==> 2. connector hung (SIGSTOP; Envoy message_timeout 2s)"
+  kill -STOP "$(connector_pid)"
+  t0=$(date +%s)
+  drill "hung-get" "504" "${BASE}/"
+  t1=$(date +%s)
+  echo "  (answered in $((t1 - t0))s)"
+  kill -CONT "$(connector_pid)"
+  restore && pass "[restore] connector ready" || fail "[restore] connector not ready"
+fi
 
 echo "==> 3. connector restarted with broken rules (boot must refuse to serve)"
 stop_pidfile "${RUN}/connector.pid" KILL

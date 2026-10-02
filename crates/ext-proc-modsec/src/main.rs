@@ -62,7 +62,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("bind metrics {}: {e}", config.metrics_listen))?;
 
     let metrics = Arc::new(ConnectorMetrics::default());
-    let processor = ModSecProcessor::new(engine, metrics);
+    let processor = ModSecProcessor::with_body_reply(engine, metrics, config.body_reply);
     tokio::spawn(metrics_server::serve(
         metrics_listener,
         processor.clone(),
@@ -72,6 +72,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         listen = %grpc_addr,
         metrics = %config.metrics_listen,
+        body_reply = config.body_reply.as_str(),
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"
     );
     // Single service, no router: the generated server answers UNIMPLEMENTED

@@ -10,8 +10,8 @@
 #                    hop-trace-grpc hop-trace-ws-frames go-ftw-smoke go-ftw-body go-ftw-full
 #                    partial-honesty (BUFFERED_PARTIAL only)
 #                    (hop-trace-grpc needs go + grpcurl; Mac/local — not default CI)
-#   BODY_MODE        BUFFERED (default) | STREAMED | BUFFERED_PARTIAL
-#                    selects demo/envoy/envoy{,-streamed,-buffered-partial}.yaml
+#   BODY_MODE        BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
+#                    selects demo/envoy/envoy{,-streamed,-buffered-partial,-full-duplex}.yaml
 #   ENVOY_VERSION    assert `envoy --version` is this tag (default: ENVOY_PIN)
 #   MODSECURITY_PIN  assert pkg-config reports this tag (default: lock pin)
 #   CRS_TAG          CRS tag to load (default: lock pin); fetched into demo/.crs-<tag>
@@ -45,7 +45,8 @@ case "${BODY_MODE}" in
   BUFFERED) envoy_cfg="${ROOT}/demo/envoy/envoy.yaml" ;;
   STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-streamed.yaml" ;;
   BUFFERED_PARTIAL) envoy_cfg="${ROOT}/demo/envoy/envoy-buffered-partial.yaml" ;;
-  *) die "BODY_MODE must be BUFFERED, STREAMED, or BUFFERED_PARTIAL (got '${BODY_MODE}')" ;;
+  FULL_DUPLEX_STREAMED) envoy_cfg="${ROOT}/demo/envoy/envoy-full-duplex.yaml" ;;
+  *) die "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, or FULL_DUPLEX_STREAMED (got '${BODY_MODE}')" ;;
 esac
 command -v envoy >/dev/null || die "envoy not on PATH"
 envoy_line="$(envoy --version 2>&1 | grep -m1 'version:' || true)"
@@ -58,13 +59,22 @@ if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" ]]; then
   grep -q 'per_connection_buffer_limit_bytes: 1048576' "${envoy_cfg}" \
     || die "${envoy_cfg} must set per_connection_buffer_limit_bytes: 1048576 (1 MiB PARTIAL)"
 fi
+if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
+  grep -q 'request_trailer_mode: SEND' "${envoy_cfg}" \
+    || die "${envoy_cfg} must set request_trailer_mode: SEND for FULL_DUPLEX_STREAMED"
+fi
 # STREAMED may run go-ftw-smoke/body (local tip parity with BUFFERED). Hosted
 # go-ftw-full stays on BUFFERED (crs-full / monthly) for Actions cost — not a
 # STREAMED correctness refuse. BUFFERED_PARTIAL may run go-ftw-smoke/body
 # (under-limit CRS) but never go-ftw-full (would pretend PARTIAL equals
-# BUFFERED CRS fidelity).
+# BUFFERED CRS fidelity). FULL_DUPLEX_STREAMED may run go-ftw-smoke/body;
+# go-ftw-full stays a local/deep lab (push CI uses smoke + fail-closed +
+# go-ftw-smoke).
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
+fi
+if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" && "${SUITES}" == *go-ftw-full* ]]; then
+  die "go-ftw-full is not allowed under BODY_MODE=FULL_DUPLEX_STREAMED in CI (local lab only; hang budget loss)"
 fi
 
 "${DEMO}/install-crs.sh" >/dev/null

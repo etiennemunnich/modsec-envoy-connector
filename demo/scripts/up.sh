@@ -46,7 +46,7 @@ echo "==> cargo build -p ext-proc-modsec"
 echo "==> origin :${ORIGIN_PORT}"
 daemonize "${RUN}/origin.log" "${RUN}/origin.pid" python3 "${DEMO}/scripts/origin.py" "${ORIGIN_PORT}" "${HITS_FILE}"
 
-echo "==> connector ${CONNECTOR_LISTEN} (rules: ${RULES_FILE})"
+echo "==> connector ${CONNECTOR_LISTEN} body_reply=${BODY_REPLY} (rules: ${RULES_FILE})"
 start_connector
 if ! wait_http "${METRICS}/healthz" 100; then
   echo "connector failed to become ready:" >&2
@@ -56,6 +56,12 @@ fi
 
 grep -q "request_body_mode: ${BODY_MODE}" "${ENVOY_CFG}" \
   || { echo "${ENVOY_CFG} must set request_body_mode: ${BODY_MODE}" >&2; exit 2; }
+if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
+  grep -q 'request_trailer_mode: SEND' "${ENVOY_CFG}" \
+    || { echo "${ENVOY_CFG} must set request_trailer_mode: SEND for FULL_DUPLEX_STREAMED" >&2; exit 2; }
+  [[ "${BODY_REPLY}" == "streamed" ]] \
+    || { echo "FULL_DUPLEX_STREAMED requires BODY_REPLY=streamed" >&2; exit 2; }
+fi
 
 echo "==> envoy :18080 ($(envoy --version 2>&1 | grep -o '1\.[0-9]*\.[0-9]*' | head -1)) body_mode=${BODY_MODE}"
 daemonize "${RUN}/envoy.log" "${RUN}/envoy.pid" envoy -c "${ENVOY_CFG}" --concurrency 2 --log-level warn --file-flush-interval-msec 200

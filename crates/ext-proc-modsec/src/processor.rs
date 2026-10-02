@@ -12,7 +12,7 @@
 //!
 //! There is no code path that answers Continue after an engine error.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{info, warn};
 
+use crate::config::BodyReply;
 use crate::connection_meta::ConnectionEndpoints;
 use crate::metrics::{ConnectorMetrics, Phase};
 use crate::pb::envoy::config::core::v3::HeaderValue;
@@ -44,11 +45,24 @@ const REDIRECT_BODY: &[u8] = b"Redirect\n";
 pub struct ModSecProcessor {
     engine: Arc<Engine>,
     metrics: Arc<ConnectorMetrics>,
+    body_reply: BodyReply,
 }
 
 impl ModSecProcessor {
     pub fn new(engine: Arc<Engine>, metrics: Arc<ConnectorMetrics>) -> Self {
-        Self { engine, metrics }
+        Self::with_body_reply(engine, metrics, BodyReply::Common)
+    }
+
+    pub fn with_body_reply(
+        engine: Arc<Engine>,
+        metrics: Arc<ConnectorMetrics>,
+        body_reply: BodyReply,
+    ) -> Self {
+        Self {
+            engine,
+            metrics,
+            body_reply,
+        }
     }
 
     pub fn metrics(&self) -> &Arc<ConnectorMetrics> {
@@ -59,9 +73,17 @@ impl ModSecProcessor {
         &self.engine
     }
 
+    pub fn body_reply(&self) -> BodyReply {
+        self.body_reply
+    }
+
     /// A fresh per-stream state, exactly as `Process` creates one.
     pub fn exchange(&self) -> Exchange {
-        Exchange::new(Arc::clone(&self.engine), Arc::clone(&self.metrics))
+        Exchange::new(
+            Arc::clone(&self.engine),
+            Arc::clone(&self.metrics),
+            self.body_reply,
+        )
     }
 }
 
@@ -79,6 +101,7 @@ impl ExternalProcessor for ModSecProcessor {
         let driver = Driver {
             exchange: self.exchange(),
             inbound: request.into_inner(),
+            pending_out: VecDeque::new(),
         };
         Ok(Response::new(Box::pin(Outbound {
             next: Some(Box::pin(driver.step())),
@@ -121,12 +144,18 @@ impl Stream for Outbound {
 struct Driver {
     exchange: Exchange,
     inbound: Streaming<ProcessingRequest>,
+    /// Extra replies queued after a multi-message duplex finalize (body then
+    /// trailers). Drained before the next inbound read.
+    pending_out: VecDeque<ProcessingResponse>,
 }
 
 impl Driver {
     /// Read until one message yields a reply. `None` ends the stream (Envoy
     /// closed it or a read failed); a terminal reply comes without a driver.
     async fn step(mut self) -> Option<(Reply, Option<Driver>)> {
+        if let Some(r) = self.pending_out.pop_front() {
+            return Some((Ok(r), Some(self)));
+        }
         loop {
             let msg = match self.inbound.message().await {
                 Ok(Some(m)) => m,
@@ -143,6 +172,11 @@ impl Driver {
             };
             return match run_blocking(|| self.exchange.on_message(msg)) {
                 Step::Reply(r) => Some((Ok(r), Some(self))),
+                Step::Replies(mut rs) => {
+                    let first = rs.pop_front()?;
+                    self.pending_out.append(&mut rs);
+                    Some((Ok(first), Some(self)))
+                }
                 Step::Silent => continue,
                 Step::Final(r) => Some((Ok(r), None)),
                 Step::Abort(status) => Some((Err(status), None)),
@@ -166,7 +200,11 @@ pub fn run_blocking<T>(f: impl FnOnce() -> T) -> T {
 pub enum Step {
     /// Answer and keep the stream open.
     Reply(ProcessingResponse),
+    /// Several answers for one inbound (FULL_DUPLEX buffered finalize:
+    /// `StreamedBodyResponse` then trailers Continue).
+    Replies(VecDeque<ProcessingResponse>),
     /// Observability-mode message: Envoy expects no answer.
+    /// Also used while buffering FULL_DUPLEX body chunks before EOS/trailers.
     Silent,
     /// Answer with a terminal `ImmediateResponse` and close the stream.
     Final(ProcessingResponse),
@@ -178,6 +216,7 @@ pub enum Step {
 pub struct Exchange {
     engine: Arc<Engine>,
     metrics: Arc<ConnectorMetrics>,
+    body_reply: BodyReply,
     session: Option<InspectionSession>,
     request_id: Option<String>,
     endpoints: ConnectionEndpoints,
@@ -185,19 +224,45 @@ pub struct Exchange {
     /// Set once response headers of an Envoy local reply (no request on this
     /// stream) were passed through; only its response body may follow.
     local_reply: bool,
+    /// Buffered request body for `BodyReply::Streamed` (echo only after allow).
+    req_body_buf: Vec<u8>,
+    /// Buffered response body for `BodyReply::Streamed`.
+    resp_body_buf: Vec<u8>,
 }
 
 impl Exchange {
-    pub fn new(engine: Arc<Engine>, metrics: Arc<ConnectorMetrics>) -> Self {
+    pub fn new(engine: Arc<Engine>, metrics: Arc<ConnectorMetrics>, body_reply: BodyReply) -> Self {
         Self {
             engine,
             metrics,
+            body_reply,
             session: None,
             request_id: None,
             endpoints: ConnectionEndpoints::fallback(),
             request_settled: false,
             local_reply: false,
+            req_body_buf: Vec::new(),
+            resp_body_buf: Vec::new(),
         }
+    }
+
+    fn body_buf_mut(&mut self, dir: Direction) -> &mut Vec<u8> {
+        match dir {
+            Direction::Request => &mut self.req_body_buf,
+            Direction::Response => &mut self.resp_body_buf,
+        }
+    }
+
+    fn take_body_buf(&mut self, dir: Direction) -> Vec<u8> {
+        match dir {
+            Direction::Request => std::mem::take(&mut self.req_body_buf),
+            Direction::Response => std::mem::take(&mut self.resp_body_buf),
+        }
+    }
+
+    fn streamed_body_allow(&mut self, dir: Direction) -> ProcessingResponse {
+        let buf = self.take_body_buf(dir);
+        responses::body_streamed_continue(dir, &buf, true)
     }
 
     fn rid(&self) -> &str {
@@ -323,7 +388,15 @@ impl Exchange {
             }
         };
         if self.local_reply && dir == Direction::Response {
-            return Step::Reply(responses::body_continue(dir));
+            // Local-reply pass-through: echo as required by body_reply mode.
+            return match self.body_reply {
+                BodyReply::Common => Step::Reply(responses::body_continue(dir)),
+                BodyReply::Streamed => Step::Reply(responses::body_streamed_continue(
+                    dir,
+                    &body.body,
+                    body.end_of_stream,
+                )),
+            };
         }
         let Some(mut session) = self.session.take() else {
             return self.fail_closed(phase, "body received before headers");
@@ -331,6 +404,10 @@ impl Exchange {
         let t0 = Instant::now();
         let nbytes = body.body.len() as u64;
         self.metrics.add_body_bytes(phase, nbytes);
+
+        if self.body_reply == BodyReply::Streamed {
+            self.body_buf_mut(dir).extend_from_slice(&body.body);
+        }
 
         let appended = match dir {
             Direction::Request => session.append_request_body(&body.body),
@@ -362,10 +439,21 @@ impl Exchange {
                 }
                 Err(e) => return self.fail_closed(phase, &e),
             }
+            self.session = Some(session);
+            return match self.body_reply {
+                BodyReply::Common => Step::Reply(responses::body_continue(dir)),
+                BodyReply::Streamed => Step::Reply(self.streamed_body_allow(dir)),
+            };
         }
 
         self.session = Some(session);
-        Step::Reply(responses::body_continue(dir))
+        match self.body_reply {
+            // BUFFERED / STREAMED / PARTIAL: empty BodyResponse Continue.
+            BodyReply::Common => Step::Reply(responses::body_continue(dir)),
+            // FULL_DUPLEX: hold StreamedBodyResponse until EOS/trailers so a
+            // late deny cannot race an already-forwarded body to origin.
+            BodyReply::Streamed => Step::Silent,
+        }
     }
 
     /// Trailers themselves are not inspected (SecLang / CRS have no trailer
@@ -414,7 +502,16 @@ impl Exchange {
             action = "trailers_continue",
             "trailers Continue (values not CRS-inspected; body finalized if needed)"
         );
-        Step::Reply(responses::trailers_continue(dir))
+        match self.body_reply {
+            BodyReply::Common => Step::Reply(responses::trailers_continue(dir)),
+            BodyReply::Streamed => {
+                // Body was Silent-buffered; release it now that ModSec allowed.
+                let mut out = VecDeque::new();
+                out.push_back(self.streamed_body_allow(dir));
+                out.push_back(responses::trailers_continue(dir));
+                Step::Replies(out)
+            }
+        }
     }
 
     fn response_headers(&mut self, headers: &HttpHeaders) -> Step {

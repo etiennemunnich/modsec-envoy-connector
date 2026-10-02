@@ -249,9 +249,21 @@ jobs:
       body_mode: BUFFERED_PARTIAL
       timeout_minutes: 45
 
+  e2e-full-duplex:
+    name: e2e-full-duplex
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [changes, pin-check]
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # FULL_DUPLEX cell: smoke + fail-closed (hang→504 N/A — no message_timeout) + go-ftw-smoke.
+      # Requires connector --body-reply streamed + trailer SEND. Not go-ftw-full in push CI.
+      suites: "smoke fail-closed go-ftw-smoke"
+      body_mode: FULL_DUPLEX_STREAMED
+      timeout_minutes: 45
+
   ci-ok:
     name: ci-ok
-    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial]
+    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-buffered-partial, e2e-full-duplex]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -267,8 +279,8 @@ jobs:
           needs = json.loads(os.environ["NEEDS"])
           docs_only = os.environ["DOCS_ONLY"] == "true"
           e2e_wanted = os.environ["E2E_WANTED"] == "true"
-          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial"}
-          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial"}
+          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex"}
+          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex"}
           bad = []
           for job, v in needs.items():
               r = v["result"]

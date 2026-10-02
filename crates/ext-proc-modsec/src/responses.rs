@@ -7,10 +7,11 @@
 use crate::pb::envoy::config::core::v3::header_value_option::HeaderAppendAction;
 use crate::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
 use crate::pb::envoy::r#type::v3::{HttpStatus, StatusCode};
+use crate::pb::envoy::service::ext_proc::v3::body_mutation::Mutation as BodyMutationKind;
 use crate::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
 use crate::pb::envoy::service::ext_proc::v3::{
-    BodyResponse, HeaderMutation, HeadersResponse, ImmediateResponse, ProcessingResponse,
-    TrailersResponse,
+    BodyMutation, BodyResponse, CommonResponse, HeaderMutation, HeadersResponse, ImmediateResponse,
+    ProcessingResponse, StreamedBodyResponse, TrailersResponse,
 };
 
 /// `ImmediateResponse.details` for fail-closed replies (visible in Envoy
@@ -34,6 +35,37 @@ pub fn headers_continue(dir: Direction) -> ProcessingResponse {
 
 pub fn body_continue(dir: Direction) -> ProcessingResponse {
     let b = BodyResponse { response: None };
+    wrap(match dir {
+        Direction::Request => ProcResponse::RequestBody(b),
+        Direction::Response => ProcResponse::ResponseBody(b),
+    })
+}
+
+/// Continue for `FULL_DUPLEX_STREAMED`: echo the inspected chunk via
+/// `BodyMutation.streamed_response`. Envoy rejects a normal empty
+/// `BodyResponse` in that mode (`spurious_message: Normal_body_mutation…`).
+///
+/// Fail-closed / deny still use [`fail_closed`] / [`block`] (`ImmediateResponse`)
+/// and do not go through this path.
+pub fn body_streamed_continue(
+    dir: Direction,
+    body: &[u8],
+    end_of_stream: bool,
+) -> ProcessingResponse {
+    let streamed = StreamedBodyResponse {
+        body: body.to_vec(),
+        end_of_stream,
+        ..Default::default()
+    };
+    let common = CommonResponse {
+        body_mutation: Some(BodyMutation {
+            mutation: Some(BodyMutationKind::StreamedResponse(streamed)),
+        }),
+        ..Default::default()
+    };
+    let b = BodyResponse {
+        response: Some(common),
+    };
     wrap(match dir {
         Direction::Request => ProcResponse::RequestBody(b),
         Direction::Response => ProcResponse::ResponseBody(b),
@@ -183,5 +215,23 @@ mod tests {
             trailers_continue(Direction::Request).response,
             Some(ProcResponse::RequestTrailers(_))
         ));
+    }
+
+    #[test]
+    fn streamed_continue_echoes_chunk() {
+        let r = body_streamed_continue(Direction::Request, b"abc", true);
+        let Some(ProcResponse::RequestBody(BodyResponse {
+            response: Some(common),
+        })) = r.response
+        else {
+            panic!("expected request body CommonResponse");
+        };
+        let Some(BodyMutationKind::StreamedResponse(s)) =
+            common.body_mutation.expect("mutation").mutation
+        else {
+            panic!("expected streamed_response");
+        };
+        assert_eq!(s.body, b"abc");
+        assert!(s.end_of_stream);
     }
 }

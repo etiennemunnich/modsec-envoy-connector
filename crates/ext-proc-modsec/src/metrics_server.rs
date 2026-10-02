@@ -138,6 +138,9 @@ async fn probe(processor: &ModSecProcessor, grpc_addr: SocketAddr) -> Result<(),
     let mut exchange = processor.exchange();
     let resp = match run_blocking(|| exchange.on_message(msg)) {
         Step::Reply(r) | Step::Final(r) => r,
+        Step::Replies(mut rs) => rs
+            .pop_front()
+            .ok_or_else(|| "process step answered empty Replies".to_string())?,
         Step::Silent => return Err("process step answered nothing".into()),
         Step::Abort(s) => return Err(format!("process aborted: {s}")),
     };

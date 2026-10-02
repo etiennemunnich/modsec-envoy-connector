@@ -6,20 +6,28 @@ DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
 
-# BODY_MODE=BUFFERED (default) | STREAMED | BUFFERED_PARTIAL — selects Envoy body mode.
+# BODY_MODE=BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | FULL_DUPLEX_STREAMED
+# — selects Envoy body mode.
 # `up.sh` writes demo/.run/body_mode so later scripts (smoke, fail-closed) match
 # the running Envoy without re-exporting BODY_MODE.
 # BUFFERED_PARTIAL is ProcessPartial-class: under-limit CRS can pass; over-limit
 # trailing body attacks may miss. Not a full-CRS fidelity mode.
+# FULL_DUPLEX_STREAMED requires connector --body-reply streamed (StreamedBodyResponse)
+# and trailer modes SEND; Envoy disables message_timeout under this mode.
 if [[ -z "${BODY_MODE:-}" && -f "${RUN}/body_mode" ]]; then
   BODY_MODE="$(tr -d '[:space:]' <"${RUN}/body_mode")"
 fi
 BODY_MODE="${BODY_MODE:-BUFFERED}"
+BODY_REPLY=common
 case "${BODY_MODE}" in
   BUFFERED) ENVOY_CFG="${DEMO}/envoy/envoy.yaml" ;;
   STREAMED) ENVOY_CFG="${DEMO}/envoy/envoy-streamed.yaml" ;;
   BUFFERED_PARTIAL) ENVOY_CFG="${DEMO}/envoy/envoy-buffered-partial.yaml" ;;
-  *) echo "BODY_MODE must be BUFFERED, STREAMED, or BUFFERED_PARTIAL (got '${BODY_MODE}')" >&2; return 2 2>/dev/null || exit 2 ;;
+  FULL_DUPLEX_STREAMED)
+    ENVOY_CFG="${DEMO}/envoy/envoy-full-duplex.yaml"
+    BODY_REPLY=streamed
+    ;;
+  *) echo "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, or FULL_DUPLEX_STREAMED (got '${BODY_MODE}')" >&2; return 2 2>/dev/null || exit 2 ;;
 esac
 CONNECTOR_BIN="${ROOT}/target/debug/ext-proc-modsec"
 RULES_FILE="${RUN}/modsec.conf"
@@ -58,11 +66,14 @@ origin_hits() {
 
 start_connector() {
   # start_connector [extra args...] — rules from ${RULES_FILE} unless overridden.
+  # Always pass --body-reply so FULL_DUPLEX_STREAMED restores stay on StreamedBodyResponse.
   local rules="${CONNECTOR_RULES:-${RULES_FILE}}"
   daemonize "${RUN}/connector.log" "${RUN}/connector.pid" "${CONNECTOR_BIN}" \
     --listen "${CONNECTOR_LISTEN}" \
     --metrics-listen "127.0.0.1:18082" \
-    --modsec-rules "${rules}" "$@"
+    --modsec-rules "${rules}" \
+    --body-reply "${BODY_REPLY}" \
+    "$@"
 }
 
 daemonize() {

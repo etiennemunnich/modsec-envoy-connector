@@ -19,6 +19,12 @@ Options:
       --modsec-rules <FILE>... ModSecurity rules files, loaded in order (repeatable or
                                comma-separated). At least one is required.
                                [env: MODSEC_RULES]
+      --body-reply <MODE>      How Continue answers HttpBody messages:
+                               common (default) — BodyResponse/CommonResponse for
+                               BUFFERED / BUFFERED_PARTIAL / STREAMED / NONE;
+                               streamed — BodyMutation.streamed_response
+                               (StreamedBodyResponse) for FULL_DUPLEX_STREAMED.
+                               [env: EXT_PROC_BODY_REPLY] [default: common]
   -h, --help                   Print help
   -V, --version                Print version
 
@@ -27,6 +33,33 @@ Logging: RUST_LOG=<level>[,<target>=<level>...] (default info).
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:18081";
 const DEFAULT_METRICS_LISTEN: &str = "127.0.0.1:18082";
+
+/// Wire shape used when Continue-answering an `HttpBody` message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BodyReply {
+    /// Empty `BodyResponse` / `CommonResponse` (BUFFERED, BUFFERED_PARTIAL, STREAMED).
+    #[default]
+    Common,
+    /// Echo chunk via `StreamedBodyResponse` (FULL_DUPLEX_STREAMED).
+    Streamed,
+}
+
+impl BodyReply {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "common" => Some(Self::Common),
+            "streamed" => Some(Self::Streamed),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Common => "common",
+            Self::Streamed => "streamed",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -37,6 +70,8 @@ pub struct Config {
     /// ModSecurity rules files, loaded in order. Never empty: the connector
     /// never runs without an engine.
     pub modsec_rules: Vec<PathBuf>,
+    /// Continue shape for body messages — must match Envoy `request_body_mode`.
+    pub body_reply: BodyReply,
 }
 
 /// Outcome of parsing the command line.
@@ -53,6 +88,7 @@ pub enum ConfigError {
     MissingValue(&'static str),
     UnknownArgument(String),
     InvalidAddress { flag: &'static str, value: String },
+    InvalidBodyReply(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -65,6 +101,9 @@ impl fmt::Display for ConfigError {
             Self::UnknownArgument(a) => write!(f, "unexpected argument '{a}'"),
             Self::InvalidAddress { flag, value } => {
                 write!(f, "invalid socket address '{value}' for {flag}")
+            }
+            Self::InvalidBodyReply(value) => {
+                write!(f, "invalid --body-reply '{value}' (want common|streamed)")
             }
         }
     }
@@ -87,6 +126,7 @@ where
 {
     let mut listen = None;
     let mut metrics_listen = None;
+    let mut body_reply = None;
     let mut rules: Vec<PathBuf> = Vec::new();
 
     let mut args = args.into_iter().map(Into::into).peekable();
@@ -103,6 +143,13 @@ where
             }
             "--metrics-listen" => {
                 metrics_listen = Some(address("--metrics-listen", inline.or_else(|| args.next()))?);
+            }
+            "--body-reply" => {
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or(ConfigError::MissingValue("--body-reply"))?;
+                body_reply =
+                    Some(BodyReply::parse(&value).ok_or(ConfigError::InvalidBodyReply(value))?);
             }
             "--modsec-rules" => {
                 let first = inline
@@ -131,6 +178,13 @@ where
             Some(env("EXT_PROC_METRICS_LISTEN").unwrap_or_else(|| DEFAULT_METRICS_LISTEN.into())),
         )?,
     };
+    let body_reply = match body_reply {
+        Some(m) => m,
+        None => match env("EXT_PROC_BODY_REPLY") {
+            Some(v) => BodyReply::parse(&v).ok_or(ConfigError::InvalidBodyReply(v))?,
+            None => BodyReply::Common,
+        },
+    };
     if rules.is_empty() {
         if let Some(v) = env("MODSEC_RULES") {
             push_rules(&mut rules, &v);
@@ -143,6 +197,7 @@ where
         listen,
         metrics_listen,
         modsec_rules: rules,
+        body_reply,
     }))
 }
 
@@ -251,7 +306,35 @@ mod tests {
             run(&["--modsec-rules", "a.conf", "--bogus"], no_env),
             Err(ConfigError::UnknownArgument("--bogus".into()))
         );
+        assert_eq!(
+            run(
+                &["--modsec-rules", "a.conf", "--body-reply", "nope"],
+                no_env
+            ),
+            Err(ConfigError::InvalidBodyReply("nope".into()))
+        );
         assert_eq!(parse(["--help"], no_env), Ok(Command::Help));
         assert_eq!(parse(["-V"], no_env), Ok(Command::Version));
+    }
+
+    #[test]
+    fn body_reply_defaults_and_parses() {
+        let c = run(&["--modsec-rules", "a.conf"], no_env).expect("parse");
+        assert_eq!(c.body_reply, BodyReply::Common);
+        let c = run(
+            &["--modsec-rules", "a.conf", "--body-reply", "streamed"],
+            no_env,
+        )
+        .expect("parse");
+        assert_eq!(c.body_reply, BodyReply::Streamed);
+        let env = |k: &str| match k {
+            "MODSEC_RULES" => Some("env.conf".into()),
+            "EXT_PROC_BODY_REPLY" => Some("streamed".into()),
+            _ => None,
+        };
+        let c = run(&[], env).expect("parse");
+        assert_eq!(c.body_reply, BodyReply::Streamed);
+        let c = run(&["--modsec-rules", "cli.conf", "--body-reply=common"], env).expect("parse");
+        assert_eq!(c.body_reply, BodyReply::Common);
     }
 }

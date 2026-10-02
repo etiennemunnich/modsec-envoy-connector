@@ -20,4 +20,5 @@ pub mod pb;
 pub mod processor;
 pub mod responses;
 
+pub use config::{BodyReply, Config};
 pub use processor::ModSecProcessor;
