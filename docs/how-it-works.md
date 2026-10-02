@@ -2,7 +2,7 @@
 title: How it works - ModSec x Envoy x Rust ext_proc
 audience: operators + contributors
 date: 2026-09-30
-pins: Envoy v1.39.1 · libmodsecurity v3.0.16 · CRS v4.29.0 · failure_mode_allow:false · message_timeout 2s
+pins: Envoy v1.39.1 · libmodsecurity v3.0.17 · CRS v4.29.0 · failure_mode_allow:false · message_timeout 2s
 product: Rust ext_proc → in-process C API → libmodsecurity
 license: see LICENSE
 ---

@@ -21,7 +21,7 @@ How the pieces fit, including the request path and what is (and is not) inspecte
 
 A short proof-of-concept on your machine: install dependencies, bring the demo up, exercise allow/deny, tear it down. The demo scripts build the connector and start Envoy, the connector, and a tiny origin for you.
 
-Pinned versions live in [`versions.lock.md`](./versions.lock.md) (Envoy **v1.39.1**, libmodsecurity **v3.0.16**, CRS **v4.29.0**). Deeper demo detail: [`demo/README.md`](./demo/README.md).
+Pinned versions live in [`versions.lock.md`](./versions.lock.md) (Envoy **v1.39.1**, libmodsecurity **v3.0.17**, CRS **v4.29.0**). Deeper demo detail: [`demo/README.md`](./demo/README.md).
 
 ### 1. Prerequisites
 

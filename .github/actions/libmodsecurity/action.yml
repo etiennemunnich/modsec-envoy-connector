@@ -3,7 +3,7 @@ description: Build (or restore from cache) libmodsecurity at one tag on Ubuntu a
 
 inputs:
   pin:
-    description: libmodsecurity git tag, e.g. v3.0.16
+    description: libmodsecurity git tag, e.g. v3.0.17
     required: true
 
 runs:
