@@ -103,8 +103,17 @@ connector_pid() { cat "${RUN}/connector.pid" 2>/dev/null || true; }
 
 restore_connector() {
   stop_pidfile "${RUN}/connector.pid" KILL
+  # Brief pause so the prior listen socket is gone before re-bind (esp. after
+  # FO Envoy swaps / rapid kill+restart under FULL_DUPLEX_STREAMED).
+  sleep 0.3
   CONNECTOR_RULES="" start_connector
-  wait_http "${METRICS}/healthz" 100
+  if ! wait_http "${METRICS}/healthz" 100; then
+    echo "restore_connector: healthz not ready, retrying once" >&2
+    stop_pidfile "${RUN}/connector.pid" KILL
+    sleep 0.5
+    CONNECTOR_RULES="" start_connector
+    wait_http "${METRICS}/healthz" 100
+  fi
 }
 
 start_envoy() {
@@ -217,6 +226,13 @@ run_class4() {
 
 run_class5() {
   local id="FC5-${PROTO}" t0 t1
+  if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
+    # Envoy disables message_timeout under FULL_DUPLEX_STREAMED — hang→504 is N/A.
+    record PASS "${id}-hang" "skipped (no message_timeout under FULL_DUPLEX_STREAMED)"
+    record PASS "${id}-timing" "skipped (no message_timeout under FULL_DUPLEX_STREAMED)"
+    expect "${id}-restored" 200 1 "${BASE}/"
+    return 0
+  fi
   kill -STOP "$(connector_pid)"
   t0=$(date +%s)
   expect "${id}-hang" 504 0 "${BASE}/"
@@ -268,10 +284,14 @@ run_fail_open_control() {
     record FAIL "${id}-kill-stat" "failure_mode_allowed did not rise (${before:-0}→${after:-0})"
   fi
   restore_connector
-  kill -STOP "$(connector_pid)"
-  expect "${id}-hang-lets-through" 200 1 "${BASE}/"
-  kill -CONT "$(connector_pid)"
-  restore_connector
+  if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
+    record PASS "${id}-hang-lets-through" "skipped (no message_timeout under FULL_DUPLEX_STREAMED)"
+  else
+    kill -STOP "$(connector_pid)"
+    expect "${id}-hang-lets-through" 200 1 "${BASE}/"
+    kill -CONT "$(connector_pid)"
+    restore_connector
+  fi
   start_envoy "${ENVOY_CFG}"
   ENVOY_SWAPPED=0
   kill -KILL "$(connector_pid)"
@@ -301,17 +321,19 @@ PY
     # 40 KB body → curl sends several 16 KB DATA frames; the attack is in the last one.
     got="$(code "${FORM[@]}" --data-binary "@${payload}" "${BASE}/post")"
   else
-    got="$(python3 - "${payload}" <<'PY'
+    got="$(python3 - "${payload}" "${ENVOY_PORT}" <<'PY'
 import socket, sys
 data = open(sys.argv[1], "rb").read()
+port = int(sys.argv[2])
 head, tail = data[:-14], data[-14:]
-req = (b"POST /post HTTP/1.1\r\nHost: 127.0.0.1:18080\r\n"
+host = f"127.0.0.1:{port}".encode()
+req = (b"POST /post HTTP/1.1\r\nHost: " + host + b"\r\n"
        b"Content-Type: application/x-www-form-urlencoded\r\n"
        b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
 for chunk in (head, tail):
     req += b"%x\r\n" % len(chunk) + chunk + b"\r\n"
 req += b"0\r\n\r\n"
-s = socket.create_connection(("127.0.0.1", 18080), timeout=10)
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
 s.sendall(req)
 resp = b""
 while b"\r\n" not in resp:

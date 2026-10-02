@@ -79,8 +79,8 @@ fi
 # STREAMED correctness refuse. BUFFERED_PARTIAL may run go-ftw-smoke/body
 # (under-limit CRS) but never go-ftw-full (would pretend PARTIAL equals
 # BUFFERED CRS fidelity). FULL_DUPLEX_STREAMED may run go-ftw-smoke/body;
-# go-ftw-full stays a local/deep lab (push CI uses smoke + fail-closed +
-# go-ftw-smoke). Asymmetric modes may run smoke/FC/go-ftw-smoke; not go-ftw-full.
+# go-ftw-full stays a local/deep lab (push CI product suites match e2e-streamed;
+# hang→504 N/A under duplex). Asymmetric modes may run smoke/FC/go-ftw-smoke; not go-ftw-full.
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
 fi

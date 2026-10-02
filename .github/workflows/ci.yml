@@ -13,7 +13,8 @@ name: ci
 #                                      go-ftw-full stays BUFFERED via crs-full)
 #   e2e-buffered-partial × {arch}      PARTIAL smoke + fail-closed + go-ftw-smoke +
 #                                      1 MiB honesty (not full CRS fidelity)
-#   e2e-full-duplex × {arch}           FULL_DUPLEX_STREAMED smoke + fail-closed + go-ftw-smoke
+#   e2e-full-duplex × {x86_64, aarch64} FULL_DUPLEX product contract (same suites as
+#                                      e2e-streamed; hang→504 N/A; go-ftw-full local only)
 #   e2e-asymm-* × {arch}               independent req/resp body-mode labs
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
@@ -259,9 +260,10 @@ jobs:
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
-      # FULL_DUPLEX cell: smoke + fail-closed (hang→504 N/A — no message_timeout) + go-ftw-smoke.
-      # Requires connector --body-reply streamed + trailer SEND. Not go-ftw-full in push CI.
-      suites: "smoke fail-closed go-ftw-smoke connect-assert"
+      # FULL_DUPLEX matches STREAMED product contract after local deep proof
+      # (fail-modes hang→504 N/A — Envoy disables message_timeout).
+      # go-ftw-full stays local lab only (hang budget loss; not push CI).
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
       body_mode: FULL_DUPLEX_STREAMED
       timeout_minutes: 45
 

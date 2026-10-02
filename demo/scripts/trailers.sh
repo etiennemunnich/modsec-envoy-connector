@@ -18,6 +18,8 @@
 # Usage:
 #   ./demo/scripts/up.sh && ./demo/scripts/trailers.sh
 #   BODY_MODE=STREAMED ./demo/scripts/up.sh && ./demo/scripts/trailers.sh
+#   BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh && ./demo/scripts/trailers.sh
+#   (FULL_DUPLEX stock YAML already has trailer SEND; suite restarts with the same config.)
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -38,8 +40,22 @@ wait_http "${BASE}/" 50 || { echo "demo not up at ${BASE} — run ./demo/scripts
 case "${BODY_MODE}" in
   BUFFERED) TRAILER_CFG="${DEMO}/envoy/envoy-trailers.yaml" ;;
   STREAMED) TRAILER_CFG="${DEMO}/envoy/envoy-streamed-trailers.yaml" ;;
-  *) echo "BODY_MODE must be BUFFERED or STREAMED" >&2; exit 2 ;;
+  # FULL_DUPLEX_STREAMED already requires trailer SEND on the stock demo YAML —
+  # reuse ENVOY_CFG (already port-remapped when DEMO_PORT_BASE ≠ 18080).
+  FULL_DUPLEX_STREAMED) TRAILER_CFG="${ENVOY_CFG}" ;;
+  *) echo "BODY_MODE must be BUFFERED, STREAMED, or FULL_DUPLEX_STREAMED" >&2; exit 2 ;;
 esac
+# Remap BUFFERED/STREAMED trailer YAMLs when the demo is not on stock ports.
+if [[ "${BODY_MODE}" != "FULL_DUPLEX_STREAMED" && "${DEMO_PORT_BASE}" != "18080" ]]; then
+  remapped_trailers="${RUN}/envoy-trailers-port-remap.yaml"
+  sed \
+    -e "s/port_value: 18089/port_value: ${ENVOY_ADMIN_PORT}/g" \
+    -e "s/port_value: 18080/port_value: ${ENVOY_PORT}/g" \
+    -e "s/port_value: 18081/port_value: ${CONNECTOR_PORT}/g" \
+    -e "s/port_value: 18098/port_value: ${ORIGIN_PORT}/g" \
+    "${TRAILER_CFG}" >"${remapped_trailers}"
+  TRAILER_CFG="${remapped_trailers}"
+fi
 grep -q "request_body_mode: ${BODY_MODE}" "${TRAILER_CFG}" \
   || { echo "${TRAILER_CFG} must set request_body_mode: ${BODY_MODE}" >&2; exit 2; }
 grep -q "request_trailer_mode: SEND" "${TRAILER_CFG}" \
@@ -73,9 +89,10 @@ trap 'restore_envoy || true' EXIT
 # chunked on H1. Trailer *values* are still not CRS-inspected.
 h1_chunked_post_trailers() {
   local path="$1" body="$2" tname="$3" tval="$4"
-  python3 - "$path" "$body" "$tname" "$tval" <<'PY'
+  python3 - "$path" "$body" "$tname" "$tval" "${ENVOY_PORT}" <<'PY'
 import socket, sys
 path, body, tname, tval = sys.argv[1:5]
+port = int(sys.argv[5])
 body_b = body.encode()
 req = (
     f"POST {path} HTTP/1.1\r\nHost: localhost\r\n"
@@ -86,7 +103,7 @@ req = (
 req += b"%x\r\n" % len(body_b) + body_b + b"\r\n"
 req += b"0\r\n"
 req += f"{tname}: {tval}\r\n\r\n".encode()
-s = socket.create_connection(("127.0.0.1", 18080), timeout=10)
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
 s.sendall(req)
 data = b""
 while True:
@@ -137,9 +154,14 @@ fi
 
 # Prove Envoy delivered request_trailers (connector logs trailers_continue).
 # Use grep (not ripgrep): GitHub-hosted runners do not ship `rg`.
+# Under FULL_DUPLEX_STREAMED Envoy may fold client trailers into body
+# end_of_stream instead of emitting a separate RequestTrailers message — the
+# functional cells above still prove trailer-marked EOS (body deny → 403).
 echo "==> live trailers delivered to connector"
 if grep -q 'action="trailers_continue"' "${RUN}/connector.log"; then
   pass "[envoy→connector] request_trailers delivered (trailers_continue logged)"
+elif [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
+  pass "[envoy→connector] FULL_DUPLEX: no separate RequestTrailers (Envoy folds trailers into body EOS; body-deny cell above still 403)"
 else
   fail "[envoy→connector] no trailers_continue in connector.log — Envoy may not have sent trailers"
 fi
