@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PIN="${CRS_TAG:-$(grep -E '^CRS_TAG=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)}"
-PIN="${PIN:-v4.29.0}"
+PIN="${PIN:-v4.30.0}"
 DEST="${CRS_DIR:-$ROOT/demo/.crs}"
 
 echo "CRS pin ${PIN} → ${DEST}"

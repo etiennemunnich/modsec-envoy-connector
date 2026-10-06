@@ -2,7 +2,7 @@
 
 Run the connector locally behind Envoy with libmodsecurity and the OWASP Core Rule Set, then watch it allow, block, and fail closed.
 
-Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.1**, libmodsecurity **v3.0.17**, CRS **v4.29.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
+Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.1**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
 
 ```text
 curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 ──C API──► libmodsecurity + CRS
@@ -14,7 +14,7 @@ curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 
 
 ```bash
 brew install envoy modsecurity pkg-config     # or the install scripts below
-./demo/scripts/install-crs.sh                  # CRS v4.29.0 → demo/.crs
+./demo/scripts/install-crs.sh                  # CRS v4.30.0 → demo/.crs
 ./demo/scripts/up.sh                           # builds + starts origin, connector, Envoy
 ./demo/scripts/smoke.sh                        # allow / deny / body / response checks
 ./demo/scripts/fail-closed.sh                  # kill → 500, hang → 504, bad rules → 500

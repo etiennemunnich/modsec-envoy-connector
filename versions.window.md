@@ -6,7 +6,7 @@ Candidate versions to probe before bumping a pin. The pins themselves live in [`
 |------|-----|----------------------------------------------------|
 | Envoy | `v1.39.1` | `v1.39.1`, `v1.38.4`, `v1.37.6` |
 | libmodsecurity | `v3.0.17` | `v3.0.17`, `v3.0.16`, `v3.0.15` |
-| CRS | `v4.29.0` | `v4.29.0`, `v4.28.0`, `v4.27.0` |
+| CRS | `v4.30.0` | `v4.30.0`, `v4.29.0`, `v4.28.0` |
 
 ## Probes
 
