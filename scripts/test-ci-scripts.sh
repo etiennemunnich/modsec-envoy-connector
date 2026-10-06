@@ -282,5 +282,49 @@ check "one-year: documents ftw_body_floor_pin policy" 0 "${ok}"
 grep -q 'status: \[400\]' "${ROOT}/demo/scripts/go-ftw.sh" && ok=0 || ok=1
 check "go-ftw: documents CRS v4.23.0 status:[400] parse poison" 0 "${ok}"
 
+# --- Envoy checksums.txt.asc layout (bare name vs /tmp path) ---------------
+# shellcheck source=envoy-checksum.sh
+source "${ROOT}/scripts/envoy-checksum.sh"
+cat >"${TMP}/sums-bare.asc" <<'EOF'
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  debs.tar.gz
+d2f1a9f4f19b7fc064e75b4e52d191754c49a4de1ae2145462c0c7e19a860e1b  envoy-1.39.2-linux-x86_64
+8f77e9b08456e4f28689e76441b422436c031895ff00aeda5561bd4d4372c997  envoy-contrib-1.39.2-linux-x86_64
+b3d0e9213289f4456413bec2a5b8ed8896765185ab9642da4b2b9b58cc46409c  envoy-1.39.2-linux-aarch_64
+EOF
+cat >"${TMP}/sums-path.asc" <<'EOF'
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+002c6e1c69ed0fa0ea381887247cadadfaec9481375fa8d8d2b1731eeabf40b8  /tmp/tmpdauyk7w6/bin/envoy-1.39.1-linux-x86_64
+3405ced6147ab5ab9a25491a6c8110bb5e5f958d2936225918576f4b6f380354  /tmp/tmpdauyk7w6/bin/envoy-contrib-1.39.1-linux-x86_64
+EOF
+check "envoy checksum: bare filename (v1.39.2 layout)" \
+  d2f1a9f4f19b7fc064e75b4e52d191754c49a4de1ae2145462c0c7e19a860e1b \
+  "$(envoy_checksum_sha256 "${TMP}/sums-bare.asc" envoy-1.39.2-linux-x86_64)"
+check "envoy checksum: aarch64 bare filename" \
+  b3d0e9213289f4456413bec2a5b8ed8896765185ab9642da4b2b9b58cc46409c \
+  "$(envoy_checksum_sha256 "${TMP}/sums-bare.asc" envoy-1.39.2-linux-aarch_64)"
+check "envoy checksum: /tmp path suffix (v1.39.1 layout)" \
+  002c6e1c69ed0fa0ea381887247cadadfaec9481375fa8d8d2b1731eeabf40b8 \
+  "$(envoy_checksum_sha256 "${TMP}/sums-path.asc" envoy-1.39.1-linux-x86_64)"
+check "envoy checksum: contrib asset stays distinct" \
+  8f77e9b08456e4f28689e76441b422436c031895ff00aeda5561bd4d4372c997 \
+  "$(envoy_checksum_sha256 "${TMP}/sums-bare.asc" envoy-contrib-1.39.2-linux-x86_64)"
+check "envoy checksum: missing asset" "" \
+  "$(envoy_checksum_sha256 "${TMP}/sums-bare.asc" envoy-9.9.9-linux-x86_64)"
+grep -q 'envoy_checksum_sha256' "${ROOT}/demo/scripts/install-envoy.sh" && ok=0 || ok=1
+check "install-envoy: uses envoy_checksum_sha256" 0 "${ok}"
+# The pre-fix matcher required a slash before the asset name, so current
+# patch releases (bare filenames) produced an empty digest and a fast fail.
+old_envoy_checksum() {
+  awk -v a="/$2" '$2 ~ a"$" { print $1; exit }' "$1"
+}
+check "envoy checksum: old slash matcher misses bare names" "" \
+  "$(old_envoy_checksum "${TMP}/sums-bare.asc" envoy-1.39.2-linux-x86_64)"
+check "envoy checksum: old slash matcher still hits /tmp paths" \
+  002c6e1c69ed0fa0ea381887247cadadfaec9481375fa8d8d2b1731eeabf40b8 \
+  "$(old_envoy_checksum "${TMP}/sums-path.asc" envoy-1.39.1-linux-x86_64)"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

@@ -4,10 +4,14 @@
 #
 # Linux: downloads the official release binary into ${ENVOY_BIN_DIR:-$HOME/.local/bin}
 # and checks its sha256 against the release's checksums.txt.asc (the PGP
-# signature on that file is not verified here). Put that directory first on PATH.
+# signature on that file is not verified here). That list names each asset
+# either as a bare filename or as a /tmp/.../bin/<asset> path; both match.
+# Put that directory first on PATH.
 # macOS: brew install envoy (Homebrew bottles the pinned release).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=../../scripts/envoy-checksum.sh
+source "${ROOT}/scripts/envoy-checksum.sh"
 PIN="${ENVOY_VERSION:-$(grep -E '^ENVOY_PIN=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)}"
 PIN="${PIN:-v1.39.1}"
 WANT="${PIN#v}"
@@ -41,7 +45,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   echo "Downloading ${URL}/${ASSET}"
   curl -fsSL --retry 3 -o "$TMP/envoy" "${URL}/${ASSET}"
   curl -fsSL --retry 3 -o "$TMP/checksums.txt.asc" "${URL}/checksums.txt.asc"
-  EXPECT="$(awk -v a="/${ASSET}" '$2 ~ a"$" {print $1}' "$TMP/checksums.txt.asc")"
+  EXPECT="$(envoy_checksum_sha256 "$TMP/checksums.txt.asc" "$ASSET")"
   GOT="$(sha256sum "$TMP/envoy" | cut -d' ' -f1)"
   [[ -n "$EXPECT" ]] || { echo "no checksum for ${ASSET} in checksums.txt.asc" >&2; exit 1; }
   [[ "$GOT" == "$EXPECT" ]] || { echo "sha256 mismatch for ${ASSET}: got ${GOT}, want ${EXPECT}" >&2; exit 1; }
