@@ -87,7 +87,7 @@ sequenceDiagram
 
   E->>R: request_body (BUFFERED whole entity, STREAMED chunks, or BUFFERED_PARTIAL prefix)
   R->>M: append_request_body (every chunk)<br/>process_request_body at end_of_stream
-  Note over E,R: BUFFERED_PARTIAL sends at most per_connection_buffer_limit_bytes<br/>(demo: 1 MiB). Trailing attacks past that prefix can miss — not full CRS.
+  Note over E,R: BUFFERED_PARTIAL sends at most per_connection_buffer_limit_bytes<br/>(demo: 1 MiB). Trailing attacks past that prefix can miss; not full CRS.
   alt Phase-2 deny / body-limit / fail-closed
     R-->>E: ImmediateResponse 403 or 500
     E-->>C: local reply
@@ -116,17 +116,17 @@ HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) use the same connect
 
 ## Body modes that change the path
 
-The connector code path is the same for BUFFERED / STREAMED / BUFFERED_PARTIAL: **append every chunk, check intervention on every append, run `process_*_body` at `end_of_stream`**. What changes is when Envoy is willing to forward bytes toward the origin — and, for `FULL_DUPLEX_STREAMED`, the Continue wire shape.
+The connector code path is the same for BUFFERED / STREAMED / BUFFERED_PARTIAL: **append every chunk, check intervention on every append, run `process_*_body` at `end_of_stream`**. What changes is when Envoy is willing to forward bytes toward the origin, and for `FULL_DUPLEX_STREAMED`, the Continue wire shape.
 
 | Mode | Envoy behaviour | Origin exposure on request deny | Demo / CI |
 |------|-----------------|----------------------------------|-----------|
 | **BUFFERED** (default) | Holds the full request (and response) entity until the connector has inspected it | A request-body deny happens **before** the origin sees anything, including when the attack sits only in the last chunk or last HTTP/2 DATA frames | `demo/envoy/envoy.yaml`; full CRS / go-ftw; `crs-full` × BUFFERED |
-| **STREAMED** | Delivers body chunks as they arrive | Non-disruptive Continues may let early chunks move toward the origin before phase-2/4 decides at EOS; body-limit rejects can still fire mid-stream on append | `demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED`; hosted `e2e-streamed` ≡ `e2e-pin` product suites; full CRS via `crs-full` × STREAMED |
-| **BUFFERED_PARTIAL** | One body message up to the buffer limit (prefix only if over) | Small bodies behave like BUFFERED; over-limit trailing attacks can miss (ProcessPartial class) — **not** a CRS claim | `demo/envoy/envoy-buffered-partial.yaml`, `BODY_MODE=BUFFERED_PARTIAL`; CI `e2e-buffered-partial` (under-limit only) |
+| **STREAMED** | Delivers body chunks as they arrive | Non-disruptive Continues may let early chunks move toward the origin before phase-2/4 decides at EOS; body-limit rejects can still fire mid-stream on append | `demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED`; hosted `e2e-streamed` ≡ `e2e-pin` product suites; `crs-full` matrix **wired** for STREAMED (hosted green not yet shown on tip) |
+| **BUFFERED_PARTIAL** | One body message up to the buffer limit (prefix only if over) | Small bodies behave like BUFFERED; over-limit trailing attacks can miss (ProcessPartial class); **not** a CRS claim | `demo/envoy/envoy-buffered-partial.yaml`, `BODY_MODE=BUFFERED_PARTIAL`; CI `e2e-buffered-partial` (under-limit only) |
 | **NONE** | No request/response bodies to ext_proc | Body CRS n/a; query/header CRS can still fire; body attacks must reach origin | `demo/envoy/envoy-none.yaml`, `BODY_MODE=NONE`; CI `e2e-none` (headers smoke + fail-closed); also gRPC/WS demos |
-| **FULL_DUPLEX_STREAMED** | Duplex streamed body; trailer mode must be `SEND`; `message_timeout` disabled | Connector buffers chunks (Silent) and only emits `StreamedBodyResponse` **after** ModSec allows — so request-body deny still keeps origin untouched. Hang→504 N/A | `demo/envoy/envoy-full-duplex.yaml`, `BODY_MODE=FULL_DUPLEX_STREAMED` (auto `--body-reply streamed`); CI `e2e-full-duplex` ≡ product suites; full CRS via `crs-full` × FULL_DUPLEX |
+| **FULL_DUPLEX_STREAMED** | Duplex streamed body; trailer mode must be `SEND`; `message_timeout` **off** (stall→504 N/A) | Connector buffers chunks (Silent) and only emits `StreamedBodyResponse` **after** ModSec allows, so request-body deny still keeps origin untouched | `demo/envoy/envoy-full-duplex.yaml`, `BODY_MODE=FULL_DUPLEX_STREAMED` (auto `--body-reply streamed`); CI `e2e-full-duplex` ≡ product suites; `crs-full` matrix **wired** for FULL_DUPLEX (hosted green not yet shown on tip) |
 
-**Out of scope on Envoy v1.39.1:** `BodySendMode.GRPC` (enum 5) is marked `[#not-implemented-hide:]` in the pin proto — no Connex YAML, CI cell, or CRS claim.
+**Out of scope on Envoy v1.39.1:** `BodySendMode.GRPC` (enum 5) is marked `[#not-implemented-hide:]` in the pin proto; no Connex YAML, CI cell, or CRS claim.
 
 Default connector Continue for body messages is an empty `BodyResponse` (`--body-reply common`). Envoy rejects that shape under `FULL_DUPLEX_STREAMED` (`spurious_message: Normal_body_mutation…`); `--body-reply streamed` switches Continues to `BodyMutation.streamed_response`. Fail-closed / deny still use `ImmediateResponse` and are unchanged.
 
@@ -149,7 +149,7 @@ flowchart TB
   end
 ```
 
-Envoy's buffer limit (default 1 MiB per stream) caps BUFFERED inspectable body size; STREAMED moves buffering into the connector/engine. Full go-ftw stays on BUFFERED. Phase-2/4 CRS rules still decide at EOS in both modes.
+Envoy's buffer limit (default 1 MiB per stream) caps BUFFERED inspectable body size; STREAMED moves buffering into the connector/engine. The monthly `crs-full` workflow runs BUFFERED, STREAMED, and FULL_DUPLEX in a matrix (see [docs/modes/](./modes/)). BUFFERED hosted go-ftw-full is proven green; STREAMED / FULL_DUPLEX cells are **wired**, not yet proven green on tip. Phase-2/4 CRS rules still decide at EOS after reassembly.
 
 ---
 

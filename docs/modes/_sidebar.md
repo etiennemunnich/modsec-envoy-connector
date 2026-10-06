@@ -1,0 +1,17 @@
+* [Home](README.md)
+* Start here
+  * [Getting started](getting-started.md)
+  * [Install / build](install.md)
+  * [How it works](how-it-works.md)
+  * [Fail-closed](fail-closed.md)
+  * [Config / pins](config-pins.md)
+  * [Testing suite](testing-suite.md)
+  * [Troubleshooting](troubleshooting.md)
+  * [Architecture](architecture.md)
+* Body modes
+  * [NONE](none.md)
+  * [BUFFERED](buffered.md)
+  * [STREAMED](streamed.md)
+  * [BUFFERED_PARTIAL](buffered-partial.md)
+  * [FULL_DUPLEX_STREAMED](full-duplex-streamed.md)
+  * [GRPC (unimplemented)](grpc.md)

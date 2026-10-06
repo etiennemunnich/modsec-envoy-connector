@@ -27,23 +27,17 @@ Pinned versions live in [`versions.lock.md`](./versions.lock.md) (Envoy **v1.39.
 
 You need Rust (cargo), `pkg-config`, Python 3, `curl`, and `lsof` on `PATH`.
 
-**macOS**
-
-```bash
-brew install envoy modsecurity pkg-config   # or the install scripts below
-./demo/scripts/install-crs.sh               # CRS → demo/.crs
-```
-
-**Linux**
+**Pin-safe path (preferred).** Install scripts honor [`versions.lock.md`](./versions.lock.md):
 
 ```bash
 ./demo/scripts/install-envoy.sh && export PATH=$HOME/.local/bin:$PATH
-PREFIX=$HOME/.local ./scripts/install-libmodsecurity-ubuntu.sh
-export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib
-./demo/scripts/install-crs.sh
+./demo/scripts/install-libmodsecurity.sh    # Homebrew under the hood on macOS; source build on Linux
+# Linux alternative: PREFIX=$HOME/.local ./scripts/install-libmodsecurity-ubuntu.sh
+#                   export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib
+./demo/scripts/install-crs.sh               # CRS → demo/.crs
 ```
 
-`./demo/scripts/install-libmodsecurity.sh` is the cross-platform wrapper (Homebrew on macOS, source build on Linux). `./demo/scripts/install-envoy.sh` checks or installs Envoy at the pin.
+On macOS you also need `pkg-config` (`brew install pkg-config`). Do not lead with a naked `brew install envoy modsecurity`; that skips the pin check.
 
 ### 2. Build and deploy
 
@@ -63,7 +57,7 @@ That generates rules under `demo/.run/`, runs `cargo build -p ext-proc-modsec`, 
 | 18098 | Demo origin |
 | 18089 | Envoy admin (`/ready`) |
 
-Optional: `DEMO_CRS=0 ./demo/scripts/up.sh` skips CRS (demo rules only). `BODY_MODE=STREAMED ./demo/scripts/up.sh` uses streamed bodies; `BODY_MODE=BUFFERED_PARTIAL ./demo/scripts/up.sh` uses prefix-only bodies (1 MiB listener buffer — **not** full CRS fidelity; see `demo/scripts/partial-honesty.sh`); `BODY_MODE=NONE ./demo/scripts/up.sh` is headers-only (body CRS n/a; body attacks reach origin); `BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh` uses full-duplex streamed bodies (`StreamedBodyResponse`, trailer SEND; hang→504 N/A).
+Optional: `DEMO_CRS=0 ./demo/scripts/up.sh` skips CRS (demo rules only). `BODY_MODE=STREAMED ./demo/scripts/up.sh` uses streamed bodies; `BODY_MODE=BUFFERED_PARTIAL ./demo/scripts/up.sh` uses prefix-only bodies (1 MiB listener buffer; **not** full CRS fidelity; see `demo/scripts/partial-honesty.sh`); `BODY_MODE=NONE ./demo/scripts/up.sh` is headers-only (body CRS n/a; body attacks reach origin); `BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh` uses full-duplex streamed bodies (`StreamedBodyResponse`, trailer SEND; Envoy turns `message_timeout` off, so the stall→504 fail-closed cell does not apply).
 
 ### 3. Exercise
 
@@ -71,7 +65,7 @@ Automated checks:
 
 ```bash
 ./demo/scripts/smoke.sh          # allow / deny / body / response
-./demo/scripts/fail-closed.sh    # connector kill → 500, hang → 504, bad rules → 500
+./demo/scripts/fail-closed.sh    # connector kill → 500; stall past message_timeout → 504; bad rules → 500
 ```
 
 By hand once it is up:
@@ -123,6 +117,7 @@ Point Envoy's `ext_proc` filter (HTTP/2 cluster) at that listen address, with `f
 | Link | Topic |
 |------|--------|
 | [docs/how-it-works.md](./docs/how-it-works.md) | Request path, body modes, fail-closed, what is not inspected |
+| [docs/modes/](./docs/modes/) | Pages guide: getting started, install, product path, testing, body modes |
 | [docs/fail-closed.md](./docs/fail-closed.md) | Behaviour when the connector or engine fails |
 | [docs/testing.md](./docs/testing.md) | How the project is tested |
 | [demo/README.md](./demo/README.md) | Full demo scripts, ports, Envoy configs |
