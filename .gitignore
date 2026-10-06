@@ -19,3 +19,6 @@ demo/.run-other/
 
 # CRS checkouts for other tags (scripts/crs-version-probe.sh)
 demo/.crs-*/
+
+# ASH scan output. Config stays at .ash/.ash.yaml.
+.ash/ash_output/

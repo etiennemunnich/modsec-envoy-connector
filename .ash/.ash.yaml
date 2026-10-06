@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/awslabs/automated-security-helper/v3.7.1/automated_security_helper/schemas/AshConfig.json
+# Severity threshold is ASH's default (MEDIUM). Scanners and reporters stay
+# at ASH's built-in defaults.
+# Report-only for the first integration: a scan of this tree already has
+# actionable findings. Set fail_on_findings to true to fail the job.
+project_name: envoy-modsec-connex
+global_settings:
+  severity_threshold: MEDIUM
+fail_on_findings: false

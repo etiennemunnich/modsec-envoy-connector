@@ -1,0 +1,53 @@
+name: ash
+
+# AWS Automated Security Helper v3.7.1, local mode.
+# Same steps as the official GitHub Actions example:
+# https://awslabs.github.io/automated-security-helper/tutorials/running-ash-in-ci/
+# Actions are commit-pinned and the runner is ubuntu-24.04 so pin-check stays green.
+# Report-only: .ash/.ash.yaml sets fail_on_findings false, because a scan of
+# the existing tree already exits 2. Set that field to true to enforce.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# Same concurrency shape as ci.yml: one in-flight run per PR, main is never cancelled.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && format('ash-main-{0}', github.run_id) || format('ash-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: ash
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install ASH
+        run: pip install "git+https://github.com/awslabs/automated-security-helper.git@v3.7.1"
+
+      - name: Run ASH
+        run: ash --mode local
+
+      - name: Upload ASH report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ash-results
+          path: .ash/ash_output
+          include-hidden-files: true
+          if-no-files-found: error
