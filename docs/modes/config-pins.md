@@ -8,9 +8,9 @@ Source of truth: [`versions.lock.md`](../../versions.lock.md).
 
 | Axis | Pin (tip) | How it gets installed |
 |------|-----------|------------------------|
-| Envoy | **v1.39.1** | `./demo/scripts/install-envoy.sh` |
+| Envoy | **v1.39.2** | `./demo/scripts/install-envoy.sh` |
 | libmodsecurity | **v3.0.17** | `./demo/scripts/install-libmodsecurity.sh` |
-| OWASP CRS | **v4.29.0** | `./demo/scripts/install-crs.sh` → `demo/.crs` |
+| OWASP CRS | **v4.30.0** | `./demo/scripts/install-crs.sh` → `demo/.crs` |
 
 Prefer those scripts over a naked package-manager install so the pin check runs. Release image builds use the same pins (see packaging / CI release workflow).
 

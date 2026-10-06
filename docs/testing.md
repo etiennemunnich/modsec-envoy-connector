@@ -2,7 +2,7 @@
 title: Testing — layers, gates, where each runs
 audience: operators + contributors
 date: 2026-09-27
-pins: Envoy v1.39.1 · libmodsecurity v3.0.17 · CRS v4.30.0 · failure_mode_allow:false
+pins: Envoy v1.39.2 · libmodsecurity v3.0.17 · CRS v4.30.0 · failure_mode_allow:false
 license: see LICENSE
 status: GitHub-hosted CI on x86_64 + aarch64 — Rust gate and live Envoy suites on every main push; daily stable-release watch, weekly version window, on-demand ~12-month axis matrix, monthly full CRS
 ---

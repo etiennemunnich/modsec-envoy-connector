@@ -1,6 +1,6 @@
 # Getting started
 
-Bring up the local demo, prove allow/deny, tear it down. Pins: Envoy **v1.39.1**, libmodsecurity **v3.0.17**, CRS **v4.29.0** ([`versions.lock.md`](../../versions.lock.md)).
+Bring up the local demo, prove allow/deny, tear it down. Pins: Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0** ([`versions.lock.md`](../../versions.lock.md)).
 
 Dependency detail: [Install / build](./install.md). Suite coverage: [Testing suite](./testing-suite.md).
 

@@ -2,7 +2,7 @@
 title: Fail-closed model - ModSec x Envoy ext_proc
 audience: operators + contributors
 date: 2026-09-27
-pins: Envoy v1.39.1 · libmodsecurity v3.0.17 · failure_mode_allow:false · message_timeout 2s
+pins: Envoy v1.39.2 · libmodsecurity v3.0.17 · failure_mode_allow:false · message_timeout 2s
 license: see LICENSE
 status: Product contract; live drills in demo/scripts/fail-closed.sh and demo/scripts/fail-modes.sh (HTTP/1.1 + HTTP/2)
 ---

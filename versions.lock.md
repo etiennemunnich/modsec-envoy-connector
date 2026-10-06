@@ -5,7 +5,7 @@ Product releases use git tags `vX.Y.Z` + Release notes that quote these axes, **
 
 | Axis | Field | Pin | Notes |
 |------|-------|-----|-------|
-| **E. Envoy** | `ENVOY_PIN` | `v1.39.1` | Fleet / lab ExtProc host |
+| **E. Envoy** | `ENVOY_PIN` | `v1.39.2` | Fleet / lab ExtProc host |
 | **A. Engine / ABI** | `MODSECURITY_PIN` | `v3.0.17` | libmodsecurity latest stable v3 |
 | **B. CRS pack** | `CRS_TAG` | `v4.30.0` | Optional LTS: `v4.25.1` |
 | **D. Connector** | git SHA / OCI | *(tip SHA)* | Fill at release / image publish |
@@ -14,7 +14,7 @@ Product releases use git tags `vX.Y.Z` + Release notes that quote these axes, **
 ## Machine-readable pins
 
 ```
-ENVOY_PIN=v1.39.1
+ENVOY_PIN=v1.39.2
 MODSECURITY_PIN=v3.0.17
 CRS_TAG=v4.30.0
 CRS_LTS_TAG=v4.25.1
@@ -23,7 +23,7 @@ PRODUCT_VERSION=v0.1.0
 
 ## Upstream references
 
-- Envoy: https://github.com/envoyproxy/envoy/releases/tag/v1.39.1
+- Envoy: https://github.com/envoyproxy/envoy/releases/tag/v1.39.2
 - ModSecurity: https://github.com/owasp-modsecurity/ModSecurity/releases/tag/v3.0.17
 - CRS: https://github.com/coreruleset/coreruleset/releases/tag/v4.30.0
 

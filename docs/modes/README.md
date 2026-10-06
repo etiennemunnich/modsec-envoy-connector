@@ -2,7 +2,7 @@
 
 Local PoC, install/build, product path, testing map, and every Envoy `BodySendMode` Connex ships (plus GRPC unimplemented). Mermaid renders on GitHub and in the Docsify Pages shell.
 
-Pins: Envoy **v1.39.1**, libmodsecurity **v3.0.17**, CRS **v4.29.0**.
+Pins: Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 
 ## Start here
 
