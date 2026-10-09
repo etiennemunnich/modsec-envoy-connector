@@ -56,6 +56,16 @@ GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not cla
 9. **Releases are gated.** The tag commit must be on `main` and the required `ci` checks green for that SHA before anything is pushed to GHCR or released.
 10. **Workflow comments and docs match the triggers.** When you change `on:` or `if:`, update the workflow's header comment and `docs/testing.md` in the same commit.
 
+## GitHub Actions minutes
+
+This repository is private on GitHub Free: 2,000 minutes a month across all private repositories, and no payment method, so nothing is ever charged; at the quota, every private repository's CI stops until the 1st (October 2026: this repo used 1,378 of 1,887 by the 9th).
+
+- **`ci` runs on pushes to `main`, pull requests and dispatches.** A branch push runs nothing: open the PR, or `gh workflow run ci.yml --ref <branch>`.
+- **A merge whose tree a PR already passed skips the heavy jobs** (`scripts/ci-tested-tree.sh`; `ci-ok` still reports). Bring the branch up to date with `main` before merging, or `main` re-runs everything.
+- **Timeouts sit near measured worst cases** (every `ci` job under 2.1 minutes in 60 runs; `crs-full` under 5.6): e2e 15, rust-quality 15, msrv 10, crs-full 25. A new job gets a timeout of a few times its real length, never the 360-minute default.
+- **Few, full jobs.** Each job is billed as at least a whole minute, so a one-step job costs a minute; fold small checks into a job that already runs.
+- **When the month runs low,** end the commit subject with `[skip ci]` for docs- or workflow-only changes and prove them locally (`./scripts/check-workflows.sh`, `./scripts/test-ci-scripts.sh`, `actionlint`).
+
 ## Docs
 
 On **substantive** architecture / fail-mode / protocol / CI / pin changes: update **`README.md`** (and product how-it-works when this repo owns it). Prefer honesty over completeness theater.
