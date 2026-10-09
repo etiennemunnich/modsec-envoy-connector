@@ -26,7 +26,7 @@ on:
         default: "BUFFERED"
       timeout_minutes:
         type: number
-        default: 45
+        default: 15
 
 permissions:
   contents: read

@@ -326,5 +326,23 @@ check "envoy checksum: old slash matcher still hits /tmp paths" \
   002c6e1c69ed0fa0ea381887247cadadfaec9481375fa8d8d2b1731eeabf40b8 \
   "$(old_envoy_checksum "${TMP}/sums-path.asc" envoy-1.39.1-linux-x86_64)"
 
+# --- ci-tested-tree.sh: a main push may skip only a tree a same-repo PR passed
+T1=1111111111111111111111111111111111111111
+T2=2222222222222222222222222222222222222222
+cat >"${TMP}/runs.json" <<JSON
+{"workflow_runs":[
+ {"html_url":"https://x/fork","head_repository":{"full_name":"someone/fork"},"head_commit":{"tree_id":"${T2}"}},
+ {"html_url":"https://x/ours","head_repository":{"full_name":"o/r"},"head_commit":{"tree_id":"${T1}"}}]}
+JSON
+tested() { GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/runs.json" "$@" "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1; }
+check "tested-tree: same tree, same repo" tested=true "$(tested env TREE=${T1})"
+check "tested-tree: a fork's run does not count" tested=false "$(tested env TREE=${T2})"
+check "tested-tree: unknown tree" tested=false "$(tested env TREE=3333333333333333333333333333333333333333)"
+check "tested-tree: no tree id" tested=false "$(tested env TREE=)"
+check "tested-tree: not a tree id" tested=false "$(tested env TREE='x\" or 1')"
+check "tested-tree: a re-run runs everything" tested=false "$(tested env TREE=${T1} GITHUB_RUN_ATTEMPT=2)"
+printf "not json" >"${TMP}/bad.json"
+check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

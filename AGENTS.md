@@ -46,7 +46,7 @@ GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not cla
 ## CI rules
 
 1. **A proof cites a run only after reading it.** For each run URL, record `event`, `conclusion` and `headSha` from `gh run view <id> --json event,conclusion,headSha`. Never label a `workflow_dispatch` run as "scheduled"; a schedule is proven only by a run with `event=schedule`.
-2. **Every new or changed check ships with a negative control.** Break it on a `cursor/ci-negctl-*` branch, link the red run, then link the green run on `main`. A check that never went red is unproven.
+2. **Every new or changed check ships with a negative control.** Break it on a `cursor/ci-negctl-*` branch, run `gh workflow run ci.yml --ref <branch>` (branch pushes run no CI), link the red run, then link the green run on `main`. A check that never went red is unproven.
 3. **No vacuous passes.** No `|| true`, `continue-on-error` or soft asserts on assertion paths. Guards use `var="$(cmd)"`, never `echo "$(cmd)"`. Suites assert a minimum count (PASS ≥ N, tests selected > 0), not only "no failures". Never call functions as `cond && fn` under `set -e`.
 4. **Pin runners and toolchains; never float.** `ubuntu-24.04` / `ubuntu-24.04-arm` together, never `ubuntu-latest`. Rust comes from `rust-toolchain.toml`. Actions are pinned by full commit SHA with a `# vX.Y.Z` comment. No third-party actions in jobs with write scopes. (`scripts/check-workflows.sh` enforces the mechanical parts.)
 5. **Cache keys include everything that changes the output:** OS id + version, arch, upstream tag, the hash of the build script, the toolchain file.

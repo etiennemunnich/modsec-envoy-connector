@@ -29,7 +29,7 @@ jobs:
     with:
       suites: "go-ftw-full"
       body_mode: ${{ matrix.body_mode }}
-      timeout_minutes: 90
+      timeout_minutes: 25
 
   report:
     name: report

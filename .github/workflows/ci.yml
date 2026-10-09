@@ -1,13 +1,15 @@
 name: ci
 
-# Gate for main (work lands there directly), cursor/** branches, PRs and dispatches.
+# Gate for main (work lands there directly), PRs and dispatches. A branch is
+# tested by its pull request (or gh workflow run ci.yml --ref <branch>): a
+# branch push run as well tested each change three times.
 #   pin-check                          every run (pins, workflow rules)
 #   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked)
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
 #   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
-#                                      PRs and dispatches (not cursor/** pushes);
+#                                      PRs and dispatches;
 #                                      includes buffered-oversize + connect-assert
 #   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
 #                                      go-ftw-full via crs-full matrix incl. STREAMED)
@@ -19,14 +21,15 @@ name: ci
 #   e2e-asymm-* × {arch}               independent req/resp body-mode labs
 #   ci-ok                              one verdict over all of the above
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
-# the changes job, so ci-ok still reports; runs on main are never cancelled.
+# the changes job, so ci-ok still reports; so does a push to main whose tree
+# already passed on a pull request from this repository (scripts/ci-tested-tree.sh:
+# the merge would re-test identical files). Runs on main are never cancelled.
 # GitHub-hosted runners only.
 
 on:
   push:
     branches:
       - main
-      - "cursor/**"
   pull_request:
   workflow_dispatch:
 
@@ -44,8 +47,11 @@ jobs:
     name: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      actions: read # earlier ci runs of the same tree (ci-tested-tree.sh)
+      contents: read
     outputs:
-      docs_only: ${{ steps.d.outputs.docs_only }}
+      skip: ${{ steps.d.outputs.docs_only == 'true' || steps.t.outputs.tested == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +63,13 @@ jobs:
           BASE: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
           HEAD: ${{ github.sha }}
         run: ./scripts/ci-changes.sh
+      - name: Tree already passed on a pull request?
+        id: t
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TREE: ${{ github.event.head_commit.tree_id }}
+        run: ./scripts/ci-tested-tree.sh
 
   pin-check:
     name: pin-check
@@ -83,9 +96,9 @@ jobs:
   rust-quality:
     name: rust-quality (${{ matrix.arch }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.skip != 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -139,9 +152,9 @@ jobs:
   msrv:
     name: msrv (rust-version)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.skip != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -168,7 +181,7 @@ jobs:
   supply-chain:
     name: supply-chain (cargo-deny)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -195,7 +208,7 @@ jobs:
   protos:
     name: protos (gen-protos --check)
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -222,7 +235,7 @@ jobs:
 
   e2e-pin:
     name: e2e-pin
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -233,7 +246,7 @@ jobs:
 
   e2e-streamed:
     name: e2e-streamed
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -241,11 +254,11 @@ jobs:
       # crs-full matrix (BUFFERED + STREAMED + FULL_DUPLEX), not this PR cell.
       suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
       body_mode: STREAMED
-      timeout_minutes: 45
+      timeout_minutes: 15
 
   e2e-buffered-partial:
     name: e2e-buffered-partial
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -253,11 +266,11 @@ jobs:
       # Not go-ftw-full — PARTIAL ≠ BUFFERED CRS fidelity (ProcessPartial class).
       suites: "smoke fail-closed go-ftw-smoke partial-honesty connect-assert"
       body_mode: BUFFERED_PARTIAL
-      timeout_minutes: 45
+      timeout_minutes: 15
 
   e2e-full-duplex:
     name: e2e-full-duplex
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -265,40 +278,40 @@ jobs:
       # Envoy disables message_timeout). go-ftw-full via crs-full matrix.
       suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
       body_mode: FULL_DUPLEX_STREAMED
-      timeout_minutes: 45
+      timeout_minutes: 15
 
   e2e-none:
     name: e2e-none
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       # NONE headers-only: query/header CRS + fail-closed. No body CRS / go-ftw.
       suites: "smoke fail-closed connect-assert"
       body_mode: NONE
-      timeout_minutes: 30
+      timeout_minutes: 15
 
   e2e-asymm-req-buf-resp-str:
     name: e2e-asymm-req-buf-resp-str
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       # Asymmetric lab: request BUFFERED + response STREAMED (independent axes).
       suites: "smoke fail-closed go-ftw-smoke connect-assert"
       body_mode: REQ_BUFFERED_RESP_STREAMED
-      timeout_minutes: 45
+      timeout_minutes: 15
 
   e2e-asymm-req-str-resp-buf:
     name: e2e-asymm-req-str-resp-buf
-    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     needs: [changes, pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       # Asymmetric inverse: request STREAMED + response BUFFERED.
       suites: "smoke fail-closed go-ftw-smoke connect-assert"
       body_mode: REQ_STREAMED_RESP_BUFFERED
-      timeout_minutes: 45
+      timeout_minutes: 15
 
   ci-ok:
     name: ci-ok
@@ -310,13 +323,13 @@ jobs:
       - name: Every needed job passed (or was skipped by design)
         env:
           NEEDS: ${{ toJSON(needs) }}
-          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          SKIP: ${{ needs.changes.outputs.skip }}
           E2E_WANTED: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
         run: |
           python3 - <<'PY'
           import json, os, sys
           needs = json.loads(os.environ["NEEDS"])
-          docs_only = os.environ["DOCS_ONLY"] == "true"
+          skip = os.environ["SKIP"] == "true"
           e2e_wanted = os.environ["E2E_WANTED"] == "true"
           heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-none", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
           e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-buffered-partial", "e2e-full-duplex", "e2e-none", "e2e-asymm-req-buf-resp-str", "e2e-asymm-req-str-resp-buf"}
@@ -324,7 +337,7 @@ jobs:
           for job, v in needs.items():
               r = v["result"]
               ok = r == "success" or (r == "skipped" and (
-                  (docs_only and job in heavy) or (job in e2e_jobs and not e2e_wanted)))
+                  (skip and job in heavy) or (job in e2e_jobs and not e2e_wanted)))
               print(f"{'ok  ' if ok else 'FAIL'} {job}: {r}")
               if not ok:
                   bad.append(f"{job}={r}")
