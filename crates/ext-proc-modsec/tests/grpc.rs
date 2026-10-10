@@ -113,6 +113,19 @@ fn hv(k: &str, v: &str) -> HeaderValue {
     }
 }
 
+fn req_headers_raw(pairs: &[(&str, &str)], eos: bool) -> ProcessingRequest {
+    ProcessingRequest {
+        request: Some(ProcRequest::RequestHeaders(HttpHeaders {
+            headers: Some(HeaderMap {
+                headers: pairs.iter().map(|(k, v)| hv(k, v)).collect(),
+            }),
+            end_of_stream: eos,
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
 fn req_headers(method: &str, path: &str, extra: &[(&str, &str)], eos: bool) -> ProcessingRequest {
     let mut headers = vec![
         hv(":method", method),
@@ -487,6 +500,67 @@ async fn invalid_response_status_fails_closed() {
     );
     let r = s.send(resp_headers("abc", &[], true)).await.unwrap();
     assert_eq!(immediate(&r).expect("immediate").0, 500);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authority_becomes_host_when_host_is_absent() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers_raw(
+            &[
+                (":method", "GET"),
+                (":path", "/"),
+                (":authority", "blocked.test"),
+                (":scheme", "http"),
+            ],
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 403);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_host_is_not_replaced_by_authority() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers_raw(
+            &[
+                (":method", "GET"),
+                (":path", "/"),
+                (":authority", "blocked.test"),
+                (":scheme", "http"),
+                ("host", "app.test"),
+            ],
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_continue(&r, "explicit host wins");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_method_and_path_still_run_phase1() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers_raw(
+            &[(":authority", "app.test"), (":scheme", "http")],
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_continue(&r, "omitted pseudo-headers are GET /");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trace_method_reaches_modsecurity() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s.send(req_headers("TRACE", "/", &[], true)).await.unwrap();
+    assert_eq!(immediate(&r).expect("immediate").0, 403);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

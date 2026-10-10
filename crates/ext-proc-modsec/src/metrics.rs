@@ -96,11 +96,12 @@ impl ConnectorMetrics {
     }
 
     pub fn add_body_bytes(&self, phase: Phase, n: u64) {
-        match phase {
-            Phase::RequestBody => self.request_body_bytes.fetch_add(n, Ordering::Relaxed),
-            Phase::ResponseBody => self.response_body_bytes.fetch_add(n, Ordering::Relaxed),
-            Phase::RequestHeaders | Phase::ResponseHeaders => 0,
+        let counter = match phase {
+            Phase::RequestBody => &self.request_body_bytes,
+            Phase::ResponseBody => &self.response_body_bytes,
+            Phase::RequestHeaders | Phase::ResponseHeaders => return,
         };
+        counter.fetch_add(n, Ordering::Relaxed);
     }
 
     pub fn inc_requests(&self) {
@@ -257,5 +258,15 @@ mod tests {
         assert!(text.contains("ext_proc_request_body_bytes_total 10\n"));
         assert!(text.contains("ext_proc_response_body_bytes_total 7\n"));
         assert_eq!(m.deny_total(), 1);
+    }
+
+    #[test]
+    fn header_phases_do_not_count_as_body_bytes() {
+        let m = ConnectorMetrics::default();
+        m.add_body_bytes(Phase::RequestHeaders, 50);
+        m.add_body_bytes(Phase::ResponseHeaders, 50);
+        let text = m.render();
+        assert!(text.contains("ext_proc_request_body_bytes_total 0\n"));
+        assert!(text.contains("ext_proc_response_body_bytes_total 0\n"));
     }
 }

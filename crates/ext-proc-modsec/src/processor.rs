@@ -73,10 +73,6 @@ impl ModSecProcessor {
         &self.engine
     }
 
-    pub fn body_reply(&self) -> BodyReply {
-        self.body_reply
-    }
-
     /// A fresh per-stream state, exactly as `Process` creates one.
     pub fn exchange(&self) -> Exchange {
         Exchange::new(
@@ -283,9 +279,9 @@ impl Exchange {
         }
         match msg.request {
             Some(ProcRequest::RequestHeaders(h)) => self.request_headers(&h, &msg.attributes),
-            Some(ProcRequest::RequestBody(b)) => self.body(Phase::RequestBody, &b),
+            Some(ProcRequest::RequestBody(b)) => self.body(Direction::Request, &b),
             Some(ProcRequest::ResponseHeaders(h)) => self.response_headers(&h),
-            Some(ProcRequest::ResponseBody(b)) => self.body(Phase::ResponseBody, &b),
+            Some(ProcRequest::ResponseBody(b)) => self.body(Direction::Response, &b),
             Some(ProcRequest::RequestTrailers(_)) => self.trailers(Direction::Request),
             Some(ProcRequest::ResponseTrailers(_)) => self.trailers(Direction::Response),
             None => self.fail_closed(Phase::RequestHeaders, "ProcessingRequest without a request"),
@@ -303,6 +299,9 @@ impl Exchange {
             return self.fail_closed(phase, "request_headers received twice on one stream");
         }
         self.request_id = header(headers, "x-request-id");
+        // Omitted :method/:path are not a protocol failure: phase 1 still
+        // runs, as GET /. Engine errors and real protocol violations
+        // fail-closed instead.
         let method = header(headers, ":method").unwrap_or_else(|| "GET".into());
         let path = header(headers, ":path").unwrap_or_else(|| "/".into());
 
@@ -326,6 +325,9 @@ impl Exchange {
             Err(e) => return self.fail_closed(phase, &e),
         };
 
+        // CRS matches REQUEST_HEADERS:Host. HTTP/2 and HTTP/3 put the host in
+        // :authority and often omit Host; copy it only when Host is absent so
+        // an explicit Host header is not overwritten.
         let mut hdrs: Vec<(String, String)> = regular_headers(headers).collect();
         if !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
             if let Some(authority) = header(headers, ":authority") {
@@ -379,13 +381,10 @@ impl Exchange {
         Step::Reply(responses::headers_continue(Direction::Request))
     }
 
-    fn body(&mut self, phase: Phase, body: &HttpBody) -> Step {
-        let dir = match phase {
-            Phase::RequestBody => Direction::Request,
-            Phase::ResponseBody => Direction::Response,
-            Phase::RequestHeaders | Phase::ResponseHeaders => {
-                return self.fail_closed(phase, "body handler called for a headers phase")
-            }
+    fn body(&mut self, dir: Direction, body: &HttpBody) -> Step {
+        let phase = match dir {
+            Direction::Request => Phase::RequestBody,
+            Direction::Response => Phase::ResponseBody,
         };
         if self.local_reply && dir == Direction::Response {
             // Local-reply pass-through: echo as required by body_reply mode.
@@ -414,6 +413,8 @@ impl Exchange {
             Direction::Response => session.append_response_body(&body.body),
         };
         match appended {
+            // Allow is not settled here: a non-disruptive append is not the
+            // end of the body phase, so it must not record phase latency.
             Ok(d) if d.is_disruptive() => {
                 if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(nbytes)) {
                     return step;

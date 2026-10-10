@@ -19,8 +19,8 @@
 //!
 //! | Piece | Source |
 //! |-------|--------|
-//! | Engine | [OWASP ModSecurity / libmodsecurity](https://github.com/owasp-modsecurity/ModSecurity) v3.x (pin `v3.0.16`), C API declared in [`ffi`] |
-//! | CRS (optional) | [OWASP CRS](https://github.com/coreruleset/coreruleset) (pin `v4.29.0`), loaded by the caller via `Include` chains |
+//! | Engine | [OWASP ModSecurity / libmodsecurity](https://github.com/owasp-modsecurity/ModSecurity) v3.x (pin `v3.0.17`), C API declared in [`ffi`] |
+//! | CRS (optional) | [OWASP CRS](https://github.com/coreruleset/coreruleset) (pin `v4.30.0`), loaded by the caller via `Include` chains |
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -470,6 +470,9 @@ impl InspectionSession {
             return Err(tx_err("append_request_body after request body finished"));
         }
         self._engine.take_injected_fail("append_request_body")?;
+        // A zero-length chunk does not change the buffered body. Limit
+        // rejects are evaluated on the append that crosses the limit; phase 2
+        // rules run in `finish_request_body`.
         if chunk.is_empty() {
             return Ok(Decision::Allow);
         }
@@ -549,6 +552,9 @@ impl InspectionSession {
             return Err(tx_err("append_response_body after response body finished"));
         }
         self._engine.take_injected_fail("append_response_body")?;
+        // A zero-length chunk does not change the buffered body. Limit
+        // rejects are evaluated on the append that crosses the limit; phase 4
+        // rules run in `finish_response_body`.
         if chunk.is_empty() {
             return Ok(Decision::Allow);
         }
@@ -628,19 +634,15 @@ impl InspectionSession {
                     phase, status, "modsecurity non-disruptive intervention ignored"
                 );
             }
-            d => {
-                let log = match d {
-                    Decision::Block { log, .. }
-                    | Decision::Redirect { log, .. }
-                    | Decision::Drop { log } => log.as_deref(),
-                    Decision::Allow => None,
-                };
+            Decision::Block { log, .. }
+            | Decision::Redirect { log, .. }
+            | Decision::Drop { log } => {
                 warn!(
                     request_id = rid,
                     phase,
-                    action = d.action_label(),
+                    action = decision.action_label(),
                     status,
-                    log = log.unwrap_or("-"),
+                    log = log.as_deref().unwrap_or("-"),
                     "modsecurity disruptive intervention"
                 );
             }
@@ -657,7 +659,7 @@ impl InspectionSession {
 /// 3. `status == 0` → Drop
 /// 4. else → Block with status
 ///
-/// libmodsecurity v3.0.16 executes the SecLang `drop` action as deny/403, so
+/// libmodsecurity v3.0.17 executes the SecLang `drop` action as deny/403, so
 /// the Drop branch is only reached if the engine reports status 0.
 pub fn map_intervention(
     disruptive: bool,
@@ -799,14 +801,37 @@ mod tests {
     }
 
     #[test]
-    fn seclang_drop_action_v3_aliases_deny() {
+    fn seclang_drop_action_is_deny_403() {
+        // v3.0.17 still logs "executing deny instead of drop" and sets status
+        // 403. A real status-0 Drop would be a pin change, not this alias.
         let engine = Engine::load_files(&[testdata("phase1-drop.conf")]).expect("load");
         let mut s = engine.open_transaction(Some("test-drop")).expect("tx");
         match get(&mut s, "/drop-me") {
             Decision::Block { status, .. } => assert_eq!(status, 403),
-            Decision::Drop { .. } => {}
-            other => panic!("expected Block(403) or Drop, got {other:?}"),
+            other => panic!("v3.0.17 drop executes as deny/403, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn request_method_is_the_process_uri_method() {
+        // The C API names this argument `protocol`; it is REQUEST_METHOD.
+        let engine = Engine::load_files(&[testdata("phase1-deny-trace.conf")]).expect("load");
+        let mut allow = engine.open_transaction(Some("test-get")).expect("tx");
+        assert_eq!(get(&mut allow, "/"), Decision::Allow);
+        let mut deny = engine.open_transaction(Some("test-trace")).expect("tx");
+        let d = deny
+            .process_request_headers(
+                "127.0.0.1",
+                1,
+                "127.0.0.1",
+                80,
+                "TRACE",
+                "/",
+                "1.1",
+                &headers_host(),
+            )
+            .expect("headers");
+        assert!(matches!(d, Decision::Block { status: 403, .. }), "{d:?}");
     }
 
     #[test]

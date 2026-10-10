@@ -71,11 +71,12 @@ extern "C" {
         server: *const c_char,
         server_port: c_int,
     ) -> c_int;
-    /// `protocol` is the HTTP method.
+    /// `method` is the request method (`REQUEST_METHOD`). The C header names
+    /// this argument `protocol`.
     pub fn msc_process_uri(
         tx: *mut Transaction,
         uri: *const c_char,
-        protocol: *const c_char,
+        method: *const c_char,
         http_version: *const c_char,
     ) -> c_int;
     pub fn msc_add_request_header(
