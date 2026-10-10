@@ -2,9 +2,9 @@
 
 This is **not** “gRPC routes in the demo.” It is Envoy’s `BodySendMode.GRPC` value on the ext_proc processing-mode enum.
 
-## Status on pinned Envoy v1.39.2
+## Status on pinned Envoy v1.39.3
 
-Marked `[#not-implemented-hide:]` in the committed proto, which was generated from the v1.39.1 API closure. The v1.39.2 runtime pin does not add a Connex YAML, CI cell, or CRS claim for this mode.
+Marked `[#not-implemented-hide:]` in the committed proto, which was generated from the v1.39.1 API closure. The v1.39.3 runtime pin does not add a Connex YAML, CI cell, or CRS claim for this mode.
 
 | Surface | Connex policy |
 |---------|----------------|
@@ -24,7 +24,7 @@ If it were implemented, Envoy would also disable `message_timeout` (same class a
 
 ```mermaid
 flowchart LR
-  A[BodySendMode.GRPC enum 5] --> B{Implemented on pinned Envoy v1.39.2?}
+  A[BodySendMode.GRPC enum 5] --> B{Implemented on pinned Envoy v1.39.3?}
   B -->|no| C[Out of scope for Connex]
   C --> D[No YAML / CI / CRS claim]
   E[Demo gRPC listener] --> F[Body mode NONE]

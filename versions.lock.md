@@ -7,7 +7,7 @@ Product releases use git tags `vX.Y.Z` + Release notes that quote these axes, **
 |------|-------|-----|-------|
 | **E. Envoy** | `ENVOY_PIN` | `v1.39.3` | Fleet / lab ExtProc host |
 | **A. Engine / ABI** | `MODSECURITY_PIN` | `v3.0.17` | libmodsecurity latest stable v3 |
-| **B. CRS pack** | `CRS_TAG` | `v4.30.0` | Optional LTS: `v4.25.1` |
+| **B. CRS pack** | `CRS_TAG` | `v4.30.0` | Optional LTS: `v4.25.2` |
 | **D. Connector** | git SHA / OCI | *(tip SHA)* | Fill at release / image publish |
 | **P. Product** | git tag | `v0.1.0` | Semver from here |
 | **S. ASH** | `ASH_PIN` | `af1206aff596f1288ad066828058b3011de2a998` | awslabs/automated-security-helper v3.7.1 tip (commit, not tag) |
@@ -18,7 +18,7 @@ Product releases use git tags `vX.Y.Z` + Release notes that quote these axes, **
 ENVOY_PIN=v1.39.3
 MODSECURITY_PIN=v3.0.17
 CRS_TAG=v4.30.0
-CRS_LTS_TAG=v4.25.1
+CRS_LTS_TAG=v4.25.2
 PRODUCT_VERSION=v0.1.0
 ASH_PIN=af1206aff596f1288ad066828058b3011de2a998
 ```
