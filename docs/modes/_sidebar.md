@@ -6,6 +6,7 @@
   * [Fail-closed](fail-closed.md)
   * [Config / pins](config-pins.md)
   * [Testing suite](testing-suite.md)
+  * [Security scan (ASH)](ash.md)
   * [Troubleshooting](troubleshooting.md)
   * [Architecture](architecture.md)
 * Body modes

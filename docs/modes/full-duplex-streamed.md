@@ -63,7 +63,7 @@ flowchart TB
 **Yes.** Phase 3 and phase 4 both run (same as BUFFERED / STREAMED). Product duplex YAML sends response bodies in `FULL_DUPLEX_STREAMED`. **Local** evidence (not hosted `crs-full`):
 
 - Smoke includes response leak → 403
-- Local go-ftw smoke/body/full under duplex: **8+118 / 118 / 5091** (matches BUFFERED local parity, CRS v4.29.0). Hosted `crs-full` × FULL_DUPLEX is matrix-wired, not yet proven green on tip.
+- Local go-ftw smoke/body/full under duplex: **8+118 / 118 / 5091** (matches BUFFERED local parity). Those counts were taken on CRS v4.29.0. The pin is now **v4.30.0**; this page does not restate them as a v4.30.0 run. Hosted `crs-full` × FULL_DUPLEX is matrix-wired, not yet proven green on tip.
 
 ## Config knobs
 

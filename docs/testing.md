@@ -11,7 +11,7 @@ status: GitHub-hosted CI on x86_64 + aarch64 — Rust gate and live Envoy suites
 
 **One sentence:** every push to `main` runs, natively on GitHub-hosted `x86_64` and `aarch64` Ubuntu, the Rust gate (fmt, clippy, tests with libmodsecurity linked) **and** the live Envoy → connector → libmodsecurity + CRS suites (smoke, fail-closed, the HTTP/1.1 + HTTP/2 fail-mode matrix, hop-trace, go-ftw smoke); new stable Envoy / libmodsecurity / CRS releases are detected daily and tested on both architectures, the last three stables of each axis weekly, an optional ~12-month axis-at-a-time matrix on demand, and the full CRS regression monthly.
 
-Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-closed.md) · [`versions.lock.md`](../versions.lock.md) · [`versions.window.md`](../versions.window.md) · [`versions.one-year.yaml`](../versions.one-year.yaml) · [findings/one-year-stable-matrix.md](./findings/one-year-stable-matrix.md).
+Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-closed.md) · [ash.md](./ash.md) · [`versions.lock.md`](../versions.lock.md) · [`versions.window.md`](../versions.window.md) · [`versions.one-year.yaml`](../versions.one-year.yaml) · [findings/one-year-stable-matrix.md](./findings/one-year-stable-matrix.md).
 
 ---
 
@@ -61,9 +61,11 @@ go-ftw: `./demo/scripts/install-go-ftw.sh`. Results and transcripts land in `dem
 
 ---
 
-## Latest measured results
+## Measured results (2026-09-27)
 
-Hosted Linux on both architectures: see [Hosted CI](#measured-2026-09-27-private-repo-2-vcpu-runners). Local run on macOS (arm64), Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, go-ftw v2.6.0, 2026-09-27:
+Current pins are Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. The table below is a local macOS (arm64) run from 2026-09-27 on Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, and go-ftw v2.6.0. Those counts are not a result for the current pins.
+
+Hosted Linux on both architectures from the same date: [Hosted CI](#measured-2026-09-27-private-repo-2-vcpu-runners).
 
 | Suite | Result |
 |-------|--------|
@@ -135,7 +137,7 @@ Every live suite must also reach a floor of passing checks, not just exit 0: smo
 - **NONE** is Envoy's default BodySendMode: stock `BODY_MODE=NONE` / `envoy-none.yaml` + weekly `e2e-lab` `e2e-none` (headers smoke + fail-closed). Body CRS / go-ftw body suites are **n/a**; body attacks must reach origin.
 - **BUFFERED_PARTIAL** stays honesty-only (under-limit CRS + soft-limit miss). Never claim full CRS.
 - **FULL_DUPLEX_STREAMED** product suites match STREAMED; hang→504 is **N/A** (Envoy disables `message_timeout`). Do not fake hang tests. Full CRS via `crs-full` matrix.
-- **`BodySendMode.GRPC`** is `[#not-implemented-hide:]` on Envoy v1.39.1 — out of scope (no YAML / CI / fake CRS).
+- **`BodySendMode.GRPC`** is `[#not-implemented-hide:]` on pinned Envoy v1.39.2 (committed proto generated from the v1.39.1 API closure) — out of scope (no YAML / CI / fake CRS).
 - **Trailers** values are not CRS-inspected. Product demo keeps trailer mode `SKIP`. With `SEND`, unfinished body is finalized when trailers mark EOS; trailers alone / no session → **500** (gRPC). Live: `demo/scripts/trailers.sh` (floor ≥ 5); gated in `e2e-pin` + `e2e-streamed` + `e2e-full-duplex`.
 - **Class 6:** with `SecAuditLog` pointing at an unwritable path, libmodsecurity v3.0.16 still loads the rules; the suite proves decisions are unchanged (attack **403**, origin untouched; benign **200**).
 - **HTTP/3 and WebSocket frames** are not CRS-inspected and not claimed as a WAF surface. Handshake hop-trace: `demo/scripts/hop-trace-ws.sh`. Frame bound suite: `demo/scripts/hop-trace-ws-frames.sh` (floor ≥ 6) — stock `upgrade_failed`; headers-only 101 + handshake ModSec; frames echo without CRS; fail-closed on handshake; BUFFERED+upgrade hang.

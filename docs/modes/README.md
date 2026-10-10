@@ -14,6 +14,7 @@ Pins: Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 | [Fail-closed](./fail-closed.md) | 403 vs 500/504; who owns each class |
 | [Config / pins](./config-pins.md) | Version pins, `BODY_MODE`, demo YAMLs, how to pick a mode |
 | [Testing suite](./testing-suite.md) | smoke / fail-closed / go-ftw / e2e / `crs-full` (matrix wired vs proven) |
+| [Security scan (ASH)](./ash.md) | Report-only CI scan and how to run it locally |
 | [Troubleshooting](./troubleshooting.md) | 403 vs 503; CRS block vs fail-closed |
 | [Architecture](./architecture.md) | Envoy HCM → ext_proc → Rust filter → libmodsecurity + CRS |
 
@@ -26,7 +27,7 @@ Pins: Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 | [STREAMED](./streamed.md) | Chunks as they arrive |
 | [BUFFERED_PARTIAL](./buffered-partial.md) | Prefix / soft-limit class |
 | [FULL_DUPLEX_STREAMED](./full-duplex-streamed.md) | Duplex stream + `StreamedBodyResponse` |
-| [GRPC](./grpc.md) | Enum value **unimplemented** on Envoy 1.39.1 |
+| [GRPC](./grpc.md) | Enum value **unimplemented** on pinned Envoy v1.39.2 |
 
 ## Mode comparison
 
@@ -37,7 +38,7 @@ Pins: Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 | **STREAMED** | Chunks as seen; reply per chunk | Early chunks may move before EOS phase-2 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-streamed.yaml` | `e2e-streamed`; `crs-full` wired |
 | **BUFFERED_PARTIAL** | Buffer up to soft limit; over-limit may skip body | Under-limit like BUFFERED; trailing over-limit can miss | **Yes** when body messages arrive | **Under-limit only** | `envoy-buffered-partial.yaml` | `e2e-buffered-partial` |
 | **FULL_DUPLEX_STREAMED** | Duplex stream; trailers **SEND**; `message_timeout` **off** | Connector holds until allow (`--body-reply streamed`); deny keeps origin +0 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-full-duplex.yaml` | `e2e-full-duplex`; `crs-full` wired |
-| **GRPC** | Not implemented in Envoy 1.39.1 | n/a | n/a | Out of scope | n/a | n/a |
+| **GRPC** | Not implemented on pinned Envoy v1.39.2 | n/a | n/a | Out of scope | n/a | n/a |
 
 Sources: [How it works](./how-it-works.md), [Testing suite](./testing-suite.md). Full repo docs: [how-it-works](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/how-it-works.md), [testing](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/testing.md).
 
@@ -62,6 +63,7 @@ flowchart LR
   idx --> fc[fail-closed]
   idx --> cfg[config pins]
   idx --> test[testing suite]
+  idx --> ash[ASH]
   idx --> ts[troubleshooting]
   idx --> arch[architecture]
   idx --> none[NONE]
