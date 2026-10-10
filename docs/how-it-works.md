@@ -2,7 +2,7 @@
 title: How it works - ModSec x Envoy x Rust ext_proc
 audience: operators + contributors
 date: 2026-09-30
-pins: Envoy v1.39.2 · libmodsecurity v3.0.17 · CRS v4.30.0 · failure_mode_allow:false · message_timeout 2s
+pins: Envoy v1.39.3 · libmodsecurity v3.0.17 · CRS v4.30.0 · failure_mode_allow:false · message_timeout 2s
 product: Rust ext_proc → in-process C API → libmodsecurity
 license: see LICENSE
 ---
@@ -126,7 +126,7 @@ The connector code path is the same for BUFFERED / STREAMED / BUFFERED_PARTIAL: 
 | **NONE** | No request/response bodies to ext_proc | Body CRS n/a; query/header CRS can still fire; body attacks must reach origin | `demo/envoy/envoy-none.yaml`, `BODY_MODE=NONE`; weekly `e2e-lab` `e2e-none` (headers smoke + fail-closed); also gRPC/WS demos |
 | **FULL_DUPLEX_STREAMED** | Duplex streamed body; trailer mode must be `SEND`; `message_timeout` **off** (stall→504 N/A) | Connector buffers chunks (Silent) and only emits `StreamedBodyResponse` **after** ModSec allows, so request-body deny still keeps origin untouched | `demo/envoy/envoy-full-duplex.yaml`, `BODY_MODE=FULL_DUPLEX_STREAMED` (auto `--body-reply streamed`); CI `e2e-full-duplex` ≡ product suites; `crs-full` matrix **wired** for FULL_DUPLEX (hosted green not yet shown on tip) |
 
-**Out of scope on pinned Envoy v1.39.2:** `BodySendMode.GRPC` (enum 5) is marked `[#not-implemented-hide:]` in the committed proto (generated from the v1.39.1 API closure). No Connex YAML, CI cell, or CRS claim.
+**Out of scope on pinned Envoy v1.39.3:** `BodySendMode.GRPC` (enum 5) is marked `[#not-implemented-hide:]` in the committed proto (generated from the v1.39.1 API closure). No Connex YAML, CI cell, or CRS claim.
 
 Default connector Continue for body messages is an empty `BodyResponse` (`--body-reply common`). Envoy rejects that shape under `FULL_DUPLEX_STREAMED` (`spurious_message: Normal_body_mutation…`); `--body-reply streamed` switches Continues to `BodyMutation.streamed_response`. Fail-closed / deny still use `ImmediateResponse` and are unchanged.
 
@@ -227,7 +227,7 @@ The deny body is always generic (`Forbidden`). Rule ids and matched data go only
 | `crates/ext-proc-modsec/src/responses.rs` | Builds Continue / `ImmediateResponse`; validates statuses. |
 | `crates/ext-proc-modsec/src/connection_meta.rs` | Reads Envoy `request_attributes` for `process_connection` / URI protocol. |
 | `crates/ext-proc-modsec/src/metrics.rs`, `metrics_server.rs` | Prometheus counters/histograms; `GET /metrics`, `GET /healthz`. |
-| `crates/ext-proc-modsec/src/pb/` | Committed prost/tonic for `envoy.service.ext_proc.v3` (generated from the Envoy v1.39.1 API closure; runtime pin is v1.39.2). |
+| `crates/ext-proc-modsec/src/pb/` | Committed prost/tonic for `envoy.service.ext_proc.v3` (generated from the Envoy v1.39.1 API closure; runtime pin is v1.39.3). |
 
 ---
 

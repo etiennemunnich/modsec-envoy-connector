@@ -4,7 +4,7 @@ Map of local scripts and hosted CI cells: what each command runs, what it proves
 
 Authoritative detail and measured minutes: [docs/testing.md](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/testing.md) (repo). Demo script table: [`demo/README.md`](../../demo/README.md).
 
-Pins: Envoy **v1.39.2**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
+Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 
 ## Local commands
 
@@ -50,7 +50,7 @@ Reusable cell: `live-e2e.yml` → `./scripts/ci-live-e2e.sh` with `SUITES=…` a
 | **FULL_DUPLEX_STREAMED** | Hosted (`e2e-full-duplex`) | Hosted | Matrix **wired**; tip hosted green **not yet shown** | Local full **5091/0**; connector holds until allow |
 | **BUFFERED_PARTIAL** | Honesty cell | Under-limit only | **No**; excluded from `crs-full` | Soft-limit miss is expected |
 | **NONE** | Headers + fail-closed | Body suites **n/a** | **No** | Body attacks reach origin |
-| **GRPC** BodySendMode | n/a | n/a | n/a | Unimplemented on pinned Envoy v1.39.2 |
+| **GRPC** BodySendMode | n/a | n/a | n/a | Unimplemented on pinned Envoy v1.39.3 |
 
 ```mermaid
 flowchart TB

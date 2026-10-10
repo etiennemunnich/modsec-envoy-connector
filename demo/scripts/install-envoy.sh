@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install / verify Envoy Proxy at the pin in versions.lock.md (v1.39.2), or at
+# Install / verify Envoy Proxy at the pin in versions.lock.md (v1.39.3), or at
 # ENVOY_VERSION=vX.Y.Z when set.
 #
 # Linux: downloads the official release binary into ${ENVOY_BIN_DIR:-$HOME/.local/bin}
@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=../../scripts/envoy-checksum.sh
 source "${ROOT}/scripts/envoy-checksum.sh"
 PIN="${ENVOY_VERSION:-$(grep -E '^ENVOY_PIN=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)}"
-PIN="${PIN:-v1.39.2}"
+PIN="${PIN:-v1.39.3}"
 WANT="${PIN#v}"
 BIN_DIR="${ENVOY_BIN_DIR:-$HOME/.local/bin}"
 
