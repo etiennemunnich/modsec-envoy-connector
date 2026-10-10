@@ -1,4 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/awslabs/automated-security-helper/v3.7.1/automated_security_helper/schemas/AshConfig.json
+# CI installs ASH at ASH_PIN in versions.lock.md (v3.7.1 tip commit
+# af1206aff596f1288ad066828058b3011de2a998), not the movable git tag.
 # Severity threshold is ASH's default (MEDIUM). Scanners and reporters stay
 # at ASH's built-in defaults.
 # Report-only for the first integration: a scan of this tree already has

@@ -1,0 +1,80 @@
+name: e2e-lab
+
+# Weekly (and dispatch) lab body-mode cells that are not on every PR:
+# BUFFERED_PARTIAL, NONE, and the two asymmetric req/resp labs. Product PR/main
+# CI keeps BUFFERED + STREAMED + FULL_DUPLEX only (see ci.yml). Floors and
+# fail-closed suites stay the same as when these jobs lived under ci.
+
+on:
+  schedule:
+    - cron: "47 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-lab
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-buffered-partial:
+    name: e2e-buffered-partial
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # PARTIAL cell: under-limit CRS smoke + fail-closed + 1 MiB prefix-honesty.
+      # Not go-ftw-full — PARTIAL ≠ BUFFERED CRS fidelity (ProcessPartial class).
+      suites: "smoke fail-closed go-ftw-smoke partial-honesty connect-assert"
+      body_mode: BUFFERED_PARTIAL
+      timeout_minutes: 15
+
+  e2e-none:
+    name: e2e-none
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # NONE headers-only: query/header CRS + fail-closed. No body CRS / go-ftw.
+      suites: "smoke fail-closed connect-assert"
+      body_mode: NONE
+      timeout_minutes: 15
+
+  e2e-asymm-req-buf-resp-str:
+    name: e2e-asymm-req-buf-resp-str
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # Asymmetric lab: request BUFFERED + response STREAMED (independent axes).
+      suites: "smoke fail-closed go-ftw-smoke connect-assert"
+      body_mode: REQ_BUFFERED_RESP_STREAMED
+      timeout_minutes: 15
+
+  e2e-asymm-req-str-resp-buf:
+    name: e2e-asymm-req-str-resp-buf
+    uses: ./.github/workflows/live-e2e.yml
+    with:
+      # Asymmetric inverse: request STREAMED + response BUFFERED.
+      suites: "smoke fail-closed go-ftw-smoke connect-assert"
+      body_mode: REQ_STREAMED_RESP_BUFFERED
+      timeout_minutes: 15
+
+  report:
+    name: report
+    needs:
+      - e2e-buffered-partial
+      - e2e-none
+      - e2e-asymm-req-buf-resp-str
+      - e2e-asymm-req-str-resp-buf
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: File or close the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-report.sh --mode on-failure --title "e2e-lab: failing cells"

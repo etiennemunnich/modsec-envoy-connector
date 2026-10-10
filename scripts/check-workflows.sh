@@ -70,6 +70,27 @@ if [[ -f .github/workflows/stable-window.yml || -f .github/workflows/crs-full.ym
         require_cron crs-full.yml '41 3 7 * *'
       } )"
 fi
+if [[ -f .github/workflows/e2e-lab.yml || -f .github/workflows/ash.yml ]]; then
+  rule "e2e-lab / ash must keep schedule cron + workflow_dispatch" \
+    "$( {
+        require_cron e2e-lab.yml '47 5 * * 1'
+        require_cron ash.yml '11 3 * * 1'
+      } )"
+fi
+
+# ci.yml must not re-introduce branch-push CI on cursor/** (triple-run waste).
+# Match YAML values only (quoted or bare), not header comments that mention the ban.
+if [[ -f .github/workflows/ci.yml ]]; then
+  rule "ci.yml must not trigger on push to cursor/**" \
+    "$(grep -nE '^[[:space:]]*-[[:space:]]*["'\'']?cursor/\*\*' .github/workflows/ci.yml || true)"
+fi
+
+# ASH install must be a 40-hex commit, never a movable tag like @v3.7.1.
+if [[ -f .github/workflows/ash.yml ]]; then
+  rule "ash.yml must pip-install automated-security-helper at a 40-hex commit" \
+    "$(grep -nE 'automated-security-helper\.git@' .github/workflows/ash.yml \
+      | grep -vE 'automated-security-helper\.git@[0-9a-f]{40}' || true)"
+fi
 
 [[ "${bad}" -eq 0 ]] || exit 1
 echo "check-workflows OK: ${#files[@]} files"

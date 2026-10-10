@@ -35,8 +35,8 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 | Gate | Where | What |
 |------|-------|------|
-| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; `e2e-pin` (BUFFERED: live smoke, fail-closed, fail-modes H1+H2, hop-trace, go-ftw smoke) and thin `e2e-streamed` (STREAMED smoke + fail-closed) on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict |
-| **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; results as issues (see `docs/testing.md`) |
+| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; product e2e `e2e-pin` (BUFFERED) + `e2e-streamed` + `e2e-full-duplex` on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict. Lab modes (PARTIAL / NONE / asymm) are weekly via `e2e-lab`. |
+| **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `e2e-lab` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; lab body modes weekly; results as issues (see `docs/testing.md`) |
 | **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`, `perf.sh` (latency floors); `scripts/ci-live-e2e.sh` runs a CI cell locally |
 | **CRS** | go-ftw | **H1** rule fidelity only |
 | **Fail-closed** | `demo/scripts/fail-closed.sh` | absolute gate: kill → 500, hang → 504, bad rules → 500, origin untouched |
@@ -62,6 +62,8 @@ This repository is private on GitHub Free: 2,000 minutes a month across all priv
 
 - **`ci` runs on pushes to `main`, pull requests and dispatches.** A branch push runs nothing: open the PR, or `gh workflow run ci.yml --ref <branch>`.
 - **A merge whose tree a PR already passed skips the heavy jobs** (`scripts/ci-tested-tree.sh`; `ci-ok` still reports). Bring the branch up to date with `main` before merging, or `main` re-runs everything.
+- **PR e2e is the three product body modes** (BUFFERED / STREAMED / FULL_DUPLEX × both arches). PARTIAL, NONE, and asymmetric labs run on `e2e-lab` (weekly + dispatch).
+- **`ash` runs on security-relevant PRs, weekly on main tip, and dispatch** — not every main push and not docs-only PRs. Install is commit-pinned (`ASH_PIN` in `versions.lock.md`).
 - **Timeouts sit near measured worst cases** (every `ci` job under 2.1 minutes in 60 runs; `crs-full` under 5.6): e2e 15, rust-quality 15, msrv 10, crs-full 25. A new job gets a timeout of a few times its real length, never the 360-minute default.
 - **Few, full jobs.** Each job is billed as at least a whole minute, so a one-step job costs a minute; fold small checks into a job that already runs.
 - **When the month runs low,** end the commit subject with `[skip ci]` for docs- or workflow-only changes and prove them locally (`./scripts/check-workflows.sh`, `./scripts/test-ci-scripts.sh`, `actionlint`).

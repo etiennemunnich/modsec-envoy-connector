@@ -1,17 +1,36 @@
 name: ash
 
-# AWS Automated Security Helper v3.7.1, local mode.
-# Same steps as the official GitHub Actions example:
+# AWS Automated Security Helper v3.7.1 tip, local mode.
+# Install is commit-pinned (ASH_PIN in versions.lock.md); pin-check asserts the
+# pip line matches. Same steps as the official GitHub Actions example:
 # https://awslabs.github.io/automated-security-helper/tutorials/running-ash-in-ci/
 # Actions are commit-pinned and the runner is ubuntu-24.04 so pin-check stays green.
 # Report-only: .ash/.ash.yaml sets fail_on_findings false, because a scan of
 # the existing tree already exits 2. Set that field to true to enforce.
+#
+# Triggers: PRs that touch security-relevant paths (workflows, ASH config, Rust,
+# scripts, deps, demo/compose), weekly on main tip (full tree, including docs for
+# detect-secrets), and dispatch. Not every main push and not docs-only PRs.
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
+    paths:
+      - ".github/**"
+      - ".ash/**"
+      - "crates/**"
+      - "scripts/**"
+      - "demo/**"
+      - "compose/**"
+      - "proto/**"
+      - "boe/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "deny.toml"
+      - "**/Dockerfile*"
+      - "versions.lock.md"
+  schedule:
+    - cron: "11 3 * * 1"
   workflow_dispatch:
 
 # Same concurrency shape as ci.yml: one in-flight run per PR, main is never cancelled.
@@ -37,8 +56,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ASH
-        run: pip install "git+https://github.com/awslabs/automated-security-helper.git@v3.7.1"
+      # ASH_PIN in versions.lock.md; pin-check asserts this SHA matches.
+      - name: Install ASH (commit-pinned v3.7.1 tip)
+        run: pip install "git+https://github.com/awslabs/automated-security-helper.git@af1206aff596f1288ad066828058b3011de2a998"
 
       - name: Run ASH
         run: ash --mode local

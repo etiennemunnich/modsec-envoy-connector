@@ -211,10 +211,28 @@ grep -q 'response_body_mode: NONE' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 
 check "demo: envoy-none response bodies NONE" 0 "${ok}"
 grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 || ok=1
 check "demo: envoy-none fail-closed" 0 "${ok}"
-grep -q 'e2e-none' "${ROOT}/.github/workflows/ci.yml" && ok=0 || ok=1
-check "ci: e2e-none job present" 0 "${ok}"
+grep -q 'e2e-none' "${ROOT}/.github/workflows/e2e-lab.yml" && ok=0 || ok=1
+check "e2e-lab: e2e-none job present" 0 "${ok}"
+grep -q 'e2e-buffered-partial' "${ROOT}/.github/workflows/e2e-lab.yml" && ok=0 || ok=1
+check "e2e-lab: e2e-buffered-partial job present" 0 "${ok}"
+grep -q 'e2e-asymm-req-buf-resp-str' "${ROOT}/.github/workflows/e2e-lab.yml" && ok=0 || ok=1
+check "e2e-lab: asymm lab jobs present" 0 "${ok}"
+# Product PR cells stay on ci; lab modes must not return to every-PR ci.yml.
+grep -qE '^[[:space:]]*e2e-none:' "${ROOT}/.github/workflows/ci.yml" && ok=1 || ok=0
+check "ci: e2e-none not on every-PR path" 0 "${ok}"
+grep -qE '^[[:space:]]*e2e-buffered-partial:' "${ROOT}/.github/workflows/ci.yml" && ok=1 || ok=0
+check "ci: e2e-buffered-partial not on every-PR path" 0 "${ok}"
+grep -q 'e2e-full-duplex' "${ROOT}/.github/workflows/ci.yml" && ok=0 || ok=1
+check "ci: e2e-full-duplex product cell present" 0 "${ok}"
 grep -q 'body_mode: \[BUFFERED, STREAMED, FULL_DUPLEX_STREAMED\]' "${ROOT}/.github/workflows/crs-full.yml" && ok=0 || ok=1
 check "crs-full: Envoy full-CRS body_mode matrix" 0 "${ok}"
+# ASH commit pin: lock and workflow agree; no movable @vX.Y.Z tag install.
+ash_lock="$(grep -E '^ASH_PIN=' "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2 || true)"
+ash_wf="$(grep -Eo 'automated-security-helper\.git@[0-9a-f]{40}' "${ROOT}/.github/workflows/ash.yml" | head -1 | grep -Eo '[0-9a-f]{40}$' || true)"
+[[ -n "$ash_lock" && "$ash_lock" == "$ash_wf" ]] && ok=0 || ok=1
+check "ash: ASH_PIN matches ash.yml commit pin" 0 "${ok}"
+grep -qE 'automated-security-helper\.git@v[0-9]' "${ROOT}/.github/workflows/ash.yml" && ok=1 || ok=0
+check "ash: no movable tag install" 0 "${ok}"
 
 # Thin presence hook for WS frame-bound artifacts.
 [[ -x "${ROOT}/demo/scripts/hop-trace-ws-frames.sh" ]] && ok=0 || ok=1
