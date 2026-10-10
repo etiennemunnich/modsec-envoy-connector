@@ -362,5 +362,59 @@ check "tested-tree: a re-run runs everything" tested=false "$(tested env TREE=${
 printf "not json" >"${TMP}/bad.json"
 check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
 
+# --- demo port remap (placeholders, not chained sed) -----------------------
+# shellcheck source=remap-demo-ports.sh
+source "${ROOT}/scripts/remap-demo-ports.sh"
+port_count() { grep -c "port_value: $1" "$2" || true; }
+cat >"${TMP}/stock-ports.yaml" <<'EOF'
+admin: { port_value: 18089 }
+listener: { port_value: 18080 }
+connector: { port_value: 18081 }
+origin: { port_value: 18098 }
+EOF
+# The pre-fix pipeline. DEMO_PORT_BASE=18081 makes the new listener 18081,
+# which the next expression then rewrites to the connector port 18082.
+sed \
+  -e 's/port_value: 18089/port_value: 18090/g' \
+  -e 's/port_value: 18080/port_value: 18081/g' \
+  -e 's/port_value: 18081/port_value: 18082/g' \
+  -e 's/port_value: 18098/port_value: 18099/g' \
+  "${TMP}/stock-ports.yaml" >"${TMP}/chained.yaml"
+check "port remap: chained sed collapses 18080→18081→18082" \
+  2 "$(port_count 18082 "${TMP}/chained.yaml")"
+check "port remap: chained sed leaves no listener 18081" \
+  0 "$(port_count 18081 "${TMP}/chained.yaml")"
+remap_stock_ports "${TMP}/stock-ports.yaml" "${TMP}/remap-18081.yaml" \
+  18090 18081 18082 18099
+check "port remap: listener stays 18081" \
+  1 "$(port_count 18081 "${TMP}/remap-18081.yaml")"
+check "port remap: connector stays 18082" \
+  1 "$(port_count 18082 "${TMP}/remap-18081.yaml")"
+remap_stock_ports "${TMP}/stock-ports.yaml" "${TMP}/remap-18380.yaml" \
+  18389 18380 18381 18398
+check "port remap: base 18380 listener" 1 "$(port_count 18380 "${TMP}/remap-18380.yaml")"
+check "port remap: base 18380 connector" 1 "$(port_count 18381 "${TMP}/remap-18380.yaml")"
+check "port remap: base 18380 admin" 1 "$(port_count 18389 "${TMP}/remap-18380.yaml")"
+check "port remap: base 18380 origin" 1 "$(port_count 18398 "${TMP}/remap-18380.yaml")"
+lib_cfg="$(
+  export DEMO_PORT_BASE=18081 BODY_MODE=BUFFERED
+  source "${ROOT}/demo/scripts/lib.sh"
+  printf '%s' "${ENVOY_CFG}"
+)"
+check "port remap: lib.sh DEMO_PORT_BASE=18081 listener 18081" \
+  1 "$(port_count 18081 "${lib_cfg}")"
+check "port remap: lib.sh DEMO_PORT_BASE=18081 connector 18082" \
+  1 "$(port_count 18082 "${lib_cfg}")"
+check "port remap: lib.sh DEMO_PORT_BASE=18081 admin 18090" \
+  1 "$(port_count 18090 "${lib_cfg}")"
+check "port remap: lib.sh DEMO_PORT_BASE=18081 origin 18099" \
+  1 "$(port_count 18099 "${lib_cfg}")"
+rm -f "${lib_cfg}"
+for f in demo/scripts/lib.sh demo/scripts/trailers.sh scripts/body-modes-other-lab.sh; do
+  grep -q 'remap_stock_ports' "${ROOT}/${f}" && ok=0 || ok=1
+  check "port remap: ${f} calls remap_stock_ports" 0 "${ok}"
+done
+
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 echo "test-ci-scripts OK"

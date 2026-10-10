@@ -48,12 +48,8 @@ esac
 # Remap BUFFERED/STREAMED trailer YAMLs when the demo is not on stock ports.
 if [[ "${BODY_MODE}" != "FULL_DUPLEX_STREAMED" && "${DEMO_PORT_BASE}" != "18080" ]]; then
   remapped_trailers="${RUN}/envoy-trailers-port-remap.yaml"
-  sed \
-    -e "s/port_value: 18089/port_value: ${ENVOY_ADMIN_PORT}/g" \
-    -e "s/port_value: 18080/port_value: ${ENVOY_PORT}/g" \
-    -e "s/port_value: 18081/port_value: ${CONNECTOR_PORT}/g" \
-    -e "s/port_value: 18098/port_value: ${ORIGIN_PORT}/g" \
-    "${TRAILER_CFG}" >"${remapped_trailers}"
+  remap_stock_ports "${TRAILER_CFG}" "${remapped_trailers}" \
+    "${ENVOY_ADMIN_PORT}" "${ENVOY_PORT}" "${CONNECTOR_PORT}" "${ORIGIN_PORT}"
   TRAILER_CFG="${remapped_trailers}"
 fi
 grep -q "request_body_mode: ${BODY_MODE}" "${TRAILER_CFG}" \

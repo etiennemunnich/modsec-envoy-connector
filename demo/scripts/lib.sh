@@ -66,16 +66,15 @@ BASE="http://127.0.0.1:${ENVOY_PORT}"
 CONNECTOR_LISTEN="127.0.0.1:${CONNECTOR_PORT}"
 METRICS="http://127.0.0.1:${METRICS_PORT}"
 
+# shellcheck source=../../scripts/remap-demo-ports.sh
+source "${ROOT}/scripts/remap-demo-ports.sh"
+
 # When using a non-default port base, materialize a remapped Envoy YAML under .run/
 if [[ "${DEMO_PORT_BASE}" != "18080" ]]; then
   mkdir -p "${RUN}"
   REMAPPED_ENVOY_CFG="${RUN}/envoy-port-remap.yaml"
-  sed \
-    -e "s/port_value: 18089/port_value: ${ENVOY_ADMIN_PORT}/g" \
-    -e "s/port_value: 18080/port_value: ${ENVOY_PORT}/g" \
-    -e "s/port_value: 18081/port_value: ${CONNECTOR_PORT}/g" \
-    -e "s/port_value: 18098/port_value: ${ORIGIN_PORT}/g" \
-    "${ENVOY_CFG}" >"${REMAPPED_ENVOY_CFG}"
+  remap_stock_ports "${ENVOY_CFG}" "${REMAPPED_ENVOY_CFG}" \
+    "${ENVOY_ADMIN_PORT}" "${ENVOY_PORT}" "${CONNECTOR_PORT}" "${ORIGIN_PORT}"
   ENVOY_CFG="${REMAPPED_ENVOY_CFG}"
 fi
 

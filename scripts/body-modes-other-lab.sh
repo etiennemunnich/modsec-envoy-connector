@@ -13,6 +13,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=remap-demo-ports.sh
+source "${ROOT}/scripts/remap-demo-ports.sh"
 DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run-other"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
@@ -59,13 +61,9 @@ remap_yaml() {
   # remap stock demo YAML ports 1808x → 1828x (+ optional body-mode edits via sed args)
   local src="$1"
   shift
-  sed \
-    -e "s/port_value: 18089/port_value: ${ADMIN_PORT}/g" \
-    -e "s/port_value: 18080/port_value: ${ENVOY_PORT}/g" \
-    -e "s/port_value: 18081/port_value: ${CONNECTOR_PORT}/g" \
-    -e "s/port_value: 18098/port_value: ${ORIGIN_PORT}/g" \
-    "$@" \
-    "$src" >"${ENVOY_CFG}"
+  remap_stock_ports "${src}" "${ENVOY_CFG}" \
+    "${ADMIN_PORT}" "${ENVOY_PORT}" "${CONNECTOR_PORT}" "${ORIGIN_PORT}" \
+    "$@"
 }
 
 down() {
