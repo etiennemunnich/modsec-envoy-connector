@@ -4,7 +4,7 @@ Prefix / soft-limit class. Same honesty family as ModSecurity `SecRequestBodyLim
 
 ## What Envoy does
 
-Buffer up to the configured limit and send a body message (full entity if under limit, prefix-class behaviour when over). With a 1 MiB soft `per_connection_buffer_limit_bytes`, bodies just over 1 MiB may still fully reach the connector; roughly **2 MiB+** can skip `request_body` (headers-only Continue). That shape was observed on Envoy v1.39.1. The runtime pin is now v1.39.2; this page does not claim a fresh measurement. Not a hard 413 like BUFFERED.
+Buffer up to the configured limit and send a body message (full entity if under limit, prefix-class behaviour when over). With a 1 MiB soft `per_connection_buffer_limit_bytes`, bodies just over 1 MiB may still fully reach the connector; roughly **2 MiB+** can skip `request_body` (headers-only Continue). That shape was observed on Envoy v1.39.1. The runtime pin is now v1.39.3; this page does not claim a fresh measurement. Not a hard 413 like BUFFERED.
 
 ## Flow with this filter + ModSecurity / CRS
 
