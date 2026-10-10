@@ -35,7 +35,7 @@ jobs:
     name: report
     needs: full
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       contents: read

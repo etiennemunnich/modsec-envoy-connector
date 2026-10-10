@@ -3,7 +3,7 @@ name: ci
 # Gate for main (work lands there directly), PRs and dispatches. A branch is
 # tested by its pull request (or gh workflow run ci.yml --ref <branch>): branch
 # pushes do not run this workflow (no cursor/** push trigger).
-#   pin-check                          every run (pins, workflow rules)
+#   pin-check                          every run (pins, workflow rules, skip signal)
 #   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked)
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
@@ -18,7 +18,7 @@ name: ci
 #   ci-ok                              one verdict over all of the above
 # Lab body modes (BUFFERED_PARTIAL, NONE, asymmetric) run weekly via e2e-lab.yml.
 # Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
-# the changes job, so ci-ok still reports; so does a push to main whose tree
+# pin-check's skip output, so ci-ok still reports; so does a push to main whose tree
 # already passed on a pull request from this repository (scripts/ci-tested-tree.sh:
 # the merge would re-test identical files). Runs on main are never cancelled.
 # GitHub-hosted runners only.
@@ -40,8 +40,11 @@ permissions:
   contents: read
 
 jobs:
-  changes:
-    name: changes
+  # Always-on gate: pin/workflow rules + docs/tree skip signal in one job so
+  # billing does not ceil three sub-minute jobs (was changes + pin-check + …).
+  # Keep the check name pin-check — release.yml gate requires it.
+  pin-check:
+    name: pin-check
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -67,15 +70,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TREE: ${{ github.event.head_commit.tree_id }}
         run: ./scripts/ci-tested-tree.sh
-
-  pin-check:
-    name: pin-check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - name: versions.lock.md pins (and install-script fallbacks)
         run: ./scripts/check-pins.sh
       - name: Workflow rules (SHA-pinned actions, pinned runners)
@@ -92,8 +86,8 @@ jobs:
 
   rust-quality:
     name: rust-quality (${{ matrix.arch }})
-    needs: changes
-    if: needs.changes.outputs.skip != 'true'
+    needs: pin-check
+    if: needs.pin-check.outputs.skip != 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -127,8 +121,11 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
+          # Shared with live-e2e so quality warm-up feeds e2e cells (same OS/arch/modsec/lock).
+          key: cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
+            quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.pins.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:
@@ -148,8 +145,8 @@ jobs:
 
   msrv:
     name: msrv (rust-version)
-    needs: changes
-    if: needs.changes.outputs.skip != 'true'
+    needs: pin-check
+    if: needs.pin-check.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -177,8 +174,8 @@ jobs:
 
   supply-chain:
     name: supply-chain (cargo-deny)
-    needs: changes
-    if: needs.changes.outputs.skip != 'true'
+    needs: pin-check
+    if: needs.pin-check.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -193,7 +190,8 @@ jobs:
         run: |
           set -euo pipefail
           asset="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/deny.tgz" \
+          curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 \
+            -o "$RUNNER_TEMP/deny.tgz" \
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${asset}.tar.gz"
           echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/deny.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
@@ -204,8 +202,8 @@ jobs:
 
   protos:
     name: protos (gen-protos --check)
-    needs: changes
-    if: needs.changes.outputs.skip != 'true'
+    needs: pin-check
+    if: needs.pin-check.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -221,7 +219,8 @@ jobs:
         run: |
           set -euo pipefail
           zip="protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$zip" \
+          curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 \
+            -o "$RUNNER_TEMP/$zip" \
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/${zip}"
           echo "${PROTOC_SHA256}  $RUNNER_TEMP/$zip" | sha256sum -c -
           unzip -q -o "$RUNNER_TEMP/$zip" -d "$RUNNER_TEMP/protoc"
@@ -232,8 +231,8 @@ jobs:
 
   e2e-pin:
     name: e2e-pin
-    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
-    needs: [changes, pin-check]
+    if: needs.pin-check.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       # Product BUFFERED contract. trailers last (restarts Envoy with SEND, then restores).
@@ -243,8 +242,8 @@ jobs:
 
   e2e-streamed:
     name: e2e-streamed
-    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
-    needs: [changes, pin-check]
+    if: needs.pin-check.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       # STREAMED matches BUFFERED product contract. Full CRS is hosted via
@@ -255,8 +254,8 @@ jobs:
 
   e2e-full-duplex:
     name: e2e-full-duplex
-    if: needs.changes.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
-    needs: [changes, pin-check]
+    if: needs.pin-check.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    needs: [pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
       # FULL_DUPLEX matches STREAMED product contract (fail-modes hang→504 N/A —
@@ -267,7 +266,7 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [changes, pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-full-duplex]
+    needs: [pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-full-duplex]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -275,7 +274,7 @@ jobs:
       - name: Every needed job passed (or was skipped by design)
         env:
           NEEDS: ${{ toJSON(needs) }}
-          SKIP: ${{ needs.changes.outputs.skip }}
+          SKIP: ${{ needs.pin-check.outputs.skip }}
           E2E_WANTED: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
         run: |
           python3 - <<'PY'

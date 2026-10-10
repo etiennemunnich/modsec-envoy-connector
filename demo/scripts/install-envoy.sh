@@ -43,8 +43,10 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   echo "Downloading ${URL}/${ASSET}"
-  curl -fsSL --retry 3 -o "$TMP/envoy" "${URL}/${ASSET}"
-  curl -fsSL --retry 3 -o "$TMP/checksums.txt.asc" "${URL}/checksums.txt.asc"
+  curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 --retry-delay 2 \
+    -o "$TMP/envoy" "${URL}/${ASSET}"
+  curl -fsSL --connect-timeout 15 --max-time 60 --retry 3 --retry-delay 2 \
+    -o "$TMP/checksums.txt.asc" "${URL}/checksums.txt.asc"
   EXPECT="$(envoy_checksum_sha256 "$TMP/checksums.txt.asc" "$ASSET")"
   GOT="$(sha256sum "$TMP/envoy" | cut -d' ' -f1)"
   [[ -n "$EXPECT" ]] || { echo "no checksum for ${ASSET} in checksums.txt.asc" >&2; exit 1; }

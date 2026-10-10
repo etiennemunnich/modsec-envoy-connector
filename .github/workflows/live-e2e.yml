@@ -80,8 +80,12 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             target
-          key: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
+          # Shared with ci.yml rust-quality (same OS/arch/modsec/lock).
+          key: cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
+            e2e-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
+            quality-cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - uses: ./.github/actions/libmodsecurity
         with:
@@ -108,7 +112,8 @@ jobs:
             dir="${RUNNER_TEMP}/go-ftw" base="https://github.com/coreruleset/go-ftw/releases/download/v${GO_FTW_VERSION}"
             asset="ftw_${GO_FTW_VERSION}_linux_${FTW_ARCH}.tar.gz"
             mkdir -p "$dir" && cd "$dir"
-            curl -fsSL --retry 3 -O "${base}/${asset}" -O "${base}/ftw-checksums.txt"
+            curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 \
+              -O "${base}/${asset}" -O "${base}/ftw-checksums.txt"
             grep " ${asset}\$" ftw-checksums.txt | sha256sum -c -
             tar xzf "${asset}" ftw
             ./ftw -v

@@ -61,11 +61,12 @@ jobs:
         run: ./scripts/release-watch.sh
 
   # A failed scheduled run would otherwise only email the cron's last editor.
+  # ubuntu-slim: short script; avoid a full ubuntu-24.04 minute for report-only.
   report:
     name: report
     needs: watch
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       contents: read

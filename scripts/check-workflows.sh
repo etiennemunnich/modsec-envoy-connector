@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Static rules for .github/ (run by ci.yml pin-check). Each rule prints the
-# offending file:line and the script exits 1 if any rule is broken.
+# Static rules for .github/ (run by ci.yml pin-check, which also owns the
+# docs/tree skip signal). Each rule prints the offending file:line and the
+# script exits 1 if any rule is broken.
 #
 #   ./scripts/check-workflows.sh
 set -euo pipefail
