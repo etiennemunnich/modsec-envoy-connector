@@ -1,0 +1,10 @@
+# Structured templates only. Security problems never go in a public issue.
+# Pattern aligned with OWASP CRS (blank_issues_enabled: false + contact_links).
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/docs/modes/README.md
+    about: Install, body modes, fail-closed, testing, and architecture.
+  - name: Security problem (bypass, crash, fail-open)
+    url: https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/SECURITY.md#reporting-a-vulnerability
+    about: Report privately via Security Advisories or the maintainer — never in a public issue.

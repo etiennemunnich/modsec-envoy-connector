@@ -1,13 +1,16 @@
-# envoy-modsec-connex
+# modsec-envoy-connector
 
 Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and the **OWASP Core Rule Set (CRS)**.
 
-Envoy does not run ModSecurity by itself. Connex is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and tells Envoy to allow or block traffic before it reaches your origin. The connector loads libmodsecurity in-process and calls its C API from Rust.
+Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and tells Envoy to allow or block traffic before it reaches your origin. The connector loads libmodsecurity in-process and calls its C API from Rust.
 
 Pinned versions: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0** ([`versions.lock.md`](./versions.lock.md)).
 
 **Author:** Etienne Munnich  
 **License:** [Apache License 2.0](./LICENSE)
+**Repository:** [github.com/etiennemunnich/modsec-envoy-connector](https://github.com/etiennemunnich/modsec-envoy-connector)
+
+Developed as [`envoy-modsec-connex`](https://github.com/etiennemunnich/envoy-modsec-connex); the public project name is **modsec-envoy-connector**.
 
 ## Getting started
 
