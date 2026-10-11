@@ -118,7 +118,7 @@ jobs:
           echo "dir=${out}" >> "$GITHUB_OUTPUT"
           echo "name=${name}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.pkg.outputs.name }}
           path: |
@@ -156,7 +156,7 @@ jobs:
           echo "${IMAGE}@${digest}"
           mkdir -p "$RUNNER_TEMP/digests" && echo "$digest" > "$RUNNER_TEMP/digests/${{ matrix.arch }}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/${{ matrix.arch }}
