@@ -1,6 +1,6 @@
 # How it works
 
-Thin summary for this guide. Full detail (request path, body modes, what is not inspected): [docs/how-it-works.md](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/how-it-works.md).
+Thin summary for this guide. Full detail (request path, body modes, what is not inspected): [docs/how-it-works.md](../how-it-works.md).
 
 ## Where it sits
 

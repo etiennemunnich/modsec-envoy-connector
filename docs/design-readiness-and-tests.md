@@ -6,6 +6,8 @@ status: Historical prep snapshot. Current product truth is how-it-works / testin
 license: see LICENSE (Apache-2.0)
 ---
 
+**Archive.** Historical prep snapshot. Not product docs. See [how-it-works](./how-it-works.md), [testing](./testing.md), [fail-closed](./fail-closed.md).
+
 # Design readiness + further testing (connex prep)
 
 **Date:** 2026-09-21 (snapshot)  
@@ -15,7 +17,7 @@ license: see LICENSE (Apache-2.0)
 **Current product truth:** [how-it-works.md](./how-it-works.md) · [testing.md](./testing.md) · [fail-closed.md](./fail-closed.md) · [`versions.lock.md`](../versions.lock.md) · [`demo/README.md`](../demo/README.md)
 
 **Inputs (findings):** [modsec-only-retest-hops.md](./findings/modsec-only-retest-hops.md) · [grpc-websocket-assumption-test.md](./findings/grpc-websocket-assumption-test.md) · [http-grpc-websocket-scope.md](./findings/http-grpc-websocket-scope.md) · [buffered-downsides.md](./findings/buffered-downsides.md) · [coraza-envoy-issues.md](./findings/coraza-envoy-issues.md) · [approach-options.md](./findings/approach-options.md) · preferences-* (lab notes outside this tree; readiness memo was never checked in)  
-**Lab:** `modsec-envoy-experiement` (reference). **Product repo:** private `envoy-modsec-connex`.  
+**Lab:** `modsec-envoy-experiement` (reference). **Product repo:** private `modsec-envoy-connector` (formerly `envoy-modsec-connex`).  
 **Coraza:** reference only. **Fail-closed:** absolute.
 
 BoE pages reviewed (no catalog submit):
@@ -107,7 +109,7 @@ Target product type: **`ext_proc`** (out-of-process gRPC), **not** Rust/Go dynam
 
 ### License note
 
-Connex is **Apache License 2.0** (see `LICENSE` / `NOTICE`). BoE tree is also Apache-2.0. If catalog contribution is ever pursued, confirm attribution and any dual-license needs before submit (separate decision).
+This connector is **Apache License 2.0** (see `LICENSE` / `NOTICE`). BoE tree is also Apache-2.0. If catalog contribution is ever pursued, confirm attribution and any dual-license needs before submit (separate decision).
 
 ---
 

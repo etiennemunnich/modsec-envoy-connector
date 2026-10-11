@@ -77,4 +77,4 @@ Use when you need lower whole-body buffering at Envoy and accept that benign Con
 
 Risks: higher message count; open dual-filter + trailer issues ([envoy#47449](https://github.com/envoyproxy/envoy/issues/47449)); STREAMED + WebSocket hang reported against Envoy 1.39.1 ([envoy#47048](https://github.com/envoyproxy/envoy/issues/47048)). The runtime pin is v1.39.3; this page does not claim that hang was re-measured on the pin.
 
-**Coverage (post-[#32](https://github.com/etiennemunnich/envoy-modsec-connex/pull/32)):** Hosted `e2e-streamed` product suites (smoke / fail-closed / go-ftw-smoke). Local tip go-ftw full **5091/0**. `crs-full` × STREAMED is **matrix-wired**; hosted go-ftw-full green on tip is not yet shown.
+**Coverage:** Hosted `e2e-streamed` product suites (smoke / fail-closed / go-ftw-smoke). Local tip go-ftw full **5091/0**. `crs-full` × STREAMED is **matrix-wired**; hosted go-ftw-full green on tip is not yet shown.

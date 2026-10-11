@@ -6,9 +6,11 @@
 
 ## What remains
 
-GitHub Release + git tag `v0.1.0-rc.1` are **already deleted** (API 404). Accidental / stale **GHCR** container versions may still exist under:
+GitHub Release + git tag `v0.1.0-rc.1` are **already deleted** (API 404). Accidental / stale **GHCR** container versions may still exist under the **predecessor** package name:
 
 `ghcr.io/etiennemunnich/envoy-modsec-connex`
+
+New releases from this repository publish `ghcr.io/etiennemunnich/modsec-envoy-connector` (`GITHUB_REPOSITORY` in the release workflow). The cleanup script defaults still target the old package where the stale tags live.
 
 Allowlisted targets (hard-coded in the script — nothing else is deleted):
 
@@ -58,4 +60,4 @@ Then re-run `./scripts/ghcr-delete-stale.sh` (dry-run) and, when the list looks 
 
 ## Issue
 
-Tracking: [#9](https://github.com/etiennemunnich/envoy-modsec-connex/issues/9) — **GHCR: delete stale v0.1.0-rc.1 and sha-770ab01-* versions**.
+Tracking (predecessor repo): [#9](https://github.com/etiennemunnich/envoy-modsec-connex/issues/9) — **GHCR: delete stale v0.1.0-rc.1 and sha-770ab01-* versions** on package `envoy-modsec-connex`. New releases on this repo publish `ghcr.io/etiennemunnich/modsec-envoy-connector`.

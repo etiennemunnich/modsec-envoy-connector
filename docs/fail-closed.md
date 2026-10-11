@@ -1,15 +1,6 @@
----
-title: Fail-closed model - ModSec x Envoy ext_proc
-audience: operators + contributors
-date: 2026-09-27
-pins: Envoy v1.39.3 · libmodsecurity v3.0.17 · failure_mode_allow:false · message_timeout 2s
-license: see LICENSE
-status: Product contract; live drills in demo/scripts/fail-closed.sh and demo/scripts/fail-modes.sh (HTTP/1.1 + HTTP/2)
----
-
 # Fail-closed
 
-**One sentence:** If ModSecurity cannot produce a trustworthy allow/deny decision, the request **must not** reach upstream. That is a different class from a **rule deny (403)**. Envoy alone cannot cover every class.
+If ModSecurity cannot produce a trustworthy allow/deny decision, the request **must not** reach upstream. That is a different class from a **rule deny (403)**. Envoy alone cannot cover every class.
 
 Cross-links: [how-it-works.md](./how-it-works.md) · [testing.md](./testing.md) · pins in [`versions.lock.md`](../versions.lock.md).
 

@@ -1,4 +1,8 @@
-# Built on Envoy: alignment notes
+# Built on Envoy: alignment notes (internal archive)
+
+> **Archive.** Catalog prep only. **Do not submit** to Built on Envoy until Etienne asks.
+> Product docs: [docs/modes](../modes/README.md).
+
 
 **Do not submit to the Built on Envoy catalog from this repository until Etienne explicitly asks.**
 

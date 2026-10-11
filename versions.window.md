@@ -1,4 +1,4 @@
-# Version window — envoy-modsec-connex
+# Version window — modsec-envoy-connector
 
 Candidate versions to probe before bumping a pin. The pins themselves live in [`versions.lock.md`](./versions.lock.md); this file only lists what the probes cover.
 

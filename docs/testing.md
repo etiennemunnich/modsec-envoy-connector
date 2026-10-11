@@ -1,15 +1,6 @@
----
-title: Testing — layers, gates, where each runs
-audience: operators + contributors
-date: 2026-09-27
-pins: Envoy v1.39.3 · libmodsecurity v3.0.17 · CRS v4.30.0 · failure_mode_allow:false
-license: see LICENSE
-status: GitHub-hosted CI on x86_64 + aarch64 — Rust gate and live Envoy suites on every main push; daily stable-release watch, weekly version window, on-demand ~12-month axis matrix, monthly full CRS
----
-
 # Testing
 
-**One sentence:** every push to `main` runs, natively on GitHub-hosted `x86_64` and `aarch64` Ubuntu, the Rust gate (fmt, clippy, tests with libmodsecurity linked) **and** the live Envoy → connector → libmodsecurity + CRS suites (smoke, fail-closed, the HTTP/1.1 + HTTP/2 fail-mode matrix, hop-trace, go-ftw smoke); new stable Envoy / libmodsecurity / CRS releases are detected daily and tested on both architectures, the last three stables of each axis weekly, an optional ~12-month axis-at-a-time matrix on demand, and the full CRS regression monthly.
+Every push to `main` runs, natively on GitHub-hosted `x86_64` and `aarch64` Ubuntu, the Rust gate (fmt, clippy, tests with libmodsecurity linked) **and** the live Envoy → connector → libmodsecurity + CRS suites (smoke, fail-closed, the HTTP/1.1 + HTTP/2 fail-mode matrix, hop-trace, go-ftw smoke). New stable Envoy / libmodsecurity / CRS releases are detected daily and tested on both architectures; the last three stables of each axis weekly; an optional ~12-month axis-at-a-time matrix on demand; and the full CRS regression monthly.
 
 Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-closed.md) · [ash.md](./ash.md) · [`versions.lock.md`](../versions.lock.md) · [`versions.window.md`](../versions.window.md) · [`versions.one-year.yaml`](../versions.one-year.yaml) · [findings/one-year-stable-matrix.md](./findings/one-year-stable-matrix.md).
 
@@ -96,11 +87,11 @@ GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarc
 | `stable-window` | weekly (Mon 04:23 UTC), dispatch (`depth`) | pins + the last 3 stables of each axis + the CRS LTS (`CRS_LTS_TAG`) when outside that window, one axis moved per cell (8 cells); libmodsecurity below v3.0.13 is skipped; live suites | issue `stable-window: failing cells` on failure, closed when green |
 | `stable-one-year` | **dispatch only** (`strategy`, `days`, `profile`, `dry_run`, `confirm_cartesian`) — no cron | ~12-month stables (`published_at`, never `releases/latest`): default **axis** (~19 cells × 2 arches, ~90–130 warm job-min); optional **diagonal**; **cartesian** only with `confirm_cartesian=yes` (~176 cells / ~800+ min — never schedule). Profiles: `smoke` … `full-cell`. Empty matrix fails. | issue `stable-one-year: failing cells` on failure, closed when green; dry_run prints the plan only |
 | `crs-full` | monthly (7th, 03:41 UTC), dispatch | full CRS go-ftw at the pins for **BUFFERED + STREAMED + FULL_DUPLEX_STREAMED** × both arches | issue `crs-full: go-ftw failing` on failure, closed when green |
-| `release` | tag `vX.Y.Z` (`vX.Y.Z-rc.N` = pre-release); dispatch | tags only: `gate` = the tag commit is on `main` and has green `ci-ok`, `pin-check`, `rust-quality` × arch, `msrv`, `e2e-pin` × arch. Then release build per arch → `ext-proc-modsec-<ver>-linux-{x86_64,aarch64}.tar.gz` (+ `.sha256`; bundles `libmodsecurity.so`), per-arch image pushed by digest, multi-arch `ghcr.io/<owner>/envoy-modsec-connex:<ver>` from both digests, GitHub Release (tag only); build provenance attested once the repo is public. A dispatch skips the gate and the Release but **does push** the image, tagged `sha-<short>` | Release page |
+| `release` | tag `vX.Y.Z` (`vX.Y.Z-rc.N` = pre-release); dispatch | tags only: `gate` = the tag commit is on `main` and has green `ci-ok`, `pin-check`, `rust-quality` × arch, `msrv`, `e2e-pin` × arch. Then release build per arch → `ext-proc-modsec-<ver>-linux-{x86_64,aarch64}.tar.gz` (+ `.sha256`; bundles `libmodsecurity.so`), per-arch image pushed by digest, multi-arch `ghcr.io/<owner>/modsec-envoy-connector:<ver>` from both digests, GitHub Release (tag only); build provenance attested once the repo is public. A dispatch skips the gate and the Release but **does push** the image, tagged `sha-<short>` | Release page |
 
 ### Schedule proof (cron configured + last proven run)
 
-A schedule is proven only by a run with `event=schedule` (`gh run view <id> --json event,conclusion,headSha`). `workflow_dispatch` proves the same job graph before the cron fires; it is **not** a schedule proof. `scripts/check-workflows.sh` asserts both workflows keep their cron + `workflow_dispatch`.
+Historical Actions links below point at the predecessor private repo `envoy-modsec-connex` (those run IDs are not on this repository). A schedule is proven only by a run with `event=schedule` (`gh run view <id> --json event,conclusion,headSha`). `workflow_dispatch` proves the same job graph before the cron fires; it is **not** a schedule proof. `scripts/check-workflows.sh` asserts both workflows keep their cron + `workflow_dispatch`.
 
 | Workflow | Cron (UTC) | Last proven run | `event` | `conclusion` | `headSha` |
 |----------|------------|-----------------|---------|--------------|-----------|
@@ -133,7 +124,7 @@ Every live suite must also reach a floor of passing checks, not just exit 0: smo
 
 - **go-ftw is HTTP/1.x only** and judges by status code. A green run says nothing about HTTP/2; the H2 evidence is `fail-modes.sh --proto h2`.
 - **Class 3** (per-request engine error mid-exchange) cannot be injected through a well-behaved Envoy; see [fail-closed.md](./fail-closed.md#why-class-3-has-no-live-envoy-drill). Covered by gRPC tests (real `EngineError` + test-only `fail-inject` feature off in the product binary), floor ≥ 8; `fail-modes.sh` runs them.
-- **STREAMED** matches BUFFERED on hosted product suites (smoke, fail-closed, fail-modes, hop-trace, go-ftw smoke, trailers). Full CRS (`go-ftw-full`) is hosted for STREAMED (and FULL_DUPLEX) via the monthly `crs-full` matrix — Envoy supports STREAMED; Connex no longer treats full CRS as BUFFERED-only policy. Phase-2/4 rules still decide at EOS.
+- **STREAMED** matches BUFFERED on hosted product suites (smoke, fail-closed, fail-modes, hop-trace, go-ftw smoke, trailers). Full CRS (`go-ftw-full`) is hosted for STREAMED (and FULL_DUPLEX) via the monthly `crs-full` matrix — Envoy supports STREAMED; the connector no longer treats full CRS as BUFFERED-only policy. Phase-2/4 rules still decide at EOS.
 - **NONE** is Envoy's default BodySendMode: stock `BODY_MODE=NONE` / `envoy-none.yaml` + weekly `e2e-lab` `e2e-none` (headers smoke + fail-closed). Body CRS / go-ftw body suites are **n/a**; body attacks must reach origin.
 - **BUFFERED_PARTIAL** stays honesty-only (under-limit CRS + soft-limit miss). Never claim full CRS.
 - **FULL_DUPLEX_STREAMED** product suites match STREAMED; hang→504 is **N/A** (Envoy disables `message_timeout`). Do not fake hang tests. Full CRS via `crs-full` matrix.

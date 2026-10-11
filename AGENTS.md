@@ -1,4 +1,4 @@
-# Agent standards - envoy-modsec-connex
+# Agent standards — modsec-envoy-connector
 
 Mandatory for coding agents working in this repo. Keep it short; deep tables live in `docs/` and lab notes outside this tree.
 

@@ -18,9 +18,9 @@ Open any markdown file under `docs/modes/` on github.com. GitHub Flavored Markdo
 ## GitHub Wiki (optional mirror)
 
 ```bash
-git clone https://github.com/etiennemunnich/envoy-modsec-connex.wiki.git
+git clone https://github.com/etiennemunnich/modsec-envoy-connector.wiki.git
 # copy *.md from docs/modes/ (rename README.md → Home.md if you want a wiki Home)
-git -C envoy-modsec-connex.wiki add -A && git -C envoy-modsec-connex.wiki commit -m "Sync docs/modes Pages" && git -C envoy-modsec-connex.wiki push
+git -C modsec-envoy-connector.wiki add -A && git -C modsec-envoy-connector.wiki commit -m "Sync docs/modes Pages" && git -C modsec-envoy-connector.wiki push
 ```
 
 Enable the wiki under **Settings → Wikis** if it is off. In-repo `docs/modes/` remains the reviewable source of truth for PRs.
