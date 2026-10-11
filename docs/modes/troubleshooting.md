@@ -9,7 +9,7 @@ Quick status decode. Fail-closed detail: [Fail-closed](./fail-closed.md). Path d
 | **403** | CRS / demo **rule deny** | No (request path) | Connector log + ModSecurity audit log for rule id; not a failure |
 | **500** | Fail-closed: connector down, stream error, bad rules, engine/protocol error | No | `failure_mode_allow` must be false; `/healthz`; connector process; rules load |
 | **504** | Connector stalled past Envoy `message_timeout` (demo 2s) | No | Connector stuck / overloaded. **N/A under FULL_DUPLEX** (`message_timeout` off) |
-| **503** | Usually **not** Connex fail-closed: upstream / Envoy cluster / overload | Maybe | Envoy admin / upstream cluster health; do not treat as ModSec deny |
+| **503** | Usually **not** connector fail-closed: upstream / Envoy cluster / overload | Maybe | Envoy admin / upstream cluster health; do not treat as ModSec deny |
 
 **Deny ≠ fail:** **403** means the WAF decided. **500** / **504** means it could not decide.
 

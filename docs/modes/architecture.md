@@ -1,6 +1,6 @@
 # Architecture
 
-How an HTTP exchange reaches ModSecurity under envoy-modsec-connex.
+How an HTTP exchange reaches ModSecurity under **modsec-envoy-connector**.
 
 ## Pieces
 
@@ -79,4 +79,4 @@ sequenceDiagram
   end
 ```
 
-Deeper Pages entry: [How it works](./how-it-works.md). Fail-closed: [Fail-closed](./fail-closed.md). Full repo docs: [how-it-works](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/how-it-works.md), [fail-closed](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/fail-closed.md).
+Deeper Pages entry: [How it works](./how-it-works.md). Fail-closed: [Fail-closed](./fail-closed.md). Full repo docs: [how-it-works](../how-it-works.md), [fail-closed](../fail-closed.md).

@@ -8,7 +8,7 @@ Full-duplex streamed body path. The processor must answer body messages with `Bo
 
 ## Flow with this filter + ModSecurity / CRS
 
-Connex sets `--body-reply streamed` automatically for this mode. The connector **buffers chunks (Silent)** and only emits `StreamedBodyResponse` after ModSec allows, so request-body deny still keeps the origin at +0 (unlike naive STREAMED early Continues).
+The demo sets `--body-reply streamed` automatically for this mode. The connector **buffers chunks (Silent)** and only emits `StreamedBodyResponse` after ModSec allows, so request-body deny still keeps the origin at +0 (unlike naive STREAMED early Continues).
 
 | Phase | Runs? | Notes |
 |-------|-------|-------|
@@ -78,7 +78,7 @@ flowchart TB
 
 ## When to use
 
-Use when you need the duplex wire protocol and still want request-body deny before origin (Connex Silent buffer helps). Full CRS is locally proven.
+Use when you need the duplex wire protocol and still want request-body deny before origin (Silent buffer helps). Full CRS is locally proven.
 
 Costs: open upstream duplex lifecycle bugs; historically higher RAM reports. `message_timeout` is off for duplex streaming, so the usual stall→504 timeout check does not apply.
 

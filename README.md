@@ -11,7 +11,7 @@ Pinned versions: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0** 
 
 **Repository:** [github.com/etiennemunnich/modsec-envoy-connector](https://github.com/etiennemunnich/modsec-envoy-connector)
 
-Developed as [`envoy-modsec-connex`](https://github.com/etiennemunnich/envoy-modsec-connex); the public project name is **modsec-envoy-connector**.
+Formerly developed under the private name [`envoy-modsec-connex`](https://github.com/etiennemunnich/envoy-modsec-connex).
 
 ## Getting started
 

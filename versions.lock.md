@@ -1,4 +1,4 @@
-# Pinned versions - envoy-modsec-connex
+# Pinned versions — modsec-envoy-connector
 
 Source of truth for Envoy, libmodsecurity, CRS, and related tools used by this tree.
 Product releases use git tags `vX.Y.Z` + Release notes that quote these axes, **not** GitHub issue labels as versions.

@@ -4,9 +4,9 @@ This is **not** “gRPC routes in the demo.” It is Envoy’s `BodySendMode.GRP
 
 ## Status on pinned Envoy v1.39.3
 
-Marked `[#not-implemented-hide:]` in the committed proto, which was generated from the v1.39.1 API closure. The v1.39.3 runtime pin does not add a Connex YAML, CI cell, or CRS claim for this mode.
+Marked `[#not-implemented-hide:]` in the committed proto, which was generated from the v1.39.1 API closure. The v1.39.3 runtime pin does not add a connector YAML, CI cell, or CRS claim for this mode.
 
-| Surface | Connex policy |
+| Surface | Connector policy |
 |---------|----------------|
 | Demo YAML | **None** |
 | `BODY_MODE=` | **None** |
@@ -17,7 +17,7 @@ If it were implemented, Envoy would also disable `message_timeout` (same class a
 
 ## Not the same as demo gRPC
 
-| Topic | What Connex ships |
+| Topic | What this connector ships |
 |-------|-------------------|
 | gRPC **routes** / protobuf bodies | Headers-only path (`envoy-grpc.yaml`, body `NONE`). Not protobuf CRS. |
 | `BodySendMode.GRPC` | Unimplemented upstream (document only) |
@@ -25,7 +25,7 @@ If it were implemented, Envoy would also disable `message_timeout` (same class a
 ```mermaid
 flowchart LR
   A[BodySendMode.GRPC enum 5] --> B{Implemented on pinned Envoy v1.39.3?}
-  B -->|no| C[Out of scope for Connex]
+  B -->|no| C[Out of scope for this connector]
   C --> D[No YAML / CI / CRS claim]
   E[Demo gRPC listener] --> F[Body mode NONE]
   F --> G[Header / metadata inspection only]

@@ -2,7 +2,7 @@
 
 If ModSecurity cannot produce a trustworthy allow/deny decision, the request **must not** reach upstream as OK. That is a different class from a **rule deny (403)**.
 
-Full contract and drills: [docs/fail-closed.md](https://github.com/etiennemunnich/envoy-modsec-connex/blob/main/docs/fail-closed.md).
+Full contract and drills: [docs/fail-closed.md](../fail-closed.md).
 
 ## Deny ≠ fail
 

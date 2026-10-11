@@ -7,8 +7,8 @@ Dependency detail: [Install / build](./install.md). Suite coverage: [Testing sui
 ## 1. Clone
 
 ```bash
-git clone https://github.com/etiennemunnich/envoy-modsec-connex.git
-cd envoy-modsec-connex
+git clone https://github.com/etiennemunnich/modsec-envoy-connector.git
+cd modsec-envoy-connector
 ```
 
 ## 2. Prerequisites (once)
