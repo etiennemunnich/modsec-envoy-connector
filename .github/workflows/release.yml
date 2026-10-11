@@ -46,7 +46,8 @@ jobs:
             -q '.check_runs[] | select(.conclusion == "success") | .name')"
           for n in "ci-ok" "pin-check" "rust-quality (x86_64)" "rust-quality (aarch64)" "msrv (rust-version)" \
                    "e2e-pin / e2e (x86_64, BUFFERED)" "e2e-pin / e2e (aarch64, BUFFERED)" \
-                   "e2e-streamed / e2e (x86_64, STREAMED)" "e2e-streamed / e2e (aarch64, STREAMED)"; do
+                   "e2e-streamed / e2e (x86_64, STREAMED)" "e2e-streamed / e2e (aarch64, STREAMED)" \
+                   "e2e-full-duplex / e2e (x86_64, FULL_DUPLEX_STREAMED)" "e2e-full-duplex / e2e (aarch64, FULL_DUPLEX_STREAMED)"; do
             grep -qxF "${n}" <<<"${got}" || { echo "::error::no green '${n}' check on ${GITHUB_SHA::7} (dispatch ci on it first)"; exit 1; }
             echo "green: ${n}"
           done

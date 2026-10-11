@@ -10,14 +10,15 @@
 #   ./scripts/ghcr-delete-stale.sh --all-versions  # read-only dump of every version
 #   ./scripts/ghcr-delete-stale.sh --delete        # delete allowlisted ids only
 #
-# Override package identity (defaults match this repo's GHCR package):
+# Defaults match this repo's GHCR package (modsec-envoy-connector).
+# Predecessor private package (stale v0.1.0-rc.1 allowlist) — override:
 #   OWNER=etiennemunnich PACKAGE=envoy-modsec-connex ./scripts/ghcr-delete-stale.sh
 #
 # Requires: gh (logged in), jq. No secrets in this script.
 set -euo pipefail
 
 OWNER="${OWNER:-etiennemunnich}"
-PACKAGE="${PACKAGE:-envoy-modsec-connex}"
+PACKAGE="${PACKAGE:-modsec-envoy-connector}"
 API_BASE="/users/${OWNER}/packages/container/${PACKAGE}/versions"
 
 # Exact gh auth refresh the human must run when packages scopes are missing.

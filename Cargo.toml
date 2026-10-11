@@ -1,4 +1,4 @@
-# envoy-modsec-connex — Envoy ext_proc → libmodsecurity connector.
+# modsec-envoy-connector — Envoy ext_proc → libmodsecurity connector.
 #
 # Out-of-process ExternalProcessor gRPC server (not an Envoy dynamic module).
 # `modsec-engine` owns all FFI; `ext-proc-modsec` is the product binary.
