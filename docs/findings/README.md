@@ -1,4 +1,9 @@
-# Findings index
+# Findings index (internal archive)
+
+> **Archive.** Lab and design memos. Not part of the product docs face.
+> Start with [docs/modes](../modes/README.md), [how-it-works](../how-it-works.md), [testing](../testing.md).
+> GHCR cleanup (ops): [ghcr-stale-tags.md](./ghcr-stale-tags.md) via CONTRIBUTING.
+
 
 Design notes and measured tradeoffs that sit behind the product docs. Live proofs stay in `docs/testing.md` and the demo suites.
 

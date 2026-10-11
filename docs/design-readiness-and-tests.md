@@ -6,6 +6,8 @@ status: Historical prep snapshot. Current product truth is how-it-works / testin
 license: see LICENSE (Apache-2.0)
 ---
 
+**Archive.** Historical prep snapshot. Not product docs. See [how-it-works](./how-it-works.md), [testing](./testing.md), [fail-closed](./fail-closed.md).
+
 # Design readiness + further testing (connex prep)
 
 **Date:** 2026-09-21 (snapshot)  
