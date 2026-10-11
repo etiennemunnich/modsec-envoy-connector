@@ -53,6 +53,8 @@ Default body mode is BUFFERED. Other modes are in [docs/modes](./docs/modes/READ
 | [Fail-closed](./docs/fail-closed.md) | When the connector or engine cannot decide |
 | [Testing](./docs/testing.md) | How the project is tested |
 | [Security scan (ASH)](./docs/ash.md) | Report-only scan and how to run it |
+| [SECURITY.md](./SECURITY.md) | Vulnerability reporting (private) |
+| [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) | Contributor Covenant |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Build from source and contribute |
 
 Copyright © 2026 Etienne Munnich. Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE).
