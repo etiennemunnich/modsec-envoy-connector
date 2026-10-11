@@ -11,6 +11,7 @@
 - [ ] Live suites if behavior / demo / fail-mode changed — note Mac path or Actions URL (`event`, `conclusion`, `headSha`)
 - [ ] **`ci-ok` green on both arches** for this PR head before squash-merge
 - [ ] README stays product-only; agent/CI detail in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
+- [ ] User-facing or release-facing doc change → `CHANGELOG.md` `[Unreleased]` updated when substantive
 
 ## Merge
 

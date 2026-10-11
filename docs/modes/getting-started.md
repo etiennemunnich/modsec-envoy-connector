@@ -83,6 +83,8 @@ Optional next steps after smoke is green:
 ./demo/scripts/hop-trace.sh
 ```
 
+Early-tester sign-off (smoke + fail-closed + checklist): [UAT](./uat.md).
+
 ## 5. Down
 
 ```bash

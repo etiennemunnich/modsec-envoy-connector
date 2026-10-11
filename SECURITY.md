@@ -3,11 +3,13 @@
 ## Supported Versions
 
 Security fixes land on the latest release of **modsec-envoy-connector** and on `main`.
+While the project is in **0.1 alpha**, treat tags as early-testing artifacts: fixes prefer `main` tip; see [`CHANGELOG.md`](./CHANGELOG.md).
 
 | Version | Supported |
 | ------- | --------- |
 | Latest release | :white_check_mark: |
 | `main` tip | :white_check_mark: (pre-release / development) |
+| `v0.1.0-alpha.*` | :white_check_mark: (early testing only; not production) |
 | Older releases | :x: unless a release notes line says otherwise |
 
 Pinned Envoy / libmodsecurity / CRS versions for a given release are listed in that release and in `versions.lock.md`. Report against the pins you actually ran.

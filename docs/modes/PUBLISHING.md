@@ -1,6 +1,6 @@
 # Publishing these pages
 
-Includes getting started, install/build, how-it-works / fail-closed / config / troubleshooting (thin Pages entries), testing suite, the ASH scan page, architecture, and the body-mode pages.
+Includes getting started, early-testing/UAT, install/build, how-it-works / fail-closed / config / troubleshooting (thin Pages entries), testing suite, the ASH scan page, architecture, and the body-mode pages.
 
 ## Already works without Pages
 

@@ -1,6 +1,7 @@
 * [Home](README.md)
 * Start here
   * [Getting started](getting-started.md)
+  * [Early testing / UAT](uat.md)
   * [Install / build](install.md)
   * [How it works](how-it-works.md)
   * [Fail-closed](fail-closed.md)

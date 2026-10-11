@@ -9,6 +9,7 @@ Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 | Page | Topic |
 |------|--------|
 | [Getting started](./getting-started.md) | Clone, pin-safe install, `up.sh`, smoke, what “working” looks like |
+| [Early testing / UAT](./uat.md) | Sign-off path for 0.1 alpha early testers |
 | [Install / build](./install.md) | Prerequisites, connector build, demo knobs, release image, Envoy wiring |
 | [How it works](./how-it-works.md) | Request path and what is / isn’t inspected (thin; links the full repo doc) |
 | [Fail-closed](./fail-closed.md) | 403 vs 500/504; who owns each class |
@@ -33,11 +34,11 @@ Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 
 | Mode | What Envoy does | Request body deny vs origin | CRS response (phase 3/4) | CRS coverage | Demo YAML | CI |
 |------|-----------------|----------------------------|---------------------------|--------------|-----------|-----|
-| **NONE** | Headers only; bodies never sent | Body attacks **reach** origin | Headers yes; **body no** | Body CRS **n/a** | `envoy-none.yaml` | `e2e-none` |
-| **BUFFERED** | Buffer full body; one `HttpBody` at EOS | Deny **before** origin | **Yes** (demo sends response bodies) | Smoke + hosted **full** (proven) | `envoy.yaml` | `e2e-pin` + `crs-full` |
-| **STREAMED** | Chunks as seen; reply per chunk | Early chunks may move before EOS phase-2 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-streamed.yaml` | `e2e-streamed`; `crs-full` wired |
-| **BUFFERED_PARTIAL** | Buffer up to soft limit; over-limit may skip body | Under-limit like BUFFERED; trailing over-limit can miss | **Yes** when body messages arrive | **Under-limit only** | `envoy-buffered-partial.yaml` | `e2e-buffered-partial` |
-| **FULL_DUPLEX_STREAMED** | Duplex stream; trailers **SEND**; `message_timeout` **off** | Connector holds until allow (`--body-reply streamed`); deny keeps origin +0 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-full-duplex.yaml` | `e2e-full-duplex`; `crs-full` wired |
+| **NONE** | Headers only; bodies never sent | Body attacks **reach** origin | Headers yes; **body no** | Body CRS **n/a** | `envoy-none.yaml` | `e2e-lab` → `e2e-none` (weekly) |
+| **BUFFERED** | Buffer full body; one `HttpBody` at EOS | Deny **before** origin | **Yes** (demo sends response bodies) | Smoke + hosted **full** (proven) | `envoy.yaml` | `ci` → `e2e-pin` + `crs-full` |
+| **STREAMED** | Chunks as seen; reply per chunk | Early chunks may move before EOS phase-2 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-streamed.yaml` | `ci` → `e2e-streamed`; `crs-full` wired |
+| **BUFFERED_PARTIAL** | Buffer up to soft limit; over-limit may skip body | Under-limit like BUFFERED; trailing over-limit can miss | **Yes** when body messages arrive | **Under-limit only** | `envoy-buffered-partial.yaml` | `e2e-lab` → `e2e-buffered-partial` (weekly) |
+| **FULL_DUPLEX_STREAMED** | Duplex stream; trailers **SEND**; `message_timeout` **off** | Connector holds until allow (`--body-reply streamed`); deny keeps origin +0 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-full-duplex.yaml` | `ci` → `e2e-full-duplex`; `crs-full` wired |
 | **GRPC** | Not implemented on pinned Envoy v1.39.3 | n/a | n/a | Out of scope | n/a | n/a |
 
 Sources: [How it works](./how-it-works.md), [Testing suite](./testing-suite.md). Full repo docs: [how-it-works](../how-it-works.md), [testing](../testing.md).
@@ -58,6 +59,7 @@ Sources: [How it works](./how-it-works.md), [Testing suite](./testing-suite.md).
 ```mermaid
 flowchart LR
   idx[modes README] --> gs[getting started]
+  idx --> uat[UAT alpha]
   idx --> inst[install]
   idx --> how[how it works]
   idx --> fc[fail-closed]

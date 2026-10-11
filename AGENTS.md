@@ -70,7 +70,7 @@ This repository is private on GitHub Free: 2,000 minutes a month across all priv
 
 ## Docs
 
-On **substantive** architecture / fail-mode / protocol / CI / pin changes: update **`README.md`** (and product how-it-works when this repo owns it). Prefer honesty over completeness theater.
+On **substantive** architecture / fail-mode / protocol / CI / pin changes: update **`README.md`** (and product how-it-works when this repo owns it). Prefer honesty over completeness theater. Release-facing notes go in **`CHANGELOG.md`**; early-tester path is **`docs/modes/uat.md`**.
 
 ## License
 
