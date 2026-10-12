@@ -7,7 +7,7 @@ Quick status decode. Fail-closed detail: [Fail-closed](./fail-closed.md). Path d
 | Client status | Usual cause | Origin hit? | What to check |
 |---------------|-------------|-------------|---------------|
 | **403** | CRS / demo **rule deny** | No (request path) | Connector log + ModSecurity audit log for rule id; not a failure |
-| **500** | Fail-closed: connector down, stream error, bad rules, engine/protocol error | No | `failure_mode_allow` must be false; `/healthz`; connector process; rules load |
+| **500** | Fail-closed: connector down, stream error, bad rules, engine/protocol error, ext_proc message over `--max-grpc-message-bytes`, FULL_DUPLEX held body over `--max-held-body-bytes` | No | `failure_mode_allow` must be false; `/healthz`; connector process; rules load; connector `warn` log `action=fail_closed` (names the limit); `ext_proc_stream_errors_total` |
 | **504** | Connector stalled past Envoy `message_timeout` (demo 2s) | No | Connector stuck / overloaded. **N/A under FULL_DUPLEX** (`message_timeout` off) |
 | **503** | Usually **not** connector fail-closed: upstream / Envoy cluster / overload | Maybe | Envoy admin / upstream cluster health; do not treat as ModSec deny |
 
@@ -21,6 +21,8 @@ Quick status decode. Fail-closed detail: [Fail-closed](./fail-closed.md). Path d
 | Response leak marker → **403** | Phase 4 rule deny |
 | Connector killed → **500**, `failure_mode_allowed` stays 0 | Fail-closed class 1 |
 | Invalid SecLang / missing Include at boot → connector exits, Envoy **500** | Fail-closed class 2 |
+| Rules files that define 0 rules → connector exits at boot (`define 0 rules`) | Fail-closed class 2 |
+| Large body (> 4 MiB default) → **500**, connector logs `read error` / `OutOfRange` | Over `--max-grpc-message-bytes`; raise it (and Envoy's buffer limit) to inspect larger bodies |
 | Stall under BUFFERED/STREAMED → **504** after ~2s | Fail-closed timeout |
 | Same stall under FULL_DUPLEX does **not** become 504 | Expected: timer off |
 

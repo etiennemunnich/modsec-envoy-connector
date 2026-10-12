@@ -61,8 +61,10 @@ Flags (also as env vars):
 |------|-----|---------|-------|
 | `--listen` | `EXT_PROC_LISTEN` | `127.0.0.1:18081` | Envoy `ext_proc` gRPC target |
 | `--metrics-listen` | `EXT_PROC_METRICS_LISTEN` | `127.0.0.1:18082` | `/metrics`, `/healthz` |
-| `--modsec-rules` | `MODSEC_RULES` | *(required)* | Files in load order (repeatable or comma-separated) |
+| `--modsec-rules` | `MODSEC_RULES` | *(required)* | Files in load order (repeatable or comma-separated). Files that define **0** rules in total → connector exits |
 | `--body-reply` | `EXT_PROC_BODY_REPLY` | `common` | `common` for BUFFERED / STREAMED / PARTIAL / NONE; `streamed` for **FULL_DUPLEX_STREAMED** (`StreamedBodyResponse`) |
+| `--max-grpc-message-bytes` | `EXT_PROC_MAX_GRPC_MESSAGE_BYTES` | `4194304` (4 MiB) | Largest ext_proc message the connector reads. A larger one (e.g. a BUFFERED body above it) aborts the stream with `INTERNAL` → Envoy **500**. Raise it with Envoy's buffer limit when large bodies must be inspected |
+| `--max-held-body-bytes` | `EXT_PROC_MAX_HELD_BODY_BYTES` | = `--max-grpc-message-bytes` | FULL_DUPLEX only: body bytes held per direction until the verdict. Over the cap → **500**. Must not exceed `--max-grpc-message-bytes` (the release is one message) |
 
 Logging: `RUST_LOG=…` (default `info`).
 

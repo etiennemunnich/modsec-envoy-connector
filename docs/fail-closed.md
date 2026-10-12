@@ -10,8 +10,8 @@ Cross-links: [how-it-works.md](./how-it-works.md) · [testing.md](./testing.md) 
 
 | # | Class | Who enforces | Default | Client |
 |---|-------|--------------|---------|--------|
-| **1** | Connector process / gRPC stream fail | **Envoy** (`failure_mode_allow: false`) | Fail closed | **500** |
-| **2** | Rules / engine init at boot | **Connector**: refuse listen / exit; healthz not 200 | Refuse service | Envoy **500** |
+| **1** | Connector process / gRPC stream fail (incl. the connector aborting a stream it cannot read) | **Envoy** (`failure_mode_allow: false`) | Fail closed | **500** |
+| **2** | Rules / engine init at boot (incl. a ruleset with 0 rules) | **Connector**: refuse listen / exit; healthz not 200 | Refuse service | Envoy **500** |
 | **3** | Per-request ModSec / FFI `Err` | **Connector**: `ImmediateResponse` **500** | Fail closed | **500** |
 | **4** | Rule intervention (deny) | Connector maps intervention | Policy deny (not “failure”) | **403** typical |
 | **5** | Stall past `message_timeout` | **Envoy** `message_timeout` (lab **2s**) | Fail closed | **504** |
@@ -19,7 +19,7 @@ Cross-links: [how-it-works.md](./how-it-works.md) · [testing.md](./testing.md) 
 
 **Deny ≠ fail:** **403** means the WAF decided; **500** / **504** means the WAF could not decide.
 
-**Never:** `failure_mode_allow: true` on enforcement; Continue after engine error (“connector-lie fail-open”).
+**Never:** `failure_mode_allow: true` on enforcement; Continue after engine error (“connector-lie fail-open”); ending the gRPC stream with status **OK** while Envoy still waits for a verdict. Envoy v1.39 treats an OK close as "processing complete" and forwards what it holds, so an OK close is a Continue. v0.1.0-alpha.1 did exactly that when a message failed to decode (e.g. a body above tonic's 4 MiB limit), which let such a request reach origin uninspected. The connector now aborts with gRPC `INTERNAL` instead.
 
 ---
 
@@ -46,7 +46,8 @@ libmodsecurity (in-process FFI)
 | Class | Proven by | How |
 |-------|-----------|-----|
 | **1** connector killed | live drill, H1 + H2 | `fail-closed.sh`, `fail-modes.sh`: SIGKILL → Envoy **500** for GET, POST and attack requests; origin hit count unchanged; `failure_mode_allowed` stays 0 |
-| **2** bad rules at boot | live drill + unit test | invalid SecLang or a missing `Include` → connector exits non-zero, nothing listens, healthz down, Envoy **500**; `invalid_seclang_is_rejected`, `rules_are_required` |
+| **1** connector aborts the stream | gRPC tests | message above `--max-grpc-message-bytes` → gRPC `INTERNAL`, never OK (`oversize_message_aborts_stream_never_ok`, `oversize_message_never_ok_in_full_duplex`; negative control `raised_message_limit_inspects_large_body` → 403); Envoy half-close with a FULL_DUPLEX body held → `INTERNAL` (`half_close_with_held_body_aborts_stream`); panic → stream reset (`panic_resets_stream_never_ok`); status-0 drop → `ABORTED` (`drop_intervention_aborts_stream`) |
+| **2** bad rules at boot | live drill + unit test | invalid SecLang or a missing `Include` → connector exits non-zero, nothing listens, healthz down, Envoy **500**; `invalid_seclang_is_rejected`, `rules_are_required`; empty or directives-only rules files (0 rules) are refused the same way (`zero_rule_rulesets_are_rejected`) |
 | **3** per-request engine error / protocol violation | gRPC integration tests only (see below) | Mid-exchange `EngineError` after the session is open (test-only fail-inject; phase-order Err; NUL in header) and protocol violations → `ImmediateResponse` **500**, details `modsec_fail_closed`. Floor ≥ **8** tests matching `fails_closed` / `fail_closed` in `crates/ext-proc-modsec/tests/grpc.rs`. Negative control: same request without inject Continues. |
 | **4** rule deny | live, H1 + H2 + tests | `smoke.sh` (BUFFERED + STREAMED), `fail-modes.sh`: SQLi/XSS (URL + body) → **403**, response-body rule → **403**, attack only in the last chunk / DATA frames → **403** |
 | **5** connector hung | live drill, H1 + H2 | SIGSTOP → Envoy **504** after `message_timeout` 2s; origin unchanged |
@@ -64,6 +65,7 @@ So class 3 is proven **only** by gRPC integration tests that drive the same `Exc
 | Same request, inject not armed | Negative control | Continue |
 | Append after body finished / response body before response headers / duplicate response headers / NUL in header | Real `EngineError` from the façade (phase-order / `CString`) | **500** |
 | Body before headers, empty oneof, invalid `:status`, trailers with no session, … | Connector protocol guards → same `fail_closed` | **500** |
+| FULL_DUPLEX body above `--max-held-body-bytes` (`full_duplex_held_body_cap_fails_closed`) | Connector bound on held memory → same `fail_closed` | **500** |
 
 `fail-modes.sh` runs those gRPC tests as its class-3 step and asserts the floor. Do not invent a fake live “engine Err” drill through Envoy.
 
