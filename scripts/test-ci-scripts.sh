@@ -361,6 +361,44 @@ check "tested-tree: a re-run runs everything" tested=false "$(tested env TREE=${
 printf "not json" >"${TMP}/bad.json"
 check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
 
+# --- release-gate.sh: the tag commit is on main and ci.yml is green for it ---
+GSHA=abcdefabcdefabcdefabcdefabcdefabcdefabcd
+mapfile -t gate_required < <(sed -n '/^REQUIRED=(/,/^)/p' "${ROOT}/scripts/release-gate.sh" | grep -o '"[^"]*"' | tr -d '"')
+gate_runs() { # gate_runs <suite id> <conclusion> [repo] [path]
+  local f="${TMP}/gate-runs-${RANDOM}.json"
+  printf '{"workflow_runs":[{"head_sha":"%s","conclusion":"%s","path":"%s","head_repository":{"full_name":"%s"},"check_suite_id":%s,"html_url":"https://x/run"}]}' \
+    "${GSHA}" "$2" "${4:-.github/workflows/ci.yml}" "${3:-o/r}" "$1" >"${f}"
+  echo "${f}"
+}
+gate_checks() { # gate_checks <suite id> <app slug> [name to drop] -> every required check green
+  local f="${TMP}/gate-checks-${RANDOM}.json" n first=1
+  { echo '{"check_runs":['
+    for n in "${gate_required[@]}"; do
+      [[ "${n}" != "${3:-}" ]] || continue
+      [[ "${first}" -eq 1 ]] || echo ','
+      first=0
+      printf '{"name":"%s","conclusion":"success","app":{"slug":"%s"},"check_suite":{"id":%s}}' "${n}" "$2" "$1"
+    done
+    echo ']}'
+  } >"${f}"
+  echo "${f}"
+}
+gate() { # gate <compare status> <runs fixture> <checks fixture> -> exit code
+  SHA="${GSHA}" GITHUB_REPOSITORY=o/r GATE_COMPARE_STATUS="$1" GATE_RUNS_JSON="$2" GATE_CHECKS_JSON="$3" \
+    "${ROOT}/scripts/release-gate.sh" >/dev/null 2>&1 && echo 0 || echo 1
+}
+check "release-gate: requires at least 13 checks" yes "$([[ ${#gate_required[@]} -ge 13 ]] && echo yes || echo no)"
+check "release-gate: on main, ci green"               0 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
+check "release-gate: ancestor of main"                0 "$(gate behind "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
+check "release-gate: not on main (neg)"               1 "$(gate ahead "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
+check "release-gate: ci run failed (neg)"             1 "$(gate identical "$(gate_runs 7 failure)" "$(gate_checks 7 github-actions)")"
+check "release-gate: ci run from a fork (neg)"        1 "$(gate identical "$(gate_runs 7 success someone/fork)" "$(gate_checks 7 github-actions)")"
+check "release-gate: another workflow (neg)"          1 "$(gate identical "$(gate_runs 7 success o/r .github/workflows/x.yml)" "$(gate_checks 7 github-actions)")"
+check "release-gate: checks from another app (neg)"   1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 some-app)")"
+check "release-gate: checks from another suite (neg)" 1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 8 github-actions)")"
+check "release-gate: one e2e check missing (neg)"     1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions 'e2e-full-duplex / e2e (aarch64, FULL_DUPLEX_STREAMED)')")"
+check "release-gate: ci-ok missing (neg)"             1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions ci-ok)")"
+
 # --- demo port remap (placeholders, not chained sed) -----------------------
 # shellcheck source=remap-demo-ports.sh
 source "${ROOT}/scripts/remap-demo-ports.sh"
