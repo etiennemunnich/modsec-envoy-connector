@@ -139,9 +139,6 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: CRS pin for the engine CRS test (versions.lock.md CRS_TAG)
-        run: ./demo/scripts/install-crs.sh
-
       - name: cargo test
         env:
           # crs_allows_root_and_blocks_sqli_when_present fails instead of
