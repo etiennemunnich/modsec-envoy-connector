@@ -25,6 +25,20 @@ Options:
                                streamed — BodyMutation.streamed_response
                                (StreamedBodyResponse) for FULL_DUPLEX_STREAMED.
                                [env: EXT_PROC_BODY_REPLY] [default: common]
+      --max-grpc-message-bytes <N>
+                               Largest ProcessingRequest accepted from Envoy, in bytes.
+                               A larger message (e.g. a BUFFERED body when Envoy's buffer
+                               limit is raised past N) ends the stream with gRPC INTERNAL,
+                               which Envoy (failure_mode_allow: false) answers with 500.
+                               Keep N above Envoy's per_connection_buffer_limit_bytes
+                               plus the header block.
+                               [env: EXT_PROC_MAX_GRPC_MESSAGE_BYTES] [default: 4194304]
+      --max-held-body-bytes <N>
+                               --body-reply streamed only: largest body (per direction)
+                               held until ModSecurity allows it; past N the exchange
+                               fails closed with 500. At most --max-grpc-message-bytes.
+                               [env: EXT_PROC_MAX_HELD_BODY_BYTES]
+                               [default: --max-grpc-message-bytes]
   -h, --help                   Print help
   -V, --version                Print version
 
@@ -33,6 +47,11 @@ Logging: RUST_LOG=<level>[,<target>=<level>...] (default info).
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:18081";
 const DEFAULT_METRICS_LISTEN: &str = "127.0.0.1:18082";
+/// tonic's own default decode limit; above Envoy's default 1 MiB buffer limit.
+pub const DEFAULT_MAX_GRPC_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Outbound messages may exceed the inbound limit by this much, so a held
+/// body of `max_held_body_bytes` always fits in one `StreamedBodyResponse`.
+pub const REPLY_ENVELOPE_BYTES: usize = 64 * 1024;
 
 /// Wire shape used when Continue-answering an `HttpBody` message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -72,6 +91,34 @@ pub struct Config {
     pub modsec_rules: Vec<PathBuf>,
     /// Continue shape for body messages — must match Envoy `request_body_mode`.
     pub body_reply: BodyReply,
+    pub limits: Limits,
+}
+
+/// Per-stream size bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// tonic `max_decoding_message_size`; outbound is this plus
+    /// [`REPLY_ENVELOPE_BYTES`].
+    pub max_grpc_message_bytes: usize,
+    /// `BodyReply::Streamed`: bytes held per direction before failing closed.
+    /// Never above `max_grpc_message_bytes`.
+    pub max_held_body_bytes: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_grpc_message_bytes: DEFAULT_MAX_GRPC_MESSAGE_BYTES,
+            max_held_body_bytes: DEFAULT_MAX_GRPC_MESSAGE_BYTES,
+        }
+    }
+}
+
+impl Limits {
+    pub fn max_encoding_message_bytes(&self) -> usize {
+        self.max_grpc_message_bytes
+            .saturating_add(REPLY_ENVELOPE_BYTES)
+    }
 }
 
 /// Outcome of parsing the command line.
@@ -89,6 +136,8 @@ pub enum ConfigError {
     UnknownArgument(String),
     InvalidAddress { flag: &'static str, value: String },
     InvalidBodyReply(String),
+    InvalidBytes { flag: &'static str, value: String },
+    HeldBodyAboveMessageLimit { held: usize, message: usize },
 }
 
 impl fmt::Display for ConfigError {
@@ -105,6 +154,17 @@ impl fmt::Display for ConfigError {
             Self::InvalidBodyReply(value) => {
                 write!(f, "invalid --body-reply '{value}' (want common|streamed)")
             }
+            Self::InvalidBytes { flag, value } => {
+                write!(
+                    f,
+                    "invalid byte count '{value}' for {flag} (want an integer > 0)"
+                )
+            }
+            Self::HeldBodyAboveMessageLimit { held, message } => write!(
+                f,
+                "--max-held-body-bytes {held} exceeds --max-grpc-message-bytes {message}: \
+                 the held body could not be sent back in one message"
+            ),
         }
     }
 }
@@ -127,6 +187,8 @@ where
     let mut listen = None;
     let mut metrics_listen = None;
     let mut body_reply = None;
+    let mut max_grpc = None;
+    let mut max_held = None;
     let mut rules: Vec<PathBuf> = Vec::new();
 
     let mut args = args.into_iter().map(Into::into).peekable();
@@ -150,6 +212,18 @@ where
                     .ok_or(ConfigError::MissingValue("--body-reply"))?;
                 body_reply =
                     Some(BodyReply::parse(&value).ok_or(ConfigError::InvalidBodyReply(value))?);
+            }
+            "--max-grpc-message-bytes" => {
+                max_grpc = Some(bytes(
+                    "--max-grpc-message-bytes",
+                    inline.or_else(|| args.next()),
+                )?);
+            }
+            "--max-held-body-bytes" => {
+                max_held = Some(bytes(
+                    "--max-held-body-bytes",
+                    inline.or_else(|| args.next()),
+                )?);
             }
             "--modsec-rules" => {
                 let first = inline
@@ -193,12 +267,44 @@ where
     if rules.is_empty() {
         return Err(ConfigError::MissingRules);
     }
+    let max_grpc_message_bytes = match max_grpc {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_GRPC_MESSAGE_BYTES") {
+            Some(v) => bytes("EXT_PROC_MAX_GRPC_MESSAGE_BYTES", Some(v))?,
+            None => DEFAULT_MAX_GRPC_MESSAGE_BYTES,
+        },
+    };
+    let max_held_body_bytes = match max_held {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_HELD_BODY_BYTES") {
+            Some(v) => bytes("EXT_PROC_MAX_HELD_BODY_BYTES", Some(v))?,
+            None => max_grpc_message_bytes,
+        },
+    };
+    if max_held_body_bytes > max_grpc_message_bytes {
+        return Err(ConfigError::HeldBodyAboveMessageLimit {
+            held: max_held_body_bytes,
+            message: max_grpc_message_bytes,
+        });
+    }
     Ok(Command::Run(Config {
         listen,
         metrics_listen,
         modsec_rules: rules,
         body_reply,
+        limits: Limits {
+            max_grpc_message_bytes,
+            max_held_body_bytes,
+        },
     }))
+}
+
+fn bytes(flag: &'static str, value: Option<String>) -> Result<usize, ConfigError> {
+    let value = value.ok_or(ConfigError::MissingValue(flag))?;
+    match value.trim().parse::<usize>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err(ConfigError::InvalidBytes { flag, value }),
+    }
 }
 
 fn address(flag: &'static str, value: Option<String>) -> Result<SocketAddr, ConfigError> {
@@ -336,5 +442,90 @@ mod tests {
         assert_eq!(c.body_reply, BodyReply::Streamed);
         let c = run(&["--modsec-rules", "cli.conf", "--body-reply=common"], env).expect("parse");
         assert_eq!(c.body_reply, BodyReply::Common);
+    }
+
+    #[test]
+    fn size_limits_default_parse_and_validate() {
+        let c = run(&["--modsec-rules", "a.conf"], no_env).expect("parse");
+        assert_eq!(c.limits, Limits::default());
+        assert_eq!(c.limits.max_grpc_message_bytes, 4 * 1024 * 1024);
+        assert_eq!(c.limits.max_held_body_bytes, 4 * 1024 * 1024);
+        assert_eq!(
+            c.limits.max_encoding_message_bytes(),
+            4 * 1024 * 1024 + REPLY_ENVELOPE_BYTES
+        );
+
+        // The held-body cap follows the message limit unless set.
+        let c = run(
+            &[
+                "--modsec-rules",
+                "a.conf",
+                "--max-grpc-message-bytes=16777216",
+            ],
+            no_env,
+        )
+        .expect("parse");
+        assert_eq!(c.limits.max_grpc_message_bytes, 16 << 20);
+        assert_eq!(c.limits.max_held_body_bytes, 16 << 20);
+
+        let c = run(
+            &[
+                "--modsec-rules",
+                "a.conf",
+                "--max-grpc-message-bytes",
+                "8388608",
+                "--max-held-body-bytes",
+                "1048576",
+            ],
+            no_env,
+        )
+        .expect("parse");
+        assert_eq!(c.limits.max_held_body_bytes, 1 << 20);
+
+        let env = |k: &str| match k {
+            "MODSEC_RULES" => Some("env.conf".into()),
+            "EXT_PROC_MAX_GRPC_MESSAGE_BYTES" => Some("2048".into()),
+            "EXT_PROC_MAX_HELD_BODY_BYTES" => Some("1024".into()),
+            _ => None,
+        };
+        let c = run(&[], env).expect("parse");
+        assert_eq!(c.limits.max_grpc_message_bytes, 2048);
+        assert_eq!(c.limits.max_held_body_bytes, 1024);
+
+        for bad in ["0", "-1", "4MiB", ""] {
+            assert_eq!(
+                run(
+                    &["--modsec-rules", "a.conf", "--max-grpc-message-bytes", bad],
+                    no_env
+                ),
+                Err(ConfigError::InvalidBytes {
+                    flag: "--max-grpc-message-bytes",
+                    value: bad.into()
+                }),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            run(
+                &["--modsec-rules", "a.conf", "--max-held-body-bytes"],
+                no_env
+            ),
+            Err(ConfigError::MissingValue("--max-held-body-bytes"))
+        );
+        assert_eq!(
+            run(
+                &[
+                    "--modsec-rules",
+                    "a.conf",
+                    "--max-grpc-message-bytes=1024",
+                    "--max-held-body-bytes=1025"
+                ],
+                no_env
+            ),
+            Err(ConfigError::HeldBodyAboveMessageLimit {
+                held: 1025,
+                message: 1024
+            })
+        );
     }
 }

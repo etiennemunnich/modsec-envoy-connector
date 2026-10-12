@@ -144,6 +144,14 @@ impl ConnectorMetrics {
         self.allow.load(Ordering::Relaxed)
     }
 
+    pub fn requests_total(&self) -> u64 {
+        self.requests.load(Ordering::Relaxed)
+    }
+
+    pub fn stream_errors_total(&self) -> u64 {
+        self.stream_errors.load(Ordering::Relaxed)
+    }
+
     /// Render Prometheus text exposition (format 0.0.4).
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(4096);

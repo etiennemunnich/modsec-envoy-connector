@@ -6,7 +6,9 @@
 //!      exchange (the same server stack Envoy talks to), and
 //!   2. a headers-only `GET /__connex_healthz` run through a fresh
 //!      `Exchange` (the code `Process` runs per message, with the loaded
-//!      rules) answers request-headers Continue.
+//!      rules) answers request-headers Continue. The probe exchange has its
+//!      own throwaway metrics and logs its phases at DEBUG, so probes never
+//!      count as traffic.
 //!
 //!   An `ImmediateResponse` (deny or fail-closed), a dead listener, or a
 //!   timeout yields 503.
@@ -135,12 +137,9 @@ async fn probe(processor: &ModSecProcessor, grpc_addr: SocketAddr) -> Result<(),
         })),
         ..Default::default()
     };
-    let mut exchange = processor.exchange();
+    let mut exchange = processor.probe_exchange();
     let resp = match run_blocking(|| exchange.on_message(msg)) {
-        Step::Reply(r) | Step::Final(r) => r,
-        Step::Replies(mut rs) => rs
-            .pop_front()
-            .ok_or_else(|| "process step answered empty Replies".to_string())?,
+        Step::Reply(r) | Step::Final(r) | Step::Replies(r, _) => r,
         Step::Silent => return Err("process step answered nothing".into()),
         Step::Abort(s) => return Err(format!("process aborted: {s}")),
     };
