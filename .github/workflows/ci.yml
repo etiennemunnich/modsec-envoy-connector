@@ -1,27 +1,31 @@
 name: ci
 
-# Gate for main (work lands there directly), PRs and dispatches. A branch is
-# tested by its pull request (or gh workflow run ci.yml --ref <branch>): branch
-# pushes do not run this workflow (no cursor/** push trigger).
-#   pin-check                          every run (pins, workflow rules, skip signal)
+# The gate for main: every change lands through a pull request, and main and
+# dispatches run it too. A branch is tested by its pull request (or
+# gh workflow run ci.yml --ref <branch>): branch pushes do not run this
+# workflow (no cursor/** push trigger).
+#   pin-check                          every run: pins, workflow rules, shellcheck,
+#                                      offline CI-script tests, the skip signal, and
+#                                      on PRs no CI-skip token in title/body/commits
 #   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked)
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
-#   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
-#                                      PRs and dispatches;
+#   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins;
 #                                      includes buffered-oversize + connect-assert
 #   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
 #                                      go-ftw-full via crs-full matrix incl. STREAMED)
 #   e2e-full-duplex × {x86_64, aarch64} FULL_DUPLEX product contract (same suites as
 #                                      e2e-streamed; hang→504 N/A; go-ftw-full via crs-full)
-#   ci-ok                              one verdict over all of the above
+#   ci-ok                              one verdict over all of the above; on a PR it
+#                                      also records the tested merge tree
 # Lab body modes (BUFFERED_PARTIAL, NONE, asymmetric) run weekly via e2e-lab.yml.
-# Docs-only changes (docs/**, *.md except versions.lock.md) skip the heavy jobs via
-# pin-check's skip output, so ci-ok still reports; so does a push to main whose tree
-# already passed on a pull request from this repository (scripts/ci-tested-tree.sh:
-# the merge would re-test identical files). Runs on main are never cancelled.
-# GitHub-hosted runners only.
+# The heavy jobs are skipped in exactly two cases, and ci-ok still reports:
+#   - docs-only: only docs/** and *.md changed (not versions.lock.md) on top of a
+#     base commit that itself passed ci (scripts/ci-changes.sh);
+#   - a push to main whose tree is the merge tree a same-repo pull request run
+#     already passed (scripts/ci-tested-tree.sh, via ci-ok's tested-tree artifact).
+# Runs on main are never cancelled. GitHub-hosted runners only.
 
 on:
   push:
@@ -41,25 +45,41 @@ permissions:
 
 jobs:
   # Always-on gate: pin/workflow rules + docs/tree skip signal in one job so
-  # billing does not ceil three sub-minute jobs (was changes + pin-check + …).
-  # Keep the check name pin-check — release.yml gate requires it.
+  # billing does not ceil three sub-minute jobs.
+  # Keep the check name pin-check: scripts/release-gate.sh requires it.
   pin-check:
     name: pin-check
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      actions: read # earlier ci runs of the same tree (ci-tested-tree.sh)
+      actions: read # earlier ci runs and artifacts (ci-changes.sh, ci-tested-tree.sh)
       contents: read
     outputs:
       skip: ${{ steps.d.outputs.docs_only == 'true' || steps.t.outputs.tested == 'true' }}
+      tree: ${{ steps.tree.outputs.tree }}
+    env:
+      SHELLCHECK_VERSION: "0.11.0"
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Tree under test
+        id: tree
+        run: echo "tree=$(git rev-parse 'HEAD^{tree}')" | tee -a "$GITHUB_OUTPUT"
+      - name: No CI-skip tokens in this PR (a squash would carry them onto main)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/ci-skip-tokens.sh
       - name: Docs-only change?
         id: d
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
           HEAD: ${{ github.sha }}
         run: ./scripts/ci-changes.sh
@@ -76,6 +96,21 @@ jobs:
         run: ./scripts/check-workflows.sh
       - name: CI helper script tests (offline)
         run: ./scripts/test-ci-scripts.sh
+      - name: shellcheck ${{ env.SHELLCHECK_VERSION }} (release binary, sha256-pinned)
+        run: |
+          set -euo pipefail
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 \
+            -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${tarball}"
+          echo "${SHELLCHECK_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+          sc="$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          "$sc" --version
+          mapfile -t files < <(git ls-files '*.sh')
+          [[ "${#files[@]}" -ge 30 ]] || { echo "::error::only ${#files[@]} shell scripts found"; exit 1; }
+          "$sc" -x -P SCRIPTDIR -S warning "${files[@]}"
+          echo "shellcheck clean: ${#files[@]} scripts"
       - name: checkout left no credentials in the git config
         run: |
           if git config --list --show-origin | grep -iE 'extraheader|authorization|includeif\..*\.path'; then
@@ -148,7 +183,8 @@ jobs:
     needs: pin-check
     if: needs.pin-check.outputs.skip != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # A cold libmodsecurity build took 9m47s here (run 38241457904).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -231,7 +267,7 @@ jobs:
 
   e2e-pin:
     name: e2e-pin
-    if: needs.pin-check.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.pin-check.outputs.skip != 'true'
     needs: [pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -242,7 +278,7 @@ jobs:
 
   e2e-streamed:
     name: e2e-streamed
-    if: needs.pin-check.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.pin-check.outputs.skip != 'true'
     needs: [pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -254,7 +290,7 @@ jobs:
 
   e2e-full-duplex:
     name: e2e-full-duplex
-    if: needs.pin-check.outputs.skip != 'true' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
+    if: needs.pin-check.outputs.skip != 'true'
     needs: [pin-check]
     uses: ./.github/workflows/live-e2e.yml
     with:
@@ -275,20 +311,16 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           SKIP: ${{ needs.pin-check.outputs.skip }}
-          E2E_WANTED: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
         run: |
           python3 - <<'PY'
           import json, os, sys
           needs = json.loads(os.environ["NEEDS"])
           skip = os.environ["SKIP"] == "true"
-          e2e_wanted = os.environ["E2E_WANTED"] == "true"
           heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-full-duplex"}
-          e2e_jobs = {"e2e-pin", "e2e-streamed", "e2e-full-duplex"}
           bad = []
           for job, v in needs.items():
               r = v["result"]
-              ok = r == "success" or (r == "skipped" and (
-                  (skip and job in heavy) or (job in e2e_jobs and not e2e_wanted)))
+              ok = r == "success" or (r == "skipped" and skip and job in heavy)
               print(f"{'ok  ' if ok else 'FAIL'} {job}: {r}")
               if not ok:
                   bad.append(f"{job}={r}")
@@ -296,3 +328,22 @@ jobs:
               print(f"::error::ci-ok: {', '.join(bad)}")
               sys.exit(1)
           PY
+      # Only reached when the verdict passed. scripts/ci-tested-tree.sh lets a
+      # push to main with this exact tree skip the heavy jobs.
+      - name: Record the tested merge tree
+        if: github.event_name == 'pull_request'
+        env:
+          TREE: ${{ needs.pin-check.outputs.tree }}
+        run: |
+          set -euo pipefail
+          [[ "${TREE}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::pin-check gave no tree id"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/tested-tree"
+          echo "${TREE} ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > "$RUNNER_TEMP/tested-tree/tree"
+      - name: Upload tested-tree-${{ needs.pin-check.outputs.tree }}
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tested-tree-${{ needs.pin-check.outputs.tree }}
+          path: ${{ runner.temp }}/tested-tree/tree
+          retention-days: 30
+          if-no-files-found: error

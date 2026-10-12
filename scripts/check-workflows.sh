@@ -23,9 +23,37 @@ rule "remote action not pinned by commit SHA with a # vX.Y.Z comment" \
   "$(grep -nE '^[[:space:]-]*uses:[[:space:]]*[^.[:space:]]' "${files[@]}" \
     | grep -vE 'uses:[[:space:]]*[^@[:space:]]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' || true)"
 
-# Both architectures on one pinned Ubuntu release.
+# Both architectures on one pinned Ubuntu release, GitHub-hosted only: every
+# runs-on is ubuntu-24.04, ubuntu-24.04-arm or a matrix runner, and every
+# matrix runner value is one of the two.
 rule "floating runner label (use ubuntu-24.04 / ubuntu-24.04-arm)" \
   "$(grep -nE 'ubuntu-latest' "${files[@]}" || true)"
+rule "runs-on outside ubuntu-24.04 / ubuntu-24.04-arm / \${{ matrix.runner }}" \
+  "$(grep -nE '^[[:space:]]*runs-on:' "${files[@]}" \
+    | grep -vE 'runs-on:[[:space:]]*(ubuntu-24\.04|ubuntu-24\.04-arm|\$\{\{ matrix\.runner \}\})[[:space:]]*$' || true)"
+rule "matrix runner outside ubuntu-24.04 / ubuntu-24.04-arm" \
+  "$(grep -nE '(^|[{,[:space:]])runner:[[:space:]]*[^[:space:],}]+' "${files[@]}" \
+    | grep -vE 'runs-on' \
+    | grep -vE 'runner:[[:space:]]*(ubuntu-24\.04|ubuntu-24\.04-arm)[[:space:]]*([,}]|$)' || true)"
+
+# Every job that runs on a runner has a timeout (never the 360-minute default).
+rule "job without timeout-minutes" \
+  "$(for f in .github/workflows/*.yml; do
+    awk -v f="${f}" '
+      function flush() { if (job != "" && runs && !timeout) print f ": job " job " has runs-on but no timeout-minutes" }
+      /^jobs:/ { injobs = 1; next }
+      injobs && /^[^[:space:]#]/ { flush(); injobs = 0; job = "" }
+      injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { flush(); job = $1; sub(/:$/, "", job); runs = 0; timeout = 0; next }
+      injobs && /^    runs-on:/ { runs = 1 }
+      injobs && /^    timeout-minutes:/ { timeout = 1 }
+      END { flush() }
+    ' "${f}"
+  done)"
+
+# A concurrency group cancels in-progress runs only off main (AGENTS.md rule 7):
+# a literal true would also cancel scheduled and main runs.
+rule "cancel-in-progress: true (use \${{ github.ref != 'refs/heads/main' }})" \
+  "$(grep -nE '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "${files[@]}" || true)"
 
 # No job pushes via git, so no checkout may leave the token in the git config.
 rule "actions/checkout without persist-credentials: false in its with: block" \
@@ -84,6 +112,26 @@ fi
 if [[ -f .github/workflows/ci.yml ]]; then
   rule "ci.yml must not trigger on push to cursor/**" \
     "$(grep -nE '^[[:space:]]*-[[:space:]]*["'\'']?cursor/\*\*' .github/workflows/ci.yml || true)"
+fi
+
+# ci-ok is the single verdict: it must need every other job in ci.yml, or a
+# job added later could fail without failing ci-ok.
+if [[ -f .github/workflows/ci.yml ]]; then
+  rule "ci.yml: ci-ok.needs is missing jobs" \
+    "$(awk '
+      /^jobs:/ { injobs = 1; next }
+      injobs && /^[^[:space:]#]/ { injobs = 0 }
+      injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { job = $1; sub(/:$/, "", job); if (job != "ci-ok") jobs[job] = 1; next }
+      injobs && job == "ci-ok" && /^    needs:/ {
+        line = $0; sub(/^    needs:[[:space:]]*\[?/, "", line); sub(/\][[:space:]]*$/, "", line)
+        n = split(line, a, /[[:space:],]+/); for (i = 1; i <= n; i++) if (a[i] != "") needs[a[i]] = 1
+        seen = 1
+      }
+      END {
+        if (!seen) { print ".github/workflows/ci.yml: ci-ok has no needs: [...] line"; exit }
+        for (j in jobs) if (!(j in needs)) print ".github/workflows/ci.yml: ci-ok does not need " j
+      }
+    ' .github/workflows/ci.yml)"
 fi
 
 # ASH install must be a 40-hex commit, never a movable tag like @v3.7.1.

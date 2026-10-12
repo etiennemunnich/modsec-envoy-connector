@@ -8,10 +8,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
+# Throwaway repos below must not pick up the user's signing, hooks or fsmonitor.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 fails=0
+passes=0
+# Deleting a block of tests must fail too, not only a failing test.
+MIN_CHECKS=180
 check() { # check <name> <want> <got>
-  if [[ "$2" == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: want '$2', got '$3'"; fails=$((fails + 1)); fi
+  if [[ "$2" == "$3" ]]; then echo "ok   $1"; passes=$((passes + 1)); else echo "FAIL $1: want '$2', got '$3'"; fails=$((fails + 1)); fi
 }
 
 # --- ci-report.sh verdicts -------------------------------------------------
@@ -47,18 +52,62 @@ cp "${ROOT}/scripts/ci-changes.sh" "${repo}/scripts/"
   echo a >README.md && echo a >docs/x.md && echo a >src/lib.rs && echo a >versions.lock.md
   git add -A && git commit -qm base
 )
-docs_only() { # docs_only <files to touch...>
-  local base f
+# base_runs <sha> <conclusion> [repo] [path] -> fixture of ci runs for the base commit
+base_runs() {
+  local f="${TMP}/base-runs-${RANDOM}.json"
+  printf '{"workflow_runs":[{"html_url":"https://x/base","head_sha":"%s","conclusion":"%s","path":"%s","head_repository":{"full_name":"%s"}}]}' \
+    "$1" "$2" "${4:-.github/workflows/ci.yml}" "${3:-o/r}" >"${f}"
+  echo "${f}"
+}
+docs_only() { # docs_only <base runs: proven|unproven|fork|other-workflow|none> <files to touch...>
+  local base f proof="$1" runs
+  shift
   base="$(git -C "${repo}" rev-parse HEAD)"
   for f in "$@"; do echo "$RANDOM" >>"${repo}/${f}"; done
   git -C "${repo}" commit -qam change
-  BASE="${base}" HEAD="$(git -C "${repo}" rev-parse HEAD)" "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1
+  case "${proof}" in
+    proven) runs="$(base_runs "${base}" success)" ;;
+    unproven) runs="$(base_runs "${base}" failure)" ;;
+    fork) runs="$(base_runs "${base}" success someone/fork)" ;;
+    other-workflow) runs="$(base_runs "${base}" success o/r .github/workflows/other.yml)" ;;
+    none) printf '{"workflow_runs":[]}' >"${TMP}/none.json"; runs="${TMP}/none.json" ;;
+  esac
+  GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_BASE_RUNS_JSON="${runs}" BASE="${base}" HEAD="$(git -C "${repo}" rev-parse HEAD)" \
+    "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1
 }
-check "ci-changes: docs/ + README"        docs_only=true "$(docs_only docs/x.md README.md)"
-check "ci-changes: code"                  docs_only=false "$(docs_only src/lib.rs)"
-check "ci-changes: versions.lock.md"      docs_only=false "$(docs_only versions.lock.md docs/x.md)"
-check "ci-changes: no base"               docs_only=false "$(BASE='' "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
-check "ci-changes: all-zero base"         docs_only=false "$(BASE=0000000000000000000000000000000000000000 "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
+check "ci-changes: docs/ + README, proven base"   docs_only=true "$(docs_only proven docs/x.md README.md)"
+check "ci-changes: docs, base failed ci"          docs_only=false "$(docs_only unproven docs/x.md)"
+check "ci-changes: docs, base never ran ci"       docs_only=false "$(docs_only none docs/x.md)"
+check "ci-changes: docs, base proven by a fork"   docs_only=false "$(docs_only fork docs/x.md)"
+check "ci-changes: docs, base proven elsewhere"   docs_only=false "$(docs_only other-workflow docs/x.md)"
+check "ci-changes: code"                          docs_only=false "$(docs_only proven src/lib.rs)"
+check "ci-changes: versions.lock.md"              docs_only=false "$(docs_only proven versions.lock.md docs/x.md)"
+check "ci-changes: no base"                       docs_only=false "$(GITHUB_OUTPUT='' BASE='' "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
+check "ci-changes: all-zero base"                 docs_only=false "$(GITHUB_OUTPUT='' BASE=0000000000000000000000000000000000000000 "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
+
+# --- ci-skip-tokens.sh: the PR title, body and every commit message ----------
+skip_repo="${TMP}/skip-repo"
+git init -q "${skip_repo}" && git -C "${skip_repo}" config user.email t@t && git -C "${skip_repo}" config user.name t
+git -C "${skip_repo}" commit -q --allow-empty -m base
+skip_base="$(git -C "${skip_repo}" rev-parse HEAD)"
+skip_tokens() { # skip_tokens <title> <body> <commit message...> -> exit code
+  local m
+  git -C "${skip_repo}" reset -q --hard "${skip_base}"
+  for m in "${@:3}"; do git -C "${skip_repo}" commit -q --allow-empty -m "${m}"; done
+  (cd "${skip_repo}" && PR_TITLE="$1" PR_BODY="$2" BASE="${skip_base}" HEAD="$(git rev-parse HEAD)" \
+    "${ROOT}/scripts/ci-skip-tokens.sh" >/dev/null 2>&1) && echo 0 || echo 1
+}
+check "skip-tokens: clean PR"                      0 "$(skip_tokens 'fix: x' 'body' 'fix: x' 'docs: y')"
+check "skip-tokens: no commits (neg)"              1 "$(skip_tokens 'fix: x' 'body')"
+check "skip-tokens: token in an older commit body" 1 "$(skip_tokens 'fix: x' 'body' $'docs: y\n\nnotes [skip ci]' 'fix: x')"
+check "skip-tokens: [ci skip] in the head subject" 1 "$(skip_tokens 'fix: x' 'body' 'fix: x [ci skip]')"
+check "skip-tokens: [no ci]"                       1 "$(skip_tokens 'fix: x' 'body' 'fix: x [no ci]')"
+check "skip-tokens: [skip actions] in the title"   1 "$(skip_tokens 'docs [skip actions]' 'body' 'docs: x')"
+check "skip-tokens: [actions skip] in the body"    1 "$(skip_tokens 'docs' $'line\n[actions skip]' 'docs: x')"
+check "skip-tokens: ***NO_CI***"                   1 "$(skip_tokens 'docs' 'body' 'docs: x ***NO_CI***')"
+check "skip-tokens: skip-checks trailer"           1 "$(skip_tokens 'docs' 'body' $'docs: x\n\nskip-checks: true')"
+check "skip-tokens: upper case"                    1 "$(skip_tokens 'docs [SKIP CI]' 'body' 'docs: x')"
+check "skip-tokens: prose about skipping is fine"  0 "$(skip_tokens 'docs: never skip ci' 'skip-checks are banned' 'docs: x')"
 
 # --- check-workflows.sh rejects each rule ---------------------------------
 wf() { # wf <yaml line> -> exit code of check-workflows.sh on a one-job workflow
@@ -66,7 +115,7 @@ wf() { # wf <yaml line> -> exit code of check-workflows.sh on a one-job workflow
   mkdir -p "${d}/.github/workflows" "${d}/.github/actions/x" "${d}/scripts"
   cp "${ROOT}/scripts/check-workflows.sh" "${d}/scripts/"
   echo 'runs: { using: composite, steps: [] }' >"${d}/.github/actions/x/action.yml"
-  printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n%s\n' "$1" >"${d}/.github/workflows/w.yml"
+  printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n%s\n' "$1" >"${d}/.github/workflows/w.yml"
   "${d}/scripts/check-workflows.sh" >/dev/null 2>&1 && echo 0 || echo 1
 }
 good='      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +135,80 @@ check "check-workflows: checkout, last step"  1 "$(wf '      - uses: actions/che
         with:
           fetch-depth: 0')"
 
+# wf_file <file name> <workflow text> -> exit code of check-workflows.sh on that one workflow
+wf_file() {
+  local d="${TMP}/wff-${RANDOM}"
+  mkdir -p "${d}/.github/workflows" "${d}/.github/actions/x" "${d}/scripts"
+  cp "${ROOT}/scripts/check-workflows.sh" "${d}/scripts/"
+  echo 'runs: { using: composite, steps: [] }' >"${d}/.github/actions/x/action.yml"
+  printf '%s\n' "$2" >"${d}/.github/workflows/$1"
+  "${d}/scripts/check-workflows.sh" >/dev/null 2>&1 && echo 0 || echo 1
+}
+job() { # job <name> <runs-on> [extra job lines] -> one job with a timeout
+  printf '  %s:\n    runs-on: %s\n    timeout-minutes: 5\n%s    steps:\n      - run: true\n' "$1" "$2" "${3:-}"
+}
+check "check-workflows: plain job passes"               0 "$(wf_file w.yml "on: push
+jobs:
+$(job a ubuntu-24.04)")"
+check "check-workflows: no timeout-minutes"             1 "$(wf_file w.yml 'on: push
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: true')"
+check "check-workflows: macos runner"                   1 "$(wf_file w.yml "on: push
+jobs:
+$(job a macos-15)")"
+check "check-workflows: self-hosted runner"             1 "$(wf_file w.yml "on: push
+jobs:
+$(job a '[self-hosted, linux]')")"
+check "check-workflows: ubuntu-slim runner"             1 "$(wf_file w.yml "on: push
+jobs:
+$(job a ubuntu-slim)")"
+check "check-workflows: matrix runner allowed"          0 "$(wf_file w.yml "on: push
+jobs:
+$(job a '${{ matrix.runner }}' '    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+')")"
+check "check-workflows: matrix runner ubuntu-22.04"     1 "$(wf_file w.yml "on: push
+jobs:
+$(job a '${{ matrix.runner }}' '    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04 }
+')")"
+check "check-workflows: cancel-in-progress true"        1 "$(wf_file w.yml "on: push
+concurrency:
+  group: g
+  cancel-in-progress: true
+jobs:
+$(job a ubuntu-24.04)")"
+check "check-workflows: cancel only off main"           0 "$(wf_file w.yml "on: push
+concurrency:
+  group: g
+  cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}
+jobs:
+$(job a ubuntu-24.04)")"
+check "check-workflows: ci-ok needs every job"          0 "$(wf_file ci.yml "on: push
+jobs:
+$(job a ubuntu-24.04)
+$(job b ubuntu-24.04)
+$(job ci-ok ubuntu-24.04 '    needs: [a, b]
+')")"
+check "check-workflows: ci-ok misses a job"             1 "$(wf_file ci.yml "on: push
+jobs:
+$(job a ubuntu-24.04)
+$(job b ubuntu-24.04)
+$(job ci-ok ubuntu-24.04 '    needs: [a]
+')")"
+check "check-workflows: ci-ok without needs"            1 "$(wf_file ci.yml "on: push
+jobs:
+$(job a ubuntu-24.04)
+$(job ci-ok ubuntu-24.04)")"
+
 # Cron presence for product schedule workflows (skip when files absent — covered above).
 cron_neg() {
   local d="${TMP}/cron-neg" rc
@@ -99,6 +222,7 @@ on:
 jobs:
   j:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,6 +236,7 @@ on:
 jobs:
   j:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -343,23 +468,42 @@ check "envoy checksum: old slash matcher still hits /tmp paths" \
   002c6e1c69ed0fa0ea381887247cadadfaec9481375fa8d8d2b1731eeabf40b8 \
   "$(old_envoy_checksum "${TMP}/sums-path.asc" envoy-1.39.1-linux-x86_64)"
 
-# --- ci-tested-tree.sh: a main push may skip only a tree a same-repo PR passed
+# --- ci-tested-tree.sh: a main push may skip only a merge tree a same-repo PR run passed
 T1=1111111111111111111111111111111111111111
 T2=2222222222222222222222222222222222222222
-cat >"${TMP}/runs.json" <<JSON
-{"workflow_runs":[
- {"html_url":"https://x/fork","head_repository":{"full_name":"someone/fork"},"head_commit":{"tree_id":"${T2}"}},
- {"html_url":"https://x/ours","head_repository":{"full_name":"o/r"},"head_commit":{"tree_id":"${T1}"}}]}
-JSON
-tested() { GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/runs.json" "$@" "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1; }
-check "tested-tree: same tree, same repo" tested=true "$(tested env TREE=${T1})"
-check "tested-tree: a fork's run does not count" tested=false "$(tested env TREE=${T2})"
-check "tested-tree: unknown tree" tested=false "$(tested env TREE=3333333333333333333333333333333333333333)"
-check "tested-tree: no tree id" tested=false "$(tested env TREE=)"
-check "tested-tree: not a tree id" tested=false "$(tested env TREE='x\" or 1')"
-check "tested-tree: a re-run runs everything" tested=false "$(tested env TREE=${T1} GITHUB_RUN_ATTEMPT=2)"
+runs_dir="${TMP}/runs"
+mkdir -p "${runs_dir}"
+run_json() { # run_json <id> <event> <conclusion> <repo> [path]
+  printf '{"html_url":"https://x/%s","event":"%s","conclusion":"%s","path":"%s","head_repository":{"full_name":"%s"}}' \
+    "$1" "$2" "$3" "${5:-.github/workflows/ci.yml}" "$4" >"${runs_dir}/$1.json"
+}
+run_json 11 pull_request success o/r
+run_json 12 pull_request success someone/fork
+run_json 13 pull_request failure o/r
+run_json 14 push success o/r
+run_json 15 pull_request success o/r .github/workflows/other.yml
+arts() { # arts <tree> <run id> [expired] -> artifact list fixture
+  local f="${TMP}/arts-${RANDOM}.json"
+  printf '{"artifacts":[{"name":"tested-tree-%s","expired":%s,"workflow_run":{"id":%s}}]}' "$1" "${3:-false}" "$2" >"${f}"
+  echo "${f}"
+}
+tested() { # tested <tree> <artifact fixture> [env...]
+  env GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r TREE="$1" CI_TESTED_ARTIFACTS_JSON="$2" CI_TESTED_RUNS_DIR="${runs_dir}" "${@:3}" \
+    "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1
+}
+check "tested-tree: merge tree passed on a same-repo PR"   tested=true "$(tested "${T1}" "$(arts "${T1}" 11)")"
+check "tested-tree: a fork's run does not count"            tested=false "$(tested "${T1}" "$(arts "${T1}" 12)")"
+check "tested-tree: a failed run does not count"            tested=false "$(tested "${T1}" "$(arts "${T1}" 13)")"
+check "tested-tree: a push run does not count"              tested=false "$(tested "${T1}" "$(arts "${T1}" 14)")"
+check "tested-tree: another workflow does not count"        tested=false "$(tested "${T1}" "$(arts "${T1}" 15)")"
+check "tested-tree: artifact for another tree"              tested=false "$(tested "${T1}" "$(arts "${T2}" 11)")"
+check "tested-tree: expired artifact"                       tested=false "$(tested "${T1}" "$(arts "${T1}" 11 true)")"
+check "tested-tree: run not readable"                       tested=false "$(tested "${T1}" "$(arts "${T1}" 99)")"
+check "tested-tree: no tree id"                             tested=false "$(tested '' "$(arts "${T1}" 11)")"
+check "tested-tree: not a tree id"                          tested=false "$(tested 'x\" or 1' "$(arts "${T1}" 11)")"
+check "tested-tree: a re-run runs everything"               tested=false "$(tested "${T1}" "$(arts "${T1}" 11)" GITHUB_RUN_ATTEMPT=2)"
 printf "not json" >"${TMP}/bad.json"
-check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
+check "tested-tree: unreadable list"                        tested=false "$(tested "${T1}" "${TMP}/bad.json")"
 
 # --- release-gate.sh: the tag commit is on main and ci.yml is green for it ---
 GSHA=abcdefabcdefabcdefabcdefabcdefabcdefabcd
@@ -454,4 +598,5 @@ done
 
 
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
-echo "test-ci-scripts OK"
+[[ "${passes}" -ge "${MIN_CHECKS}" ]] || { echo "test-ci-scripts: only ${passes} checks ran (floor ${MIN_CHECKS})" >&2; exit 1; }
+echo "test-ci-scripts OK: ${passes} checks"
