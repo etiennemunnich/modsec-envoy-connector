@@ -31,12 +31,12 @@ Workflows: [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), [`live-
 
 | Job / workflow | `BODY_MODE` | Suites (summary) |
 |----------------|-------------|------------------|
-| `e2e-pin` | **BUFFERED** | smoke, fail-closed, fail-modes, hop-trace, go-ftw-smoke, buffered-oversize, connect-assert, trailers |
-| `e2e-streamed` | **STREAMED** | smoke, fail-closed, fail-modes, hop-trace, go-ftw-smoke, trailers, connect-assert |
-| `e2e-full-duplex` | **FULL_DUPLEX_STREAMED** | same product set as streamed (`message_timeout` off → stall→504 cell skipped) |
-| `e2e-buffered-partial` | **BUFFERED_PARTIAL** | smoke, fail-closed, go-ftw-smoke, partial-honesty, connect-assert; **not** full CRS fidelity |
-| `e2e-none` | **NONE** | smoke, fail-closed, connect-assert; body CRS **n/a** |
-| `e2e-asymm-*` | asymmetric req/resp | smoke, fail-closed, go-ftw-smoke, connect-assert |
+| `e2e-pin` (`ci.yml`) | **BUFFERED** | smoke, fail-closed, fail-modes, hop-trace, go-ftw-smoke, buffered-oversize, connect-assert, trailers |
+| `e2e-streamed` (`ci.yml`) | **STREAMED** | smoke, fail-closed, fail-modes, hop-trace, go-ftw-smoke, trailers, connect-assert |
+| `e2e-full-duplex` (`ci.yml`) | **FULL_DUPLEX_STREAMED** | same product set as streamed (`message_timeout` off → stall→504 cell skipped) |
+| `e2e-buffered-partial` (`e2e-lab`, weekly) | **BUFFERED_PARTIAL** | smoke, fail-closed, go-ftw-smoke, partial-honesty, connect-assert; **not** full CRS fidelity |
+| `e2e-none` (`e2e-lab`, weekly) | **NONE** | smoke, fail-closed, connect-assert; body CRS **n/a** |
+| `e2e-asymm-*` (`e2e-lab`, weekly) | asymmetric req/resp | smoke, fail-closed, go-ftw-smoke, connect-assert |
 | `crs-full` (monthly / dispatch) | **BUFFERED**, **STREAMED**, **FULL_DUPLEX_STREAMED** × both arches | `go-ftw-full` only; matrix **wired**; see coverage table |
 
 Reusable cell: `live-e2e.yml` → `./scripts/ci-live-e2e.sh` with `SUITES=…` and `BODY_MODE=…`.
@@ -54,12 +54,15 @@ Reusable cell: `live-e2e.yml` → `./scripts/ci-live-e2e.sh` with `SUITES=…` a
 
 ```mermaid
 flowchart TB
-  subgraph every_pr [ci.yml on PR / main]
+  subgraph every_pr [ci.yml on PR / main / dispatch]
     pin[e2e-pin BUFFERED]
     str[e2e-streamed]
     dup[e2e-full-duplex]
+  end
+  subgraph weekly_lab [e2e-lab weekly / dispatch]
     part[e2e-buffered-partial honesty]
     none[e2e-none headers]
+    asymm[e2e-asymm]
   end
   subgraph monthly [crs-full monthly - wired]
     fullB[go-ftw-full BUFFERED proven]

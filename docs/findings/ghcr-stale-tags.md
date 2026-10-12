@@ -8,9 +8,9 @@
 
 GitHub Release + git tag `v0.1.0-rc.1` are **already deleted** (API 404). Accidental / stale **GHCR** container versions may still exist under the **predecessor** package name:
 
-`ghcr.io/etiennemunnich/envoy-modsec-connex`
+`ghcr.io/etiennemunnich/envoy-modsec-connex` (predecessor package name)
 
-New releases from this repository publish `ghcr.io/etiennemunnich/modsec-envoy-connector` (`GITHUB_REPOSITORY` in the release workflow). The cleanup script defaults still target the old package where the stale tags live.
+New releases from this repository publish `ghcr.io/etiennemunnich/modsec-envoy-connector` (`GITHUB_REPOSITORY` in the release workflow). The cleanup script defaults to that new package; for predecessor stale tags, override `PACKAGE=envoy-modsec-connex`.
 
 Allowlisted targets (hard-coded in the script — nothing else is deleted):
 
@@ -27,17 +27,17 @@ https://github.com/users/etiennemunnich/packages/container/envoy-modsec-connex/v
 Use the repo script — do **not** paste ad-hoc `gh api` delete loops:
 
 ```bash
-# Default = dry-run: list allowlisted stale ids + tags only (exit 0 if none)
-./scripts/ghcr-delete-stale.sh
+# Predecessor package (where v0.1.0-rc.1 may still live)
+PACKAGE=envoy-modsec-connex ./scripts/ghcr-delete-stale.sh
 
 # Optional read-only dump of every package version (debug; never deletes)
-./scripts/ghcr-delete-stale.sh --all-versions
+PACKAGE=envoy-modsec-connex ./scripts/ghcr-delete-stale.sh --all-versions
 
 # Delete only allowlisted version ids (prints each id before DELETE)
-./scripts/ghcr-delete-stale.sh --delete
+PACKAGE=envoy-modsec-connex ./scripts/ghcr-delete-stale.sh --delete
 ```
 
-Overrides: `OWNER=… PACKAGE=…` (defaults `etiennemunnich` / `envoy-modsec-connex`).
+Defaults without override: `OWNER=etiennemunnich` / `PACKAGE=modsec-envoy-connector`.
 
 The script uses `gh api` + the logged-in user. It stores no secrets and does **not** widen auth.
 

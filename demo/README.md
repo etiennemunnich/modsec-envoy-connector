@@ -10,10 +10,13 @@ curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 
             └──► demo origin :18098   (only after the connector says Continue)
 ```
 
-## Quick start (macOS)
+## Quick start
+
+Pin-safe install (preferred). On macOS also need `brew install pkg-config`. Do **not** lead with a naked `brew install envoy modsecurity` — that skips the pin check.
 
 ```bash
-brew install envoy modsecurity pkg-config     # or the install scripts below
+./demo/scripts/install-envoy.sh && export PATH=$HOME/.local/bin:$PATH
+./demo/scripts/install-libmodsecurity.sh       # Homebrew under the hood on macOS; source on Linux
 ./demo/scripts/install-crs.sh                  # CRS v4.30.0 → demo/.crs
 ./demo/scripts/up.sh                           # builds + starts origin, connector, Envoy
 ./demo/scripts/smoke.sh                        # allow / deny / body / response checks
@@ -22,6 +25,8 @@ brew install envoy modsecurity pkg-config     # or the install scripts below
 ./demo/scripts/go-ftw.sh smoke                 # OWASP CRS regression tests (needs go-ftw)
 ./demo/scripts/down.sh
 ```
+
+Early-tester / UAT checklist: [`docs/modes/uat.md`](../docs/modes/uat.md).
 
 Try it by hand once it is up:
 

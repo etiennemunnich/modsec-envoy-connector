@@ -70,9 +70,21 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 
 ## Versioning
 
-- **Product:** git tag `vX.Y.Z` (+ GitHub Release listing pin axes).
+- **Product:** git tag `vX.Y.Z` (+ optional pre-release suffix) and a GitHub Release that quotes pin axes.
+- **Release notes:** edit [`CHANGELOG.md`](./CHANGELOG.md), then paste the matching section into the GitHub Release body.
 - **Pins:** Envoy / ModSec / CRS / connector in `versions.lock.md`, not issue labels as versions.
 - Optional triage labels (`pin:envoy`, `fail-closed`, …) are fine for PR filtering only.
+
+## Releases
+
+1. Land the release commit on `main` with **`ci-ok` green on both arches** for that SHA (product e2e: BUFFERED + STREAMED + FULL_DUPLEX).
+2. Set `PRODUCT_VERSION` in `versions.lock.md` to the tag you will cut (e.g. `v0.1.0-alpha.1`).
+3. Crate versions in `crates/*/Cargo.toml` stay at the `X.Y.Z` prefix (`0.1.0` for `v0.1.0-alpha.1`). The release workflow compares `tag`’s `vX.Y.Z` prefix to the crate version.
+4. Tag from the green `main` commit: `git tag -a v0.1.0-alpha.1 <sha> && git push origin v0.1.0-alpha.1`.
+5. The `release` workflow builds Linux tarballs + multi-arch GHCR image and opens a GitHub Release (**pre-release** for suffix tags). Confirm the CHANGELOG section matches.
+6. Early-tester path: [`docs/modes/uat.md`](./docs/modes/uat.md). Do not market alpha as production-ready.
+
+Alpha checklist before tagging: local smoke + fail-closed, `ci-ok` on the tag SHA, pins accurate, CHANGELOG section ready.
 
 ## License
 

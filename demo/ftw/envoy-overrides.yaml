@@ -1,4 +1,4 @@
-# go-ftw overrides for Envoy v1.39.1 + ext_proc + libmodsecurity v3.0.16,
+# go-ftw overrides for Envoy v1.39.3 + ext_proc + libmodsecurity v3.0.17,
 # same pattern as CRS tests/regression/nginx-overrides.yaml. Every entry was
 # measured against the demo; reasons say what Envoy/ModSecurity actually did.
 #

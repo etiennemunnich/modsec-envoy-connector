@@ -1,7 +1,7 @@
 # Finding: ~12-month stable version matrix
 
 **Date:** 2026-09-29  
-**Scope:** envoy-modsec-connex — discover and test stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x tags from the last ~year, including combinations, without Mac-as-runner CI.
+**Scope:** modsec-envoy-connector — discover and test stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x tags from the last ~year, including combinations, without Mac-as-runner CI.
 
 ## What landed
 
@@ -38,4 +38,4 @@ Older Envoy on macOS: Homebrew usually only bottles the tip; there is no Darwin 
 | **v4.23.0** | go-ftw CRS body: empty JSON (`Expecting value…`); demo/smoke/FC/fail-modes OK | go-ftw 2.6 parses **all** YAML under `--dir` before `--include`. That tag’s `920640.yaml` ships `status: [400]`; go-ftw rejects `!!seq`→int and writes no summary. Fixed in CRS ≥ v4.24.1. | `go-ftw.sh` smoke/body **stages** only BODY_INCLUDE rule YAML into a temp dir — no tag exclusion. |
 | **v4.19.0** | suite green (`success=92`) but floor `92 < 100` | That tag has exactly **92** BODY_INCLUDE tests (later tags ≥ 103; pins ~118). | Version-aware floor: pin bar stays 100; when available ∈ [50, 100), floor = available. |
 
-Project plan (Context store): `docs/stable-versions-one-year-plan.md`. Sample proof: Project store `internal/connex-one-year-matrix/proof.md`.
+Policy and scripts above are the in-repo source of truth (no separate plan file in this tree).

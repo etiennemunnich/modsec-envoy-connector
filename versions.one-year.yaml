@@ -1,4 +1,4 @@
-# One-year stable matrix policy — envoy-modsec-connex
+# One-year stable matrix policy — modsec-envoy-connector
 #
 # Enumerate stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x tags from the
 # last `days` days (GitHub Releases published_at; never releases/latest).
