@@ -58,19 +58,20 @@ GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not cla
 
 ## GitHub Actions minutes
 
-This repository is private on GitHub Free: 2,000 minutes a month across all private repositories, and no payment method, so nothing is ever charged; at the quota, every private repository's CI stops until the 1st (October 2026: this repo used 1,378 of 1,887 by the 9th).
+This repository is private on GitHub Pro: 3,000 minutes a month across all private repositories. At the quota, CI stops until the 1st.
 
 - **`ci` runs on pushes to `main`, pull requests and dispatches.** A branch push runs nothing: open the PR, or `gh workflow run ci.yml --ref <branch>`.
-- **A merge whose tree a PR already passed skips the heavy jobs** (`scripts/ci-tested-tree.sh`; `ci-ok` still reports). Bring the branch up to date with `main` before merging, or `main` re-runs everything.
+- **The only skips are automatic** (`ci-ok` still reports): a docs-only change whose base commit has a green `ci` run (`scripts/ci-changes.sh`), and a merge whose tree a same-repo PR run already passed (`scripts/ci-tested-tree.sh`). Bring the branch up to date with `main` before merging, or `main` re-runs everything.
+- **Never use workflow-skip tokens** in a commit message, PR title or PR body. A squash merge copies them onto `main`, that commit gets no `ci` run, and it cannot be released. `pin-check` fails a PR that carries one (`scripts/ci-skip-tokens.sh`).
+- **When minutes run out, stop and tell Etienne.** Do not skip, shrink or disable checks to save minutes.
 - **PR e2e is the three product body modes** (BUFFERED / STREAMED / FULL_DUPLEX × both arches). PARTIAL, NONE, and asymmetric labs run on `e2e-lab` (weekly + dispatch).
 - **`ash` runs on security-relevant PRs, weekly on main tip, and dispatch** — not every main push and not docs-only PRs. Install is commit-pinned (`ASH_PIN` in `versions.lock.md`).
-- **Timeouts sit near measured worst cases** (every `ci` job under 2.1 minutes in 60 runs; `crs-full` under 5.6): e2e 15, rust-quality 15, msrv 10, crs-full 25. A new job gets a timeout of a few times its real length, never the 360-minute default.
+- **Timeouts sit a few times above measured runs.** Warm, every `ci` job finished under 2.1 minutes in 60 runs; a cold libmodsecurity build (any change to its install script) took up to 9.8 minutes (run 38241457904). Limits: e2e 15, rust-quality 15, msrv 20, crs-full 25. Never the 360-minute default; `check-workflows.sh` requires `timeout-minutes` on every job.
 - **Few, full jobs.** Each job is billed as at least a whole minute, so a one-step job costs a minute; fold small checks into a job that already runs.
-- **When the month runs low,** end the commit subject with `[skip ci]` for docs- or workflow-only changes and prove them locally (`./scripts/check-workflows.sh`, `./scripts/test-ci-scripts.sh`, `actionlint`).
 
 ## Docs
 
-On **substantive** architecture / fail-mode / protocol / CI / pin changes: update **`README.md`** (and product how-it-works when this repo owns it). Prefer honesty over completeness theater. Release-facing notes go in **`CHANGELOG.md`**; early-tester path is **`docs/modes/uat.md`**.
+On **substantive** architecture / fail-mode / protocol / CI / pin changes: update **`README.md`** (and product how-it-works when this repo owns it). Prefer honesty over completeness theater. Release-facing notes go in **`CHANGELOG.md`**; the early-tester path is **`docs/getting-started.md`**, the bring-your-own-Envoy guide **`docs/deploy.md`**, CI detail **`docs/testing.md`**. One page per topic; do not add parallel copies.
 
 ## License
 
@@ -97,6 +98,7 @@ Copy into the PR body (or tick the PR template). Skip rows that truly do not app
 - [ ] Local: `cargo fmt` / `clippy -D warnings` / `cargo test --workspace --locked` (or docs-only and noted)
 - [ ] Workflows touched → `./scripts/check-workflows.sh`; CI scripts touched → `./scripts/test-ci-scripts.sh`
 - [ ] Live suites if behavior / demo / body-mode / fail-mode changed: smoke + fail-closed (and fail-modes / hop-trace / go-ftw as relevant); note Mac or `workflow_dispatch` run URL with `event`, `conclusion`, `headSha`
+- [ ] No workflow-skip token in the PR title, body or any commit message
 - [ ] `ci-ok` green on the PR (both arches) before squash-merge
 - [ ] README stays product-only; agent/CI detail goes in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
 - [ ] Claims cite real runs (see CI rule 1) — never invent green
