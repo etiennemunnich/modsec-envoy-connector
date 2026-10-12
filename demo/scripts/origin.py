@@ -19,6 +19,10 @@ HITS_LOCK = threading.Lock()
 class Handler(BaseHTTPRequestHandler):
     server_version = "connex-demo-origin"
     protocol_version = "HTTP/1.1"
+    # Headers and body leave in one write. Under a STREAMED response, Envoy
+    # forwards the headers once ext_proc answers them; a body that arrives
+    # later can only reset the stream on a phase-4 deny, not turn it into 403.
+    wbufsize = 64 * 1024
 
     def _record(self):
         with HITS_LOCK, open(self.server.hits_path, "a", encoding="utf-8") as f:
