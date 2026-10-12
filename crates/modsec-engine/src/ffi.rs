@@ -48,14 +48,14 @@ extern "C" {
         file: *const c_char,
         error: *mut *const c_char,
     ) -> c_int;
+    pub fn msc_rules_add(
+        rules: *mut RulesSet,
+        plain_rules: *const c_char,
+        error: *mut *const c_char,
+    ) -> c_int;
     pub fn msc_rules_error_cleanup(error: *const c_char);
     pub fn msc_rules_cleanup(rules: *mut RulesSet) -> c_int;
 
-    pub fn msc_new_transaction(
-        msc: *mut ModSecurity,
-        rules: *mut RulesSet,
-        log_cb_data: *mut c_void,
-    ) -> *mut Transaction;
     pub fn msc_new_transaction_with_id(
         msc: *mut ModSecurity,
         rules: *mut RulesSet,

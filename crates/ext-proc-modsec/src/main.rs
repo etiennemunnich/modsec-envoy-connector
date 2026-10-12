@@ -13,11 +13,11 @@ use std::sync::Arc;
 use ext_proc_modsec::config::{Command, Config, USAGE};
 use ext_proc_modsec::metrics::ConnectorMetrics;
 use ext_proc_modsec::{logging, metrics_server, ModSecProcessor};
-use modsec_engine::Engine;
+use modsec_engine::{Engine, EngineMode};
 use tokio::net::TcpListener;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -53,8 +53,17 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         rules = ?engine.rules_paths(),
         rule_count = engine.rule_count(),
+        engine_mode = engine.mode().as_str(),
         "ModSecurity engine ready"
     );
+    if engine.mode() != EngineMode::On {
+        warn!(
+            engine_mode = engine.mode().as_str(),
+            allow_detection_only = config.allow_detection_only,
+            "SecRuleEngine is not On: traffic is not blocked; /healthz stays 503 unless \
+             --allow-detection-only"
+        );
+    }
 
     let grpc_listener = TcpListener::bind(config.listen)
         .await
@@ -70,6 +79,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         metrics_listener,
         processor.clone(),
         grpc_addr,
+        config.allow_detection_only,
     ));
 
     info!(

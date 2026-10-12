@@ -1048,7 +1048,12 @@ async fn healthz_exercises_process_and_metrics_render() {
     let h = start().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let maddr = listener.local_addr().unwrap();
-    tokio::spawn(metrics_server::serve(listener, h.processor.clone(), h.addr));
+    tokio::spawn(metrics_server::serve(
+        listener,
+        h.processor.clone(),
+        h.addr,
+        false,
+    ));
 
     for _ in 0..5 {
         let health = http_get(maddr, "/healthz").await;
@@ -1078,6 +1083,44 @@ async fn healthz_exercises_process_and_metrics_render() {
 
     let missing = http_get(maddr, "/nope").await;
     assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+
+    let health = http_get(maddr, "/healthz").await;
+    let rules = h.processor.engine().rule_count();
+    assert!(
+        health.ends_with(&format!("ok\nengine_mode=On\nrules={rules}\n")),
+        "{health}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthz_is_503_unless_the_engine_enforces() {
+    let engine = Engine::load_files(&[rules_path("detection-only.conf")]).expect("rules");
+    let p = ModSecProcessor::new(engine, Arc::new(ConnectorMetrics::default()));
+    let h = serve(p).await;
+    for (allow, want) in [(false, "HTTP/1.1 503"), (true, "HTTP/1.1 200")] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let maddr = listener.local_addr().unwrap();
+        tokio::spawn(metrics_server::serve(
+            listener,
+            h.processor.clone(),
+            h.addr,
+            allow,
+        ));
+        let health = http_get(maddr, "/healthz").await;
+        assert!(health.starts_with(want), "allow={allow}: {health}");
+        assert!(
+            health.contains("engine_mode=DetectionOnly\nrules=1\n"),
+            "{health}"
+        );
+    }
+    // What the gate is for: a deny rule matches and the request passes.
+    let mut s = h.stream().await;
+    assert_continue(
+        &s.send(req_headers("GET", "/admin", &[], true))
+            .await
+            .unwrap(),
+        "admin",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1087,7 +1130,12 @@ async fn healthz_is_503_when_grpc_is_down() {
     drop(dead);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let maddr = listener.local_addr().unwrap();
-    tokio::spawn(metrics_server::serve(listener, processor(), dead_addr));
+    tokio::spawn(metrics_server::serve(
+        listener,
+        processor(),
+        dead_addr,
+        false,
+    ));
     let health = http_get(maddr, "/healthz").await;
     assert!(health.starts_with("HTTP/1.1 503"), "{health}");
 }
@@ -1103,7 +1151,12 @@ async fn healthz_is_503_when_listener_does_not_speak_http2() {
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let maddr = listener.local_addr().unwrap();
-    tokio::spawn(metrics_server::serve(listener, processor(), fake_addr));
+    tokio::spawn(metrics_server::serve(
+        listener,
+        processor(),
+        fake_addr,
+        false,
+    ));
     let health = http_get(maddr, "/healthz").await;
     assert!(health.starts_with("HTTP/1.1 503"), "{health}");
 }
