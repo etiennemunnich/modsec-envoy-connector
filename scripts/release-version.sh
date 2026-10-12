@@ -24,7 +24,7 @@ for toml in "${ROOT}"/crates/*/Cargo.toml; do
     echo "::error::no version line in ${toml#"${ROOT}"/}"
     exit 1
   fi
-  if [[ "${tag}" != "v${ver}" ]]; then
+  if [[ "${tag%%-*}" != "v${ver%%-*}" ]]; then
     echo "::error::tag ${tag} != v${ver} (${toml#"${ROOT}"/}); the tag must equal v + the crate version"
     exit 1
   fi
