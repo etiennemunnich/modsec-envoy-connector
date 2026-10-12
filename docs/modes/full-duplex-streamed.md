@@ -19,6 +19,8 @@ The demo sets `--body-reply streamed` automatically for this mode. The connector
 
 Client trailers may be folded into body EOS by Envoy; you may not see a separate `RequestTrailers` message.
 
+**Memory:** the connector holds each direction's body until the verdict, so one stream costs up to `--max-held-body-bytes` per direction (default 4 MiB). A body over the cap fails closed with **500**; it is never released uninspected. A request with headers and trailers but no body gets a trailers answer only (no empty body release, which Envoy would reject as spurious).
+
 ```mermaid
 sequenceDiagram
   participant C as Client
@@ -74,6 +76,7 @@ flowchart TB
 | `--body-reply` | **`streamed`** (required; `common` → Envoy `spurious_message`) |
 | `message_timeout` | Present in YAML for parity; **off** for duplex streaming (the usual stall→504 timeout check does not apply) |
 | Trailers | **SEND** request + response |
+| `--max-held-body-bytes` | Held body cap per direction (default = `--max-grpc-message-bytes`, 4 MiB). Over the cap → ImmediateResponse **500**, nothing released |
 | Open Envoy risks | duplicate EOS [#46237](https://github.com/envoyproxy/envoy/issues/46237), upgrade hang [#47161](https://github.com/envoyproxy/envoy/issues/47161), high memory [#39514](https://github.com/envoyproxy/envoy/issues/39514) |
 
 ## When to use
