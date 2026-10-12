@@ -188,6 +188,19 @@ fn log_tag<'a>(log: &'a str, name: &str) -> Option<&'a str> {
     Some(&log[start..start + len])
 }
 
+/// The `msg` of a rule's log line, or the text of an engine-raised
+/// intervention (a log with no rule `id`, e.g. a body limit reject), which
+/// quotes no request data. A rule log without `msg` gives `-`.
+fn log_msg(log: &str) -> &str {
+    if let Some(msg) = log_tag(log, "msg") {
+        return msg;
+    }
+    if log.is_empty() || log_tag(log, "id").is_some() {
+        return "-";
+    }
+    log.split(" [").next().unwrap_or(log)
+}
+
 fn truncated(s: &str, max: usize) -> &str {
     match s.char_indices().nth(max) {
         Some((i, _)) => &s[..i],
@@ -879,7 +892,7 @@ impl InspectionSession {
                     action = decision.action_label(),
                     status,
                     rule_id = log_tag(log, "id").unwrap_or("-"),
-                    msg = truncated(log_tag(log, "msg").unwrap_or("-"), MAX_LOGGED_MSG),
+                    msg = truncated(log_msg(log), MAX_LOGGED_MSG),
                     "modsecurity disruptive intervention"
                 );
                 debug!(
@@ -1100,6 +1113,17 @@ mod tests {
             Some("Inbound Anomaly Score Exceeded (Total Score: 5)")
         );
         assert_eq!(log_tag(log, "missing"), None);
+        assert_eq!(
+            log_msg(log),
+            "Inbound Anomaly Score Exceeded (Total Score: 5)"
+        );
+        let no_msg = r#"ModSecurity: Access denied with code 403 (phase 1). Matched "Operator `Contains' with parameter `/admin' against variable `REQUEST_URI' (Value: `/admin?x=secret' ) [id "1"]"#;
+        assert_eq!(log_msg(no_msg), "-");
+        assert_eq!(
+            log_msg("Request body limit is marked to reject the request"),
+            "Request body limit is marked to reject the request"
+        );
+        assert_eq!(log_msg(""), "-");
         assert_eq!(truncated("héllo", 2), "hé");
         assert_eq!(truncated("ab", 5), "ab");
     }
