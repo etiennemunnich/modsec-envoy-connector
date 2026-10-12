@@ -75,12 +75,12 @@ stop_pidfile "${RUN}/connector.pid" KILL
 bad="${RUN}/broken-rules.conf"
 echo 'SecRule THIS_IS_NOT_VALID_SECLANG' >"${bad}"
 set +e
-"${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen 127.0.0.1:18082 \
+"${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen "127.0.0.1:${METRICS_PORT}" \
   --modsec-rules "${bad}" >>"${RUN}/connector.log" 2>&1
 rc=$?
 set -e
 [[ "$rc" -ne 0 ]] && pass "[bad-rules] connector exited rc=${rc}" || fail "[bad-rules] connector exited 0"
-[[ -z "$(port_pid 18081)" ]] && pass "[bad-rules] nothing listening on :18081" || fail "[bad-rules] :18081 is listening"
+[[ -z "$(port_pid "${CONNECTOR_PORT}")" ]] && pass "[bad-rules] nothing listening on :${CONNECTOR_PORT}" || fail "[bad-rules] :${CONNECTOR_PORT} is listening"
 drill "bad-rules-get" "500" "${BASE}/"
 
 echo "==> 4. restore"
