@@ -38,7 +38,12 @@ exec > >(tee "${TRANSCRIPT}") 2>&1
 pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=1; }
 skip() { echo "  SKIP $*"; SKIP=$((SKIP + 1)); }
-fail_closed_total() { curl -s --max-time 5 "${METRICS}/metrics" | awk '/^ext_proc_fail_closed_total /{print $2; exit}'; }
+# Prints nothing when /metrics does not answer; the caller treats that as a FAIL.
+fail_closed_total() {
+  local m
+  m="$(curl -s --max-time 5 "${METRICS}/metrics")" || return 0
+  awk '/^ext_proc_fail_closed_total /{print $2; exit}' <<<"${m}"
+}
 
 wait_http "${BASE}/" 50 || { echo "demo not up at ${BASE} — run ./demo/scripts/up.sh" >&2; exit 2; }
 
