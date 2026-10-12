@@ -216,6 +216,16 @@ fn c_string(what: &str, s: &str) -> Result<CString, EngineError> {
     CString::new(s).map_err(|_| tx_err(format!("{what} contains a NUL byte")))
 }
 
+/// Header bytes go to libmodsecurity with their length, so every byte but
+/// NUL reaches it unchanged. Envoy never forwards a NUL in a header, so one
+/// means a broken message and the exchange fails closed.
+fn header_bytes<'a>(what: &str, b: &'a [u8]) -> Result<&'a [u8], EngineError> {
+    if b.contains(&0) {
+        return Err(tx_err(format!("{what} contains a NUL byte")));
+    }
+    Ok(b)
+}
+
 /// `msc_*` Transaction calls return 1 on success.
 fn check(what: &str, rc: c_int) -> Result<(), EngineError> {
     if rc == 1 {
@@ -643,8 +653,8 @@ impl InspectionSession {
         headers: &[(K, V)],
     ) -> Result<Decision, EngineError>
     where
-        K: AsRef<str>,
-        V: AsRef<str>,
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
     {
         if self.request_headers_done {
             return Err(tx_err("process_request_headers called twice"));
@@ -679,14 +689,17 @@ impl InspectionSession {
         }
 
         for (k, v) in headers {
-            let k = c_string("request header name", k.as_ref())?;
-            let v = c_string("request header value", v.as_ref())?;
-            // SAFETY: as above; libmodsecurity copies header strings.
+            let k = header_bytes("request header name", k.as_ref())?;
+            let v = header_bytes("request header value", v.as_ref())?;
+            // SAFETY: as above; pointers and lengths come from live slices
+            // and libmodsecurity copies them.
             let rc = unsafe {
-                ffi::msc_add_request_header(
+                ffi::msc_add_n_request_header(
                     self.raw(),
                     k.as_ptr() as *const c_uchar,
+                    k.len(),
                     v.as_ptr() as *const c_uchar,
+                    v.len(),
                 )
             };
             check("add_request_header", rc)?;
@@ -748,8 +761,8 @@ impl InspectionSession {
         headers: &[(K, V)],
     ) -> Result<Decision, EngineError>
     where
-        K: AsRef<str>,
-        V: AsRef<str>,
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
     {
         if self.response_headers_done {
             return Err(tx_err("process_response_headers called twice"));
@@ -761,14 +774,17 @@ impl InspectionSession {
             }
         }
         for (k, v) in headers {
-            let k = c_string("response header name", k.as_ref())?;
-            let v = c_string("response header value", v.as_ref())?;
-            // SAFETY: live transaction; libmodsecurity copies header strings.
+            let k = header_bytes("response header name", k.as_ref())?;
+            let v = header_bytes("response header value", v.as_ref())?;
+            // SAFETY: live transaction; pointers and lengths come from live
+            // slices and libmodsecurity copies them.
             let rc = unsafe {
-                ffi::msc_add_response_header(
+                ffi::msc_add_n_response_header(
                     self.raw(),
                     k.as_ptr() as *const c_uchar,
+                    k.len(),
                     v.as_ptr() as *const c_uchar,
+                    v.len(),
                 )
             };
             check("add_response_header", rc)?;

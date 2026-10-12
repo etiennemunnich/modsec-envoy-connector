@@ -812,7 +812,7 @@ async fn response_body_before_response_headers_fails_closed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nul_in_request_header_fails_closed() {
-    // CString rejection → EngineError::Transaction during process_request_headers
+    // NUL rejection → EngineError::Transaction during process_request_headers
     // (session already opened by open_transaction).
     let h = start().await;
     let mut s = h.stream().await;
@@ -828,6 +828,55 @@ async fn nul_in_request_header_fails_closed() {
     }
     let r = s.send(req).await.unwrap();
     assert_fail_closed(&r, "NUL in header value");
+}
+
+fn push_raw_header(msg: &mut ProcessingRequest, key: &str, raw: &[u8]) {
+    let headers = match msg.request.as_mut() {
+        Some(ProcRequest::RequestHeaders(h)) | Some(ProcRequest::ResponseHeaders(h)) => h,
+        other => panic!("not a headers message: {other:?}"),
+    };
+    headers
+        .headers
+        .get_or_insert_with(Default::default)
+        .headers
+        .push(HeaderValue {
+            key: key.into(),
+            raw_value: raw.to_vec(),
+            ..Default::default()
+        });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_utf8_header_bytes_reach_modsecurity_unchanged() {
+    // Rules 910012 / 910013 match byte 0xFF. A lossy UTF-8 conversion would
+    // turn it into U+FFFD (EF BF BD) and hide it; "ÿ" in UTF-8 (C3 BF) has
+    // no 0xFF byte and must pass.
+    let h = start().await;
+    for (raw, deny) in [(&b"a\xffb"[..], true), ("aÿb".as_bytes(), false)] {
+        let mut s = h.stream().await;
+        let mut req = req_headers("GET", "/", &[], true);
+        push_raw_header(&mut req, "x-raw", raw);
+        let r = s.send(req).await.unwrap();
+        if deny {
+            assert_deny(&r, "request header byte 0xFF");
+        } else {
+            assert_continue(&r, "request header UTF-8 ÿ");
+        }
+
+        let mut s = h.stream().await;
+        assert_continue(
+            &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+            "request",
+        );
+        let mut resp = resp_headers("200", &[], true);
+        push_raw_header(&mut resp, "x-raw", raw);
+        let r = s.send(resp).await.unwrap();
+        if deny {
+            assert_deny(&r, "response header byte 0xFF");
+        } else {
+            assert_continue(&r, "response header UTF-8 ÿ");
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

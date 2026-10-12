@@ -79,10 +79,12 @@ extern "C" {
         method: *const c_char,
         http_version: *const c_char,
     ) -> c_int;
-    pub fn msc_add_request_header(
+    pub fn msc_add_n_request_header(
         tx: *mut Transaction,
         key: *const c_uchar,
+        len_key: usize,
         value: *const c_uchar,
+        len_value: usize,
     ) -> c_int;
     pub fn msc_process_request_headers(tx: *mut Transaction) -> c_int;
     pub fn msc_append_request_body(
@@ -91,10 +93,12 @@ extern "C" {
         size: usize,
     ) -> c_int;
     pub fn msc_process_request_body(tx: *mut Transaction) -> c_int;
-    pub fn msc_add_response_header(
+    pub fn msc_add_n_response_header(
         tx: *mut Transaction,
         key: *const c_uchar,
+        len_key: usize,
         value: *const c_uchar,
+        len_value: usize,
     ) -> c_int;
     pub fn msc_process_response_headers(
         tx: *mut Transaction,
