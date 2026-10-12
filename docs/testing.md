@@ -2,7 +2,7 @@
 
 Every push to `main` runs, natively on GitHub-hosted `x86_64` and `aarch64` Ubuntu, the Rust gate (fmt, clippy, tests with libmodsecurity linked) **and** the live Envoy → connector → libmodsecurity + CRS suites (smoke, fail-closed, the HTTP/1.1 + HTTP/2 fail-mode matrix, hop-trace, go-ftw smoke). New stable Envoy / libmodsecurity / CRS releases are detected daily and tested on both architectures; the last three stables of each axis weekly; an optional ~12-month axis-at-a-time matrix on demand; and the full CRS regression monthly.
 
-Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-closed.md) · [ash.md](./ash.md) · [`versions.lock.md`](../versions.lock.md) · [`versions.window.md`](../versions.window.md) · [`versions.one-year.yaml`](../versions.one-year.yaml) · [findings/one-year-stable-matrix.md](./findings/one-year-stable-matrix.md).
+Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-closed.md) · [ash.md](./ash.md) · [`versions.lock.md`](../versions.lock.md) · [`versions.window.md`](../versions.window.md) · [`versions.one-year.yaml`](../versions.one-year.yaml) · [`scripts/one-year-matrix.sh`](../scripts/one-year-matrix.sh).
 
 ---
 
@@ -136,7 +136,7 @@ Every live suite must also reach a floor of passing checks, not just exit 0: smo
 - Perf latency samples: `demo/scripts/perf.sh` (floors; not an SLO).
 - **CI runs on `main` pushes, PRs and dispatches.** A branch push runs nothing: open a PR, or `gh workflow run ci.yml --ref <branch>`. A merge to `main` whose tree a PR already passed skips the heavy jobs.
 - **Release notes path:** [`CHANGELOG.md`](../CHANGELOG.md). Cutting tags: [CONTRIBUTING — Releases](../CONTRIBUTING.md#releases). Early UAT: [docs/modes/uat.md](./modes/uat.md).
-- **Prior pre-release `v0.1.0-rc.1`** proved the release workflow once (gate → both arch builds → multi-arch image → GitHub pre-release); the **GitHub Release + git tag were deleted**. No final `v0.1.0` yet; next intended early-test tag is `PRODUCT_VERSION` in [`versions.lock.md`](../versions.lock.md) (`v0.1.0-alpha.1`). Stale GHCR tags on the predecessor package may remain until someone with `read:packages` + `delete:packages` runs [findings/ghcr-stale-tags.md](./findings/ghcr-stale-tags.md) with `PACKAGE=envoy-modsec-connex`.
+- **Prior pre-release `v0.1.0-rc.1`** proved the release workflow once (gate → both arch builds → multi-arch image → GitHub pre-release); the **GitHub Release + git tag were deleted**. No final `v0.1.0` yet; next intended early-test tag is `PRODUCT_VERSION` in [`versions.lock.md`](../versions.lock.md) (`v0.1.0-alpha.1`). Stale GHCR tags on the predecessor package may remain until someone with `read:packages` + `delete:packages` runs `PACKAGE=envoy-modsec-connex ./scripts/ghcr-delete-stale.sh` (see [CONTRIBUTING — Ops / cleanup](../CONTRIBUTING.md#ops--cleanup)).
 - **Build provenance is not attested yet:** GitHub artifact attestations need a public repo on this plan, so those steps are skipped while the repo is private.
 - **`main` has no branch protection or ruleset:** both need GitHub Pro or a public repo. `ci-ok` is the check to require once they are available.
 - **Tarballs are not static:** they bundle `libmodsecurity.so` but need Ubuntu 24.04's pcre2, libxml2, yajl, curl, GeoIP and LMDB runtime libraries (the image has them).

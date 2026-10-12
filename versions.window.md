@@ -31,4 +31,4 @@ For stables published in the last year (not just depth 3), see [`versions.one-ye
 gh workflow run stable-one-year.yml -f strategy=axis -f dry_run=true
 ```
 
-Axis-at-a-time is the default (~19 cells today). Full Cartesian is opt-in (`--confirm-cartesian` / `confirm_cartesian=yes`) and expensive. Details: [docs/testing.md](./docs/testing.md#hosted-ci), [findings/one-year-stable-matrix.md](./docs/findings/one-year-stable-matrix.md).
+Axis-at-a-time is the default (~19 cells today). Full Cartesian is opt-in (`--confirm-cartesian` / `confirm_cartesian=yes`) and expensive. Details: [docs/testing.md](./docs/testing.md#hosted-ci), policy in [`versions.one-year.yaml`](./versions.one-year.yaml), planner in [`scripts/one-year-matrix.sh`](./scripts/one-year-matrix.sh).

@@ -46,6 +46,18 @@ curl -i "http://127.0.0.1:18080/search?q=1'%20UNION%20SELECT%201,2--"  # 403 (CR
 
 Default body mode is BUFFERED. Other modes are in [docs/modes](./docs/modes/README.md). Early-tester checklist: [UAT](./docs/modes/uat.md).
 
+## Bring your own Envoy
+
+Already running Envoy? Point `ext_proc` at this connector (keep `failure_mode_allow: false`), load ModSecurity/CRS rules next to it, and leave origin routing to Envoy.
+
+1. **Run the connector** — build `cargo build -p ext-proc-modsec --release`, or use the release tarball / GHCR image `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` (alpha tag: `v0.1.0-alpha.1`).
+2. **Start it** with your rules in load order, for example:
+   ```bash
+   ext-proc-modsec --listen 0.0.0.0:18081 --metrics-listen 127.0.0.1:18082 \
+     --modsec-rules /etc/modsecurity/engine.conf,/etc/crs/crs-setup.conf,/etc/crs/rules.conf
+   ```
+3. **Wire Envoy** — HTTP/2 cluster to `--listen`, `ext_proc` before the router, body mode matching your intent (product default **BUFFERED**). Sketch: [`demo/README.md`](./demo/README.md#wiring-your-own-envoy). Flags and pins: [Install / build](./docs/modes/install.md). Request path: [How it works](./docs/how-it-works.md).
+
 ## Docs
 
 | Link | Topic |
