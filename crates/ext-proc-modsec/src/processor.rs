@@ -728,10 +728,10 @@ impl Exchange {
         // CRS matches REQUEST_HEADERS:Host. HTTP/2 and HTTP/3 put the host in
         // :authority and often omit Host; copy it only when Host is absent so
         // an explicit Host header is not overwritten.
-        let mut hdrs: Vec<(String, String)> = regular_headers(headers).collect();
+        let mut hdrs: Vec<(String, Vec<u8>)> = regular_headers(headers).collect();
         if !hdrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
             if let Some(authority) = header(headers, ":authority") {
-                hdrs.push(("host".into(), authority));
+                hdrs.push(("host".into(), authority.into_bytes()));
             }
         }
 
@@ -1027,7 +1027,7 @@ impl Exchange {
             );
         }
         let t0 = Instant::now();
-        let hdrs: Vec<(String, String)> = regular_headers(headers).collect();
+        let hdrs: Vec<(String, Vec<u8>)> = regular_headers(headers).collect();
         let protocol = self.endpoints.response_protocol();
         let decision = match session.process_response_headers(status, &protocol, &hdrs) {
             Ok(d) => d,
@@ -1177,12 +1177,22 @@ fn header(headers: &HttpHeaders, name: &str) -> Option<String> {
         .map(header_value)
 }
 
-/// Non-pseudo headers, in order (duplicates preserved).
-fn regular_headers(headers: &HttpHeaders) -> impl Iterator<Item = (String, String)> + '_ {
+/// The bytes Envoy forwards for a header: `raw_value` when set, so a
+/// non-UTF-8 value reaches ModSecurity as the origin will see it.
+fn header_bytes(hv: &HeaderValue) -> Vec<u8> {
+    if hv.raw_value.is_empty() {
+        hv.value.as_bytes().to_vec()
+    } else {
+        hv.raw_value.clone()
+    }
+}
+
+/// Non-pseudo headers, in order (duplicates preserved), with raw values.
+fn regular_headers(headers: &HttpHeaders) -> impl Iterator<Item = (String, Vec<u8>)> + '_ {
     headers
         .headers
         .iter()
         .flat_map(|m| m.headers.iter())
         .filter(|h| !h.key.starts_with(':'))
-        .map(|h| (h.key.clone(), header_value(h)))
+        .map(|h| (h.key.clone(), header_bytes(h)))
 }
