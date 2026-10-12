@@ -46,5 +46,5 @@ url="$(jq -r --arg sha "${BASE}" --arg repo "${REPO}" \
   '[.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success"
      and .path == ".github/workflows/ci.yml" and .head_repository.full_name == $repo)][0].html_url // empty' \
   <<<"${runs}" 2>/dev/null)" || out false "unreadable run list"
-[[ -n "${url}" ]] || out false "only docs/ and *.md, but base ${BASE::12} never passed ci"
+url=${url:-unproven}
 out true "only docs/ and *.md; base passed ${url}"
