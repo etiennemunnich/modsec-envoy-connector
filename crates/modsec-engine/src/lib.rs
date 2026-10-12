@@ -90,8 +90,16 @@ impl Decision {
 /// Errors from engine construction or a single transaction.
 #[derive(Debug)]
 pub enum EngineError {
-    RulesLoad { path: PathBuf, message: String },
+    RulesLoad {
+        path: PathBuf,
+        message: String,
+    },
     NoRules,
+    /// Every file parsed, but together they define zero rules (e.g. an empty
+    /// or directives-only ConfigMap): the engine would allow everything.
+    ZeroRulesLoaded {
+        paths: Vec<PathBuf>,
+    },
     Init(String),
     Transaction(String),
 }
@@ -103,6 +111,14 @@ impl fmt::Display for EngineError {
                 write!(f, "failed to load rules from {}: {message}", path.display())
             }
             Self::NoRules => f.write_str("no rules files provided"),
+            Self::ZeroRulesLoaded { paths } => {
+                let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                write!(
+                    f,
+                    "rules files loaded but define 0 rules (would allow every request): {}",
+                    names.join(", ")
+                )
+            }
             Self::Init(m) => write!(f, "modsecurity init failed: {m}"),
             Self::Transaction(m) => write!(f, "modsecurity transaction error: {m}"),
         }
@@ -135,11 +151,15 @@ pub struct Engine {
     msc: NonNull<ffi::ModSecurity>,
     rules: NonNull<ffi::RulesSet>,
     rules_paths: Vec<PathBuf>,
+    rule_count: usize,
     /// Test-only (`fail-inject` feature): next Transaction step on a session
     /// from this engine returns [`EngineError`]. Per-engine so parallel tests
     /// do not race. Compiled out of product builds.
     #[cfg(feature = "fail-inject")]
     fail_next: AtomicBool,
+    /// Test-only (`fail-inject` feature): next Transaction step panics.
+    #[cfg(feature = "fail-inject")]
+    panic_next: AtomicBool,
 }
 
 // SAFETY: after loading, `msc` and `rules` are only read by libmodsecurity
@@ -180,8 +200,11 @@ impl Engine {
                     msc,
                     rules,
                     rules_paths: Vec::with_capacity(paths.len()),
+                    rule_count: 0,
                     #[cfg(feature = "fail-inject")]
                     fail_next: AtomicBool::new(false),
+                    #[cfg(feature = "fail-inject")]
+                    panic_next: AtomicBool::new(false),
                 },
                 _ => {
                     // SAFETY: free whichever half was allocated.
@@ -207,14 +230,27 @@ impl Engine {
 
         for path in paths {
             let path = path.as_ref().to_path_buf();
-            engine.add_rules_file(&path)?;
-            info!(path = %path.display(), "loaded ModSecurity rules file");
+            let rules = engine.add_rules_file(&path)?;
+            engine.rule_count += rules;
+            info!(path = %path.display(), rules, "loaded ModSecurity rules file");
             engine.rules_paths.push(path);
         }
+        if engine.rule_count == 0 {
+            return Err(EngineError::ZeroRulesLoaded {
+                paths: std::mem::take(&mut engine.rules_paths),
+            });
+        }
+        info!(
+            files = engine.rules_paths.len(),
+            rules = engine.rule_count,
+            "ModSecurity ruleset loaded"
+        );
         Ok(Arc::new(engine))
     }
 
-    fn add_rules_file(&mut self, path: &Path) -> Result<(), EngineError> {
+    /// Returns the number of rules the file added (`msc_rules_add_file`'s
+    /// return value; directives such as `SecRuleEngine` are not rules).
+    fn add_rules_file(&mut self, path: &Path) -> Result<usize, EngineError> {
         let load_err = |message: String| EngineError::RulesLoad {
             path: path.to_path_buf(),
             message,
@@ -226,8 +262,8 @@ impl Engine {
         // SAFETY: `rules` is live and exclusively borrowed; `file` is a valid C
         // string; on failure libmodsecurity allocates `error`, freed below.
         let rc = unsafe { ffi::msc_rules_add_file(self.rules.as_ptr(), file.as_ptr(), &mut error) };
-        if rc >= 0 {
-            return Ok(());
+        if let Ok(rules) = usize::try_from(rc) {
+            return Ok(rules);
         }
         let message = if error.is_null() {
             "unknown error".to_owned()
@@ -247,6 +283,11 @@ impl Engine {
         &self.rules_paths
     }
 
+    /// Total rules libmodsecurity reported across all files (never 0).
+    pub fn rule_count(&self) -> usize {
+        self.rule_count
+    }
+
     /// Arm a one-shot mid-exchange engine error on the next Transaction API
     /// step for a session from this engine (test builds with `fail-inject` only).
     #[cfg(feature = "fail-inject")]
@@ -254,8 +295,18 @@ impl Engine {
         self.fail_next.store(true, Ordering::SeqCst);
     }
 
+    /// Arm a one-shot panic on the next Transaction API step (test builds with
+    /// `fail-inject` only), to prove a connector panic never ends a stream OK.
+    #[cfg(feature = "fail-inject")]
+    pub fn inject_panic_next_transaction_step(&self) {
+        self.panic_next.store(true, Ordering::SeqCst);
+    }
+
     #[cfg(feature = "fail-inject")]
     fn take_injected_fail(&self, what: &str) -> Result<(), EngineError> {
+        if self.panic_next.swap(false, Ordering::SeqCst) {
+            panic!("{what}: injected test panic");
+        }
         if self.fail_next.swap(false, Ordering::SeqCst) {
             Err(tx_err(format!("{what}: injected test failure")))
         } else {
@@ -746,6 +797,58 @@ mod tests {
     }
 
     #[test]
+    fn zero_rule_rulesets_are_rejected() {
+        let dir = std::env::temp_dir().join(format!("modsec-engine-zero-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let empty = dir.join("empty.conf");
+        let directives = dir.join("directives.conf");
+        std::fs::write(&empty, "").expect("write");
+        std::fs::write(
+            &directives,
+            "SecRuleEngine On\nSecRequestBodyAccess On\n# rules would follow\n",
+        )
+        .expect("write");
+        let only_empty = Engine::load_files(&[&empty]);
+        let only_directives = Engine::load_files(&[&directives]);
+        let both = Engine::load_files(&[&empty, &directives]);
+        let with_rules = Engine::load_files(&[&directives, &testdata("phase1-deny-admin.conf")]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        for (name, res) in [
+            ("empty", only_empty),
+            ("directives", only_directives),
+            ("both", both),
+        ] {
+            match res {
+                Err(EngineError::ZeroRulesLoaded { paths }) => {
+                    assert!(!paths.is_empty(), "{name}: error names the files")
+                }
+                Err(other) => panic!("{name}: want ZeroRulesLoaded, got {other}"),
+                Ok(_) => panic!("{name}: a 0-rule ruleset must not load"),
+            }
+        }
+        let engine = with_rules.expect("directives + one rule file loads");
+        assert!(engine.rule_count() >= 1, "{}", engine.rule_count());
+    }
+
+    #[test]
+    fn rule_count_sums_every_file() {
+        let one = Engine::load_files(&[testdata("phase1-deny-admin.conf")]).expect("load");
+        let two = Engine::load_files(&[
+            testdata("phase1-deny-admin.conf"),
+            testdata("phase1-deny-trace.conf"),
+        ])
+        .expect("load");
+        assert!(one.rule_count() >= 1);
+        assert!(
+            two.rule_count() > one.rule_count(),
+            "{} vs {}",
+            two.rule_count(),
+            one.rule_count()
+        );
+    }
+
+    #[test]
     fn allows_benign_root() {
         let engine = Engine::load_files(&[testdata("phase1-deny-admin.conf")]).expect("load");
         let mut s = engine.open_transaction(Some("test-allow")).expect("tx");
@@ -954,32 +1057,40 @@ mod tests {
     }
 
     /// Runs against a CRS checkout at `$CONNEX_CRS_DIR` (default `demo/.crs`,
-    /// created by `demo/scripts/install-crs.sh`). Skips when absent.
+    /// created by `demo/scripts/install-crs.sh`). Without CRS it skips, unless
+    /// `CONNEX_REQUIRE_CRS=1` (set in CI), where a missing CRS fails the test.
     fn crs_engine() -> Option<Arc<Engine>> {
+        let required = std::env::var("CONNEX_REQUIRE_CRS").is_ok_and(|v| v == "1");
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let crs = std::env::var_os("CONNEX_CRS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| root.join("demo/.crs"));
         let rules = crs.join("rules");
-        if !rules.is_dir() {
-            eprintln!(
-                "skip: no CRS at {} (run demo/scripts/install-crs.sh)",
-                crs.display()
-            );
-            return None;
-        }
         let setup = [
             crs.join("crs-setup.conf"),
             crs.join("crs-setup.conf.example"),
         ]
         .into_iter()
-        .find(|p| p.is_file())?;
+        .find(|p| p.is_file());
+        let Some(setup) = setup.filter(|_| rules.is_dir()) else {
+            assert!(
+                !required,
+                "CONNEX_REQUIRE_CRS=1 but no CRS rules/ + crs-setup.conf at {} \
+                 (run demo/scripts/install-crs.sh)",
+                crs.display()
+            );
+            eprintln!(
+                "skip: no CRS at {} (run demo/scripts/install-crs.sh)",
+                crs.display()
+            );
+            return None;
+        };
         let dir = std::env::temp_dir().join(format!(
             "modsec-engine-crs-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
-        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::create_dir_all(&dir).expect("CRS tmp dir");
         let include = dir.join("crs.conf");
         std::fs::write(
             &include,
@@ -989,9 +1100,16 @@ mod tests {
                 rules.display()
             ),
         )
-        .ok()?;
+        .expect("write CRS include chain");
         let engine = Engine::load_files(&[&include]).expect("load CRS include chain");
         let _ = std::fs::remove_dir_all(&dir);
+        // CRS v4 ships several hundred rules; a handful means a broken checkout.
+        assert!(
+            engine.rule_count() >= 100,
+            "CRS at {} loaded only {} rules",
+            crs.display(),
+            engine.rule_count()
+        );
         Some(engine)
     }
 
