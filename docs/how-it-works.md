@@ -107,7 +107,7 @@ HTTP/1.1 and HTTP/2 (cleartext prior knowledge in the demo) use the same connect
 
 ## Body modes that change the path
 
-The connector code path is the same for BUFFERED / STREAMED / BUFFERED_PARTIAL: **append every chunk, check intervention on every append, run `process_*_body` at `end_of_stream`**. What changes is when Envoy is willing to forward bytes toward the origin, and for `FULL_DUPLEX_STREAMED`, the Continue wire shape.
+The connector code path is the same for BUFFERED / STREAMED / BUFFERED_PARTIAL: **append every chunk, check intervention on every append, run `process_*_body` when the body phase ends**. Each direction's body mode comes from `protocol_config` on Envoy's first message of the stream; a stream without it, with `GRPC`, or with modes that disagree with `--body-reply` fails closed (**500**). The body phase ends at the one body message for BUFFERED / BUFFERED_PARTIAL (Envoy sends it with `end_of_stream=false` when trailers follow), at the headers for NONE, and at `end_of_stream` or the trailers for STREAMED / FULL_DUPLEX_STREAMED. That is why every shipped config with a body mode sets trailer modes `SEND`: without trailers, response headers that arrive before the request body phase ran answer **500**. What changes is when Envoy is willing to forward bytes toward the origin, and for `FULL_DUPLEX_STREAMED`, the Continue wire shape.
 
 | Mode | Envoy behaviour | Origin exposure on request deny | Demo / CI |
 |------|-----------------|----------------------------------|-----------|
@@ -115,11 +115,11 @@ The connector code path is the same for BUFFERED / STREAMED / BUFFERED_PARTIAL: 
 | **STREAMED** | Delivers body chunks as they arrive | Non-disruptive Continues may let early chunks move toward the origin before phase-2/4 decides at EOS; body-limit rejects can still fire mid-stream on append | `demo/envoy/envoy-streamed.yaml`, `BODY_MODE=STREAMED`; hosted `e2e-streamed` ≡ `e2e-pin` product suites; `crs-full` matrix **wired** for STREAMED (hosted green not yet shown on tip) |
 | **BUFFERED_PARTIAL** | One body message up to the buffer limit (prefix only if over) | Small bodies behave like BUFFERED; over-limit trailing attacks can miss (ProcessPartial class); **not** a CRS claim | `demo/envoy/envoy-buffered-partial.yaml`, `BODY_MODE=BUFFERED_PARTIAL`; weekly `e2e-lab` `e2e-buffered-partial` (under-limit only) |
 | **NONE** | No request/response bodies to ext_proc | Body CRS n/a; query/header CRS can still fire; body attacks must reach origin | `demo/envoy/envoy-none.yaml`, `BODY_MODE=NONE`; weekly `e2e-lab` `e2e-none` (headers smoke + fail-closed); also gRPC/WS demos |
-| **FULL_DUPLEX_STREAMED** | Duplex streamed body; trailer mode must be `SEND`; `message_timeout` **off** (stall→504 N/A) | Connector holds chunks (Silent) and only emits one `StreamedBodyResponse` **after** ModSec allows, so request-body deny still keeps origin untouched. The held body is capped per direction by `--max-held-body-bytes` (default = `--max-grpc-message-bytes`, 4 MiB); past the cap the exchange fails closed with **500** | `demo/envoy/envoy-full-duplex.yaml`, `BODY_MODE=FULL_DUPLEX_STREAMED` (auto `--body-reply streamed`); CI `e2e-full-duplex` ≡ product suites; `crs-full` matrix **wired** for FULL_DUPLEX (hosted green not yet shown on tip) |
+| **FULL_DUPLEX_STREAMED** | Duplex streamed body; trailer mode must be `SEND`; `message_timeout` **off**, so the connector's `--duplex-idle-timeout` (body held, no message) and `--duplex-total-timeout` answer **504** | Connector holds chunks (Silent) and only emits one `StreamedBodyResponse` **after** ModSec allows, so request-body deny still keeps origin untouched. The held body is capped per direction by `--max-held-body-bytes` (default = `--max-grpc-message-bytes`, 4 MiB); past the cap the exchange fails closed with **500** | `demo/envoy/envoy-full-duplex.yaml`, `BODY_MODE=FULL_DUPLEX_STREAMED` (auto `--body-reply streamed`); CI `e2e-full-duplex` ≡ product suites; `crs-full` matrix **wired** for FULL_DUPLEX (hosted green not yet shown on tip) |
 
 **Out of scope on pinned Envoy v1.39.4:** `BodySendMode.GRPC` (enum 5) is marked `[#not-implemented-hide:]` in the committed proto (generated from the v1.39.1 API closure). No connector YAML, CI cell, or CRS claim.
 
-Default connector Continue for body messages is an empty `BodyResponse` (`--body-reply common`). Envoy rejects that shape under `FULL_DUPLEX_STREAMED` (`spurious_message: Normal_body_mutation…`); `--body-reply streamed` switches Continues to `BodyMutation.streamed_response`. Fail-closed / deny still use `ImmediateResponse` and are unchanged.
+Default connector Continue for body messages is an empty `BodyResponse` (`--body-reply common`). Envoy rejects that shape under `FULL_DUPLEX_STREAMED` (`spurious_message: Normal_body_mutation…`); `--body-reply streamed` switches Continues to `BodyMutation.streamed_response`. It must be `streamed` exactly when a direction in `protocol_config` is FULL_DUPLEX_STREAMED, or the stream fails closed. Fail-closed / deny still use `ImmediateResponse` and are unchanged.
 
 
 ```mermaid
@@ -148,16 +148,16 @@ Envoy's buffer limit (default 1 MiB per stream) caps BUFFERED inspectable body s
 
 | Envoy sends | Connector does | Answers |
 |-------------|----------------|---------|
-| `request_headers` | Opens the transaction (id = `x-request-id`). Runs `process_connection` (client/server IP:port from Envoy attributes), `process_uri`, adds non-pseudo headers (`host` from `:authority` if missing), `process_request_headers`. If `end_of_stream`, also runs the request-body phase. | Continue, or terminal reply |
-| `request_body` | `append_request_body` (intervention checked on every append); at `end_of_stream` runs `process_request_body` (CRS phase 2). | Continue, or terminal reply |
-| `response_headers` | Closes an unfinished request body if needed, adds headers, `process_response_headers` (phase 3). If `end_of_stream`, also runs the response-body phase. | Continue, or terminal reply |
-| `response_body` | `append_response_body`; at `end_of_stream` runs `process_response_body` (phase 4). | Continue, or terminal reply |
-| trailers | Trailer *values* are not CRS-inspected (no SecLang trailer phase). Default demo keeps trailer modes `SKIP`. With `SEND`, unfinished body is finalized when trailers mark EOS, then Continue. Without a session → fail-closed **500**. | Continue, body deny **403**, or **500** |
+| `request_headers` | Reads `protocol_config` (first message only) and opens the transaction (id generated by the connector; `x-request-id` is logged next to it). Runs `process_connection` (client/server IP:port from Envoy attributes), `process_uri`, adds non-pseudo headers (`host` from `:authority` if missing), `process_request_headers`. If `end_of_stream` or the request body mode is NONE, also runs the request-body phase. | Continue, or terminal reply |
+| `request_body` | `append_request_body` (intervention checked on every append); when the body phase ends (see body modes) runs `process_request_body` (CRS phase 2). | Continue, or terminal reply |
+| `response_headers` | If the request body phase has not run, fails closed (**500**) for a status below 400, and inspects the request body late for 4xx/5xx. Adds headers, `process_response_headers` (phase 3). If `end_of_stream` or the response body mode is NONE, also runs the response-body phase. | Continue, or terminal reply |
+| `response_body` | `append_response_body`; when the body phase ends runs `process_response_body` (phase 4). | Continue, or terminal reply |
+| trailers | Trailer *values* are not CRS-inspected (no SecLang trailer phase). Trailers end a STREAMED / FULL_DUPLEX body phase that is still open (BUFFERED bodies already ended at their one message), then Continue. Without a session → fail-closed **500**. | Continue, body deny **403**, or **500** |
 | `response_headers` with **no** prior `request_headers` | Envoy rejected the request itself before the request phase (e.g. `#fragment` → 400) and ext_proc only sees that local reply. Origin was never contacted. 4xx/5xx pass through; anything else fails closed. | Continue (4xx/5xx), else **500** |
 
 Stream end drops the session, which runs ModSecurity's logging phase (audit log) and frees the transaction. That drop runs on Tokio's blocking pool, after any terminal reply has been handed to tonic, so audit-log I/O neither stalls an async worker nor delays a **403**. Out-of-order or malformed messages fail closed with **500**.
 
-The stream only ends with gRPC **OK** after a terminal `ImmediateResponse`, or when Envoy closes its side with every message answered. Envoy v1.39 treats an OK close as "processing complete" and forwards whatever it holds, so every other end is a non-OK gRPC status, which `failure_mode_allow: false` turns into a local **500**: a message the connector cannot read (including one larger than `--max-grpc-message-bytes`), Envoy closing while a FULL_DUPLEX body is still held, a ModSecurity drop (`ABORTED`), or a connector panic (h2 stream reset).
+The stream only ends with gRPC **OK** after a terminal `ImmediateResponse`, or when Envoy closes its side with every message answered. Envoy v1.39 treats an OK close as "processing complete" and forwards whatever it holds, so every other end is a non-OK gRPC status, which `failure_mode_allow: false` turns into a local **500**: a message the connector cannot read (including one larger than `--max-grpc-message-bytes`), Envoy closing while a FULL_DUPLEX body is still held or a body phase is still open, a ModSecurity drop (`ABORTED`), or a connector panic (h2 stream reset).
 
 ---
 
@@ -171,8 +171,9 @@ The stream only ends with gRPC **OK** after a terminal `ImmediateResponse`, or w
 | Message larger than `--max-grpc-message-bytes`, or otherwise unreadable | Connector ends the stream with gRPC `INTERNAL`; Envoy (`failure_mode_allow: false`) | **500** |
 | FULL_DUPLEX body above `--max-held-body-bytes` | Connector `ImmediateResponse` 500 (`modsec_fail_closed`) | **500** |
 | Connector hung past `message_timeout` (2s) | Envoy | **504** |
+| No message from Envoy for `--stream-idle-timeout` before the verdict; FULL_DUPLEX past `--duplex-idle-timeout` / `--duplex-total-timeout` | Connector `ImmediateResponse` 504 (`modsec_stream_timeout`) | **504** |
 | Rules fail to load at boot, or the rules files define 0 rules | Connector exits non-zero before binding; Envoy then returns 500 | **500** |
-| Per-request engine error / phase-order / malformed message | Connector `ImmediateResponse` 500 (`modsec_fail_closed`) | **500** |
+| Per-request engine error / phase-order / malformed message / missing or unsupported `protocol_config` / response before the request body phase ran | Connector `ImmediateResponse` 500 (`modsec_fail_closed`) | **500** |
 | Rule deny | Connector `ImmediateResponse` (rule status, validated) | typically **403** |
 
 There is **no** code path that answers Continue after an engine error. Body mode (BUFFERED / STREAMED) does not relax fail-closed. Details and drills: [fail-closed.md](./fail-closed.md).
@@ -188,7 +189,7 @@ These limits are intentional and covered by demo suites. They are not temporary 
 | **gRPC protobuf bodies** | Headers / path / metadata hop-trace works (`hop-trace-grpc.sh`, `envoy-grpc.yaml` with body `NONE`). Fail-closed holds. | **Not** protobuf CRS / streaming RPC WAF. Stock CRS may still deny HTTP-shaped paths on the gRPC codec; that is not "gRPC body CRS." |
 | **WebSocket frames** | Handshake can be ModSec-inspected with headers-only + upgrade config. Post-upgrade frames are opaque (SQLi-shaped frames echo). | **Not** frame CRS. BUFFERED+upgrade can hang; fail-closed still applies on the handshake path. |
 | **HTTP/3** | No QUIC listener in the product demo. | Not supported. |
-| **Trailer values** | No SecLang trailer phase. | Not CRS-inspected; product default is `SKIP`. |
+| **Trailer values** | No SecLang trailer phase. | Not CRS-inspected; shipped configs with a body mode send them (`SEND`) only so the body phase can end. |
 | **Envoy local replies before request phase** | Connector only sees the local reply stream. | Not ModSec-inspected; 4xx/5xx pass through. |
 | **Pause interventions** | Logged and ignored. | ext_proc has no delay primitive. |
 | **Drop → TCP reset** | Maps to gRPC stream abort → Envoy **500**. | ImmediateResponse cannot close the TCP connection. |
@@ -235,16 +236,22 @@ Connector flags (each also readable from the environment):
 | `--listen` | `EXT_PROC_LISTEN` | `127.0.0.1:18081` | gRPC address Envoy's `modsec_ext_proc` cluster targets (HTTP/2). |
 | `--metrics-listen` | `EXT_PROC_METRICS_LISTEN` | `127.0.0.1:18082` | `/metrics` and `/healthz`. |
 | `--modsec-rules` | `MODSEC_RULES` | *(required)* | One or more files, loaded in order (engine directives → `crs-setup.conf` → `rules/*.conf`). Startup fails if they define 0 rules in total; the per-file and total counts are logged. |
-| `--body-reply` | `EXT_PROC_BODY_REPLY` | `common` | `common` for BUFFERED / STREAMED / BUFFERED_PARTIAL / NONE; `streamed` for FULL_DUPLEX_STREAMED. |
+| `--body-reply` | `EXT_PROC_BODY_REPLY` | `common` | Consistency check only; the modes come from `protocol_config`. `common` when no direction is FULL_DUPLEX_STREAMED, `streamed` when one is; a stream that disagrees fails closed (**500**). |
 | `--max-grpc-message-bytes` | `EXT_PROC_MAX_GRPC_MESSAGE_BYTES` | `4194304` (4 MiB) | Largest `ProcessingRequest` accepted. A larger one ends the stream with gRPC `INTERNAL` → Envoy **500**. Keep it above Envoy's `per_connection_buffer_limit_bytes` (default 1 MiB) plus the header block whenever you raise that limit for BUFFERED bodies. Replies may be up to 64 KiB larger. |
 | `--max-held-body-bytes` | `EXT_PROC_MAX_HELD_BODY_BYTES` | `--max-grpc-message-bytes` | `streamed` only: the body held per direction until ModSecurity allows it, sent back in one message. Past it the exchange fails closed with **500**. Must not exceed `--max-grpc-message-bytes`. |
+| `--stream-idle-timeout` | `EXT_PROC_STREAM_IDLE_TIMEOUT` | `300` s | Longest wait for Envoy's next message before the verdict; past it **504**. |
+| `--duplex-idle-timeout` | `EXT_PROC_DUPLEX_IDLE_TIMEOUT` | `30` s | FULL_DUPLEX_STREAMED: longest gap between messages while a body is held; past it **504**. |
+| `--duplex-total-timeout` | `EXT_PROC_DUPLEX_TOTAL_TIMEOUT` | `300` s | FULL_DUPLEX_STREAMED: longest a stream may run before its verdict; past it **504**. |
+| `--max-concurrent-streams` | `EXT_PROC_MAX_CONCURRENT_STREAMS` | `1024` | HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS` per Envoy connection. |
+| `--http2-keepalive-interval` / `--http2-keepalive-timeout` | `EXT_PROC_HTTP2_KEEPALIVE_INTERVAL` / `_TIMEOUT` | `30` s / `10` s | HTTP/2 PING on idle Envoy connections; unanswered → connection closed. |
+| `--allow-detection-only` | `EXT_PROC_ALLOW_DETECTION_ONLY` | off | Lets `/healthz` report ready when the rules leave `SecRuleEngine` DetectionOnly or Off. |
 
-Logging: `RUST_LOG` (default `info`); ModSecurity's own messages are under target `modsecurity` at `debug`.
+Logging: `RUST_LOG` (default `info`); ModSecurity's own messages are under target `modsecurity` at `debug`; the WARN line for an intervention carries only the transaction id, `request_id`, rule id and a truncated `msg`, and the full ModSecurity log line goes to `debug`.
 
 Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/envoy/envoy.yaml)):
 
 - `failure_mode_allow: false` and `message_timeout: 2s`
-- `processing_mode`: headers `SEND`, bodies `BUFFERED` (default) or `STREAMED`, trailers `SKIP` (product default)
+- `processing_mode`: headers `SEND`, bodies `BUFFERED` (default) or `STREAMED`, trailers `SEND` whenever a body mode is set (`SKIP` only with body mode `NONE`)
 - `request_attributes`: `source.address`, `source.port`, `destination.address`, `destination.port`, `request.protocol` (without them ModSecurity sees `127.0.0.1` as `REMOTE_ADDR`)
 - `http_protocol_options.allow_custom_methods: true` so CRS sees methods like `TEST`
 
@@ -254,5 +261,5 @@ Envoy settings the connector relies on (see [`demo/envoy/envoy.yaml`](../demo/en
 
 - **Logs** (`tracing`): one line per phase with `request_id`, `phase`, `action` (`allow` / `deny` / `redirect` / `drop` / `fail_closed`), `latency_ms`, `body_bytes`.
 - **Metrics** (`GET /metrics`): `ext_proc_requests_total`, `ext_proc_allow_total`, `ext_proc_deny_total`, `ext_proc_fail_closed_total`, `ext_proc_stream_errors_total` (streams the connector aborted with a non-OK status: unreadable or oversized message, half-close with a held body), `ext_proc_local_reply_passthrough_total`, body-byte counters, and per-phase latency histograms.
-- **Readiness** (`GET /healthz`): 200 only if, within 2s, the gRPC listener completes an HTTP/2 preface + SETTINGS exchange **and** a headers-only probe through a fresh in-process `Exchange` answers Continue. The probe uses its own throwaway counters and logs its phases at `debug`, so probes never appear in `ext_proc_*` metrics or INFO logs. It still runs a real ModSecurity transaction, so with `SecAuditEngine On` (not `RelevantOnly`) each probe writes an audit record.
+- **Readiness** (`GET /healthz`): 503 unless the engine mode measured at load is `On` (`--allow-detection-only` accepts DetectionOnly / Off); every answer ends with `engine_mode=` and `rules=` lines. Then 200 only if, within 2s, the gRPC listener completes an HTTP/2 preface + SETTINGS exchange **and** a headers-only probe through a fresh in-process `Exchange` answers Continue. The probe uses its own throwaway counters and logs its phases at `debug`, so probes never appear in `ext_proc_*` metrics or INFO logs. It still runs a real ModSecurity transaction, so with `SecAuditEngine On` (not `RelevantOnly`) each probe writes an audit record.
 - **Envoy side**: `%RESPONSE_CODE_DETAILS%` shows `modsecurity_intervention` / `modsec_fail_closed` / `ext_proc_error_*`; watch `http.<prefix>.ext_proc.modsec_ext_proc.*` (`streams_failed`, `message_timeouts`, `failure_mode_allowed` must stay 0).

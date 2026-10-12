@@ -27,7 +27,7 @@ HTTP/1.1 and HTTP/2 use the same connector path. Trace one request: `./demo/scri
 |---------|------------|
 | Request / response headers | Yes (when `SEND`) |
 | Request / response bodies | Depends on body mode (BUFFERED / STREAMED / FULL_DUPLEX yes; PARTIAL = prefix; NONE = no) |
-| Trailer *values* | No (no SecLang trailer phase; product default `SKIP`) |
+| Trailer *values* | No (no SecLang trailer phase; shipped configs with a body mode send trailers only so the body phase can end) |
 | gRPC protobuf bodies | No (headers/path hop-trace only) |
 | WebSocket frames | No (handshake headers only) |
 | HTTP/3 | Not supported in the product demo |

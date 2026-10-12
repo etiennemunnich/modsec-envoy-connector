@@ -44,7 +44,7 @@ curl -i "http://127.0.0.1:18080/search?q=1'%20UNION%20SELECT%201,2--"  # 403 (CR
 ./demo/scripts/down.sh
 ```
 
-Default body mode is BUFFERED. Other modes are in [docs/modes](./docs/modes/README.md). Early-tester checklist: [UAT](./docs/modes/uat.md).
+Default body mode is BUFFERED. Other modes are in [docs/modes](./docs/modes/README.md). With any body mode other than NONE, your Envoy `ext_proc` config must set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; without them, a request whose body ends in trailers fails closed (**500**). Early-tester checklist: [UAT](./docs/modes/uat.md).
 
 ## Docs
 
