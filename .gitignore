@@ -22,3 +22,7 @@ demo/.crs-*/
 
 # ASH scan output. Config stays at .ash/.ash.yaml.
 .ash/ash_output/
+
+# Docsify / GitHub Pages: never ignore .nojekyll (Pages needs it under /docs).
+!**/.nojekyll
+!.nojekyll

@@ -66,7 +66,7 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 
 ## Ops / cleanup
 
-- **GHCR stale tags:** dry-run then optional delete via `./scripts/ghcr-delete-stale.sh` (allowlisted patterns only; needs `read:packages` / `delete:packages` on your `gh` token; the script does not widen auth). Detail: [`docs/findings/ghcr-stale-tags.md`](./docs/findings/ghcr-stale-tags.md).
+- **GHCR stale tags:** dry-run then optional delete via `./scripts/ghcr-delete-stale.sh` (allowlisted patterns only; needs `read:packages` / `delete:packages` on your `gh` token; the script does not widen auth). Defaults to `PACKAGE=modsec-envoy-connector`. For predecessor-package leftovers use `PACKAGE=envoy-modsec-connex`. Do not paste ad-hoc `gh api` delete loops.
 
 ## Versioning
 
