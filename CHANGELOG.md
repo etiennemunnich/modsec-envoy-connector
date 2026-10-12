@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.1.0-alpha.1] — 2026-10-12
+
+First **alpha** for early testing / UAT. Not a production release.
+
+**Pins:** Envoy `v1.39.3`, libmodsecurity `v3.0.17`, CRS `v4.30.0`
+(see `versions.lock.md` at this tag).
+
 ### Added
 
 - Early-tester / UAT path: [`docs/modes/uat.md`](./docs/modes/uat.md)
@@ -18,19 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Docs and demo entry points aligned for 0.1 alpha early testing
 - Consumer-facing product name consistency (`modsec-envoy-connector`)
 
-## [v0.1.0-alpha.1] — planned
-
-First **alpha** for early testing / UAT. Not a production release.
-
-**Pins (expected):** Envoy `v1.39.3`, libmodsecurity `v3.0.17`, CRS `v4.30.0`
-(see `versions.lock.md` at tag time).
-
 **Install / prove:** [Getting started](./docs/modes/getting-started.md) →
 [UAT checklist](./docs/modes/uat.md). Local: `up.sh` → `smoke.sh` →
 `fail-closed.sh`. Hosted: `ci-ok` on both arches for the tag commit on `main`.
 
-**Cut when:** checklist in [`docs/modes/uat.md`](./docs/modes/uat.md) is green;
-tag matches crate major.minor.patch (`0.1.0`); Release marked **pre-release**.
-
-[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/main...HEAD
+[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...HEAD
 [v0.1.0-alpha.1]: https://github.com/etiennemunnich/modsec-envoy-connector/releases/tag/v0.1.0-alpha.1

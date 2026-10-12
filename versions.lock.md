@@ -10,8 +10,8 @@ labels as versions.
 | **E. Envoy** | `ENVOY_PIN` | `v1.39.3` | Fleet / lab ExtProc host |
 | **A. Engine / ABI** | `MODSECURITY_PIN` | `v3.0.17` | libmodsecurity latest stable v3 |
 | **B. CRS pack** | `CRS_TAG` | `v4.30.0` | Optional LTS: `v4.25.2` |
-| **D. Connector** | git SHA / OCI | *(tip SHA)* | Fill at release / image publish |
-| **P. Product** | git tag | `v0.1.0-alpha.1` | Next early-test tag; crate semver stays `0.1.0` until final |
+| **D. Connector** | git SHA / OCI | *(tip SHA at tag)* | Filled when `v0.1.0-alpha.1` is tagged / image published |
+| **P. Product** | git tag | `v0.1.0-alpha.1` | Early-test pre-release; crate semver stays `0.1.0` until final |
 | **S. ASH** | `ASH_PIN` | `af1206aff596f1288ad066828058b3011de2a998` | awslabs/automated-security-helper v3.7.1 tip (commit, not tag) |
 
 ### Consumers
