@@ -54,7 +54,7 @@ Sources: [How it works](./how-it-works.md), [Testing suite](./testing-suite.md).
 3. Branch: `main` (after merge), folder: **`/docs`**
 4. Site entry: `…/modes/` (serves `docs/modes/index.html`)
 
-**GitHub Wiki (optional):** copy these pages into the wiki remote; GFM Mermaid renders there too. This tree is the in-repo canonical copy so PRs and Pages stay reviewable. See [PUBLISHING.md](./PUBLISHING.md).
+**GitHub Wiki (optional):** copy these pages into the wiki remote; GFM Mermaid renders there too. This tree is the in-repo canonical copy so PRs and Pages stay reviewable.
 
 ```mermaid
 flowchart LR
