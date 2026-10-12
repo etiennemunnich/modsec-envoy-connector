@@ -4,7 +4,40 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: github-actions
-    directory: /
+    cooldown:
+      default-days: 3
+    groups:
+      cargo:
+        patterns: ["*"]
+  # tools/protogen is outside the workspace and has its own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /tools/protogen
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      protogen:
+        patterns: ["*"]
+  # The composite actions pin actions/cache too; keep them in step with the workflows.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      actions:
+        patterns: ["*"]
+  # demo/grpc-echo: the demo-only gRPC origin used by hop-trace-grpc.sh.
+  - package-ecosystem: gomod
+    directory: /demo/grpc-echo
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      grpc-echo:
+        patterns: ["*"]
