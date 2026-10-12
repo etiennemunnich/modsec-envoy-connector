@@ -6,7 +6,7 @@
 #   SUITES="smoke fail-closed fail-modes go-ftw-smoke" ./scripts/ci-live-e2e.sh
 #
 # Env:
-#   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace
+#   SUITES           any of: smoke fail-closed fail-modes trailers h2-trailers hop-trace
 #                    hop-trace-grpc hop-trace-ws-frames go-ftw-smoke go-ftw-body go-ftw-full
 #                    partial-honesty (BUFFERED_PARTIAL only)
 #                    buffered-oversize (BUFFERED only) connect-assert
@@ -134,6 +134,12 @@ MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 MIN_SMOKE_HEADER="${MIN_SMOKE_HEADER:-5}"
 MIN_TRAILERS="${MIN_TRAILERS:-5}"
+# h2-trailers skips its body cell under NONE (bodies are not inspected).
+if [[ "${BODY_MODE}" == "NONE" ]]; then
+  MIN_H2_TRAILERS="${MIN_H2_TRAILERS:-3}"
+else
+  MIN_H2_TRAILERS="${MIN_H2_TRAILERS:-4}"
+fi
 MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
 MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
 MIN_PARTIAL_HONESTY="${MIN_PARTIAL_HONESTY:-3}"
@@ -201,6 +207,11 @@ floor() {
       n="$(grep -Eo 'trailer_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
       [[ "${n:-0}" -ge "${MIN_TRAILERS}" ]] || { echo "trailer_checks=${n:-0} < ${MIN_TRAILERS}"; return 1; }
       ;;
+    h2-trailers)
+      grep -qE '\bH2 TRAILERS PASSED\b' "$2" || { echo "missing H2 TRAILERS PASSED"; return 1; }
+      n="$(grep -Eo 'H2 TRAILERS PASSED .*checks=[0-9]+' "$2" | tail -1 | sed -E 's/.*checks=//' || true)"
+      [[ "${n:-0}" -ge "${MIN_H2_TRAILERS}" ]] || { echo "checks=${n:-0} < ${MIN_H2_TRAILERS}"; return 1; }
+      ;;
     hop-trace-grpc)
       grep -qE '\bHOP-TRACE-GRPC PASSED\b' "$2" || { echo "missing HOP-TRACE-GRPC PASSED"; return 1; }
       n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
@@ -265,7 +276,7 @@ for suite in ${SUITES}; do
   echo "==> ${suite}"
   log="${ROOT}/demo/.run/e2e-${suite}.log"
   case "${suite}" in
-    smoke | fail-closed | fail-modes | trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
+    smoke | fail-closed | fail-modes | trailers | h2-trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
     hop-trace-grpc) cmd=("${DEMO}/hop-trace-grpc.sh") ;;
     hop-trace-ws-frames) cmd=("${DEMO}/hop-trace-ws-frames.sh") ;;

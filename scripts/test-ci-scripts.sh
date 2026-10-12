@@ -168,6 +168,27 @@ trailers_floor "${TMP}/trailers-failed.log" >/dev/null && ok=0 || ok=1
 check "e2e floor: TRAILERS FAILED fails (negative)" 1 "${ok}"
 trailers_floor "${TMP}/trailers-fake.log" >/dev/null && ok=0 || ok=1
 check "e2e floor: fake trailer_checks without PASSED fails (negative)" 1 "${ok}"
+h2_trailers_floor() { # mirrors ci-live-e2e.sh floor h2-trailers (non-NONE floor 4)
+  local n
+  grep -qE '\bH2 TRAILERS PASSED\b' "$1" || { echo "missing H2 TRAILERS PASSED"; return 1; }
+  n="$(grep -Eo 'H2 TRAILERS PASSED .*checks=[0-9]+' "$1" | tail -1 | sed -E 's/.*checks=//' || true)"
+  [[ "${n:-0}" -ge 4 ]] || { echo "checks=${n:-0} < 4"; return 1; }
+  return 0
+}
+printf '%s\n' 'H2 TRAILERS PASSED body_mode=STREAMED checks=5' >"${TMP}/h2t-ok.log"
+printf '%s\n' 'H2 TRAILERS PASSED body_mode=STREAMED checks=3' >"${TMP}/h2t-low.log"
+printf '%s\n' 'H2 TRAILERS FAILED body_mode=BUFFERED PASS=2' >"${TMP}/h2t-failed.log"
+printf '%s\n' 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=5' >"${TMP}/h2t-other.log"
+check "e2e summary: H2 TRAILERS PASSED matches SUMMARY_RE" 1 \
+  "$(grep -cE "${SUMMARY_RE}" "${TMP}/h2t-ok.log")"
+h2_trailers_floor "${TMP}/h2t-ok.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: real H2 TRAILERS PASSED passes" 0 "${ok}"
+h2_trailers_floor "${TMP}/h2t-low.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: H2 TRAILERS below floor fails (negative)" 1 "${ok}"
+h2_trailers_floor "${TMP}/h2t-failed.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: H2 TRAILERS FAILED fails (negative)" 1 "${ok}"
+h2_trailers_floor "${TMP}/h2t-other.log" >/dev/null && ok=0 || ok=1
+check "e2e floor: H1 TRAILERS PASSED is not h2-trailers (negative)" 1 "${ok}"
 
 grpc_floor() { # mirrors ci-live-e2e.sh floor hop-trace-grpc
   local n
