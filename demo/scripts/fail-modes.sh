@@ -181,13 +181,13 @@ run_class2() {
     esac
     stop_pidfile "${RUN}/connector.pid" KILL
     rc=0
-    "${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen 127.0.0.1:18082 \
+    "${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen "127.0.0.1:${METRICS_PORT}" \
       --modsec-rules "${bad}" >>"${RUN}/connector.log" 2>&1 || rc=$?
     hz="$(http_code "${METRICS}/healthz")"
-    if [[ "${rc}" -ne 0 && -z "$(port_pid 18081)" && "${hz}" != 200 ]]; then
-      record PASS "${id}-${name}-boot" "exit ${rc}, nothing on :18081, healthz ${hz}"
+    if [[ "${rc}" -ne 0 && -z "$(port_pid "${CONNECTOR_PORT}")" && "${hz}" != 200 ]]; then
+      record PASS "${id}-${name}-boot" "exit ${rc}, nothing on :${CONNECTOR_PORT}, healthz ${hz}"
     else
-      record FAIL "${id}-${name}-boot" "exit ${rc}, listener pid '$(port_pid 18081)', healthz ${hz}"
+      record FAIL "${id}-${name}-boot" "exit ${rc}, listener pid '$(port_pid "${CONNECTOR_PORT}")', healthz ${hz}"
     fi
     expect "${id}-${name}-get" 500 0 "${BASE}/"
   done
