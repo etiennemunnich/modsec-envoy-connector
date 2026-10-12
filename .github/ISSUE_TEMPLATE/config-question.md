@@ -13,4 +13,4 @@ labels: question
 
 **Question**
 
-`failure_mode_allow` stays `false` on enforcement. FULL_DUPLEX turns `message_timeout` off; the other modes use 2s. Say which of those you are on.
+`failure_mode_allow` stays `false` on enforcement. Envoy applies no `message_timeout` under FULL_DUPLEX_STREAMED; the demo configs use 2s in the other modes. Say which of those you are on. Reference config: [deploy.md](https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/docs/deploy.md).

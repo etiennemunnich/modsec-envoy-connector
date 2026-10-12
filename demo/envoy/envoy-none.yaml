@@ -1,4 +1,4 @@
-# Demo Envoy (v1.39.1): HTTP headers-only ext_proc (BodySendMode NONE).
+# Demo Envoy: HTTP headers-only ext_proc (BodySendMode NONE).
 # client → Envoy :18080 → ext_proc headers to connector :18081 → origin :18098.
 #
 # Honest role: query/header CRS can still fire; request/response bodies are NOT
