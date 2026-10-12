@@ -4,7 +4,7 @@ Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **M
 
 Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and tells Envoy to allow or block traffic before it reaches your origin. The connector loads libmodsecurity in-process and calls its C API from Rust.
 
-**Status:** preparing **0.1 alpha** for early testing / UAT — not a production release. Sign-off path: [UAT checklist](./docs/modes/uat.md). Notes: [`CHANGELOG.md`](./CHANGELOG.md).
+**Status:** **0.1 alpha** (`v0.1.0-alpha.1`) for early testing / UAT — not a production release. Sign-off path: [UAT checklist](./docs/modes/uat.md). Notes: [`CHANGELOG.md`](./CHANGELOG.md).
 
 Pinned versions: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0** ([`versions.lock.md`](./versions.lock.md)).
 
