@@ -74,6 +74,7 @@ More checks against the same running demo:
 
 ```bash
 ./demo/scripts/fail-modes.sh                  # every failure class over HTTP/1.1 and HTTP/2
+./demo/scripts/h2-trailers.sh                 # HTTP/2 bodies and queries that end in trailers
 ./demo/scripts/install-go-ftw.sh              # go-ftw, the CRS regression runner, into ~/.local/bin
 ./demo/scripts/go-ftw.sh smoke                # CRS regression tests, HTTP/1.x only
 ./demo/scripts/hop-trace.sh --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'

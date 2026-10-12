@@ -9,7 +9,8 @@ While the project is in **0.1 alpha**, treat tags as early-testing artifacts: fi
 | ------- | --------- |
 | Latest release | :white_check_mark: |
 | `main` tip | :white_check_mark: (pre-release / development) |
-| `v0.1.0-alpha.*` | :white_check_mark: (early testing only; not production) |
+| `v0.1.0-alpha.2` and later alphas | :white_check_mark: (early testing only; not production) |
+| `v0.1.0-alpha.1` | :x: forwards some requests uninspected; see [`CHANGELOG.md`](./CHANGELOG.md) |
 | Older releases | :x: unless a release notes line says otherwise |
 
 Pinned Envoy / libmodsecurity / CRS versions for a given release are listed in that release and in `versions.lock.md`. Report against the pins you actually ran.
@@ -22,8 +23,8 @@ Pinned Envoy / libmodsecurity / CRS versions for a given release are listed in t
 
 For any route that claims protection:
 
-- ExtProc unreachable, connector crash/kill, gRPC error, ModSec init or rules load failure → **deny** (500 from Envoy or the connector).
-- A hung connector → **504** after `message_timeout`, except under `FULL_DUPLEX_STREAMED`, where Envoy applies no `message_timeout` and the request waits for another Envoy timeout ([fail-closed.md](./docs/fail-closed.md#full_duplex_streamed-and-a-hung-connector)).
+- ExtProc unreachable, connector crash/kill, gRPC error, a message the connector cannot read, ModSec init or rules load failure (including a ruleset with 0 rules) → **deny** (500 from Envoy or the connector). `/healthz` stays 503 unless the rules leave `SecRuleEngine On`.
+- A hung connector → **504** after `message_timeout`, except under `FULL_DUPLEX_STREAMED`, where Envoy applies no `message_timeout` and the request waits for another Envoy timeout ([fail-closed.md](./docs/fail-closed.md#full_duplex_streamed-and-a-hung-connector)). Envoy going silent past the connector's own stream and duplex deadlines → **504** from the connector.
 - Never redefine a failing mode as "out of scope."
 - The body mode does **not** relax this. Open defects that break it in specific configurations are listed in [deploy.md](./docs/deploy.md#known-issues).
 
@@ -37,7 +38,7 @@ Built on Envoy [security considerations](https://builtonenvoy.io/docs/security-c
 
 ### Bounds
 
-- Keep Envoy's body buffer limit under 4 MiB; over the limit, BUFFERED must **reject** (Envoy answers 413), not hang or pass.
+- Keep the connector's `--max-grpc-message-bytes` (default 4 MiB) above Envoy's body buffer limit plus the headers. A larger message fails closed (**500**); over Envoy's own limit, BUFFERED rejects with **413**. Under FULL_DUPLEX_STREAMED a body over `--max-held-body-bytes` fails closed.
 - Set ExtProc `message_timeout` for your largest body, and set route / stream timeouts on FULL_DUPLEX_STREAMED routes.
 - Do not enable BUFFERED body modes on WebSocket upgrade routes.
 
