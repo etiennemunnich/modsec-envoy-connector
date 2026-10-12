@@ -58,7 +58,7 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 | `pin-check` (pins, workflow rules, CI-script tests, shellcheck, skip tokens) | every push to `main`, PR and dispatch | `./scripts/check-pins.sh`, `check-workflows.sh`, `test-ci-scripts.sh` |
 | `rust-quality` (fmt, clippy, tests incl. gRPC against libmodsecurity, build) | same, × arch, unless skipped | the cargo commands above |
 | `msrv`, `supply-chain` (cargo-deny), `protos` | same, unless skipped | `cargo deny check`, `./scripts/gen-protos.sh --check` |
-| Live smoke, fail-closed, fail-modes H1+H2, trailers, hop-trace, go-ftw smoke | `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch, unless skipped | `./scripts/ci-live-e2e.sh` or the `demo/scripts/` suites |
+| Live smoke, fail-closed, fail-modes H1+H2, trailers, HTTP/2 trailers, hop-trace, go-ftw smoke | `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch, unless skipped | `./scripts/ci-live-e2e.sh` or the `demo/scripts/` suites |
 | BUFFERED_PARTIAL, NONE, asymmetric modes | `e2e-lab` × arch (weekly) | `BODY_MODE=… ./demo/scripts/up.sh` |
 | New stable Envoy / libmodsecurity / CRS | `release-watch` (daily) → `stable-candidate` × arch → issue | `ENVOY_VERSION=… ./scripts/ci-live-e2e.sh` |
 | Last 3 stables per axis | `stable-window` × arch (weekly) | same, per cell |
@@ -75,13 +75,12 @@ GHCR cleanup is an owner task: `./scripts/ghcr-delete-stale.sh` (dry-run by defa
 
 ## Releases
 
-1. Move the `[Unreleased]` section of [`CHANGELOG.md`](./CHANGELOG.md) under the new version, and set `PRODUCT_VERSION` in `versions.lock.md` to the tag (e.g. `v0.1.0-alpha.2`). Land that on `main` through a PR.
-2. Crate versions in `crates/*/Cargo.toml` stay at the `X.Y.Z` prefix (`0.1.0` for `v0.1.0-alpha.2`); the release workflow compares the tag's prefix with the crate version.
-3. Check that the commit has a successful `ci` run with every required check green. A merge that took the tested-tree skip does not: run `gh workflow run ci.yml --ref main` and wait for it first. `scripts/release-gate.sh` refuses the tag otherwise.
-4. Run the local early-tester checklist ([docs/getting-started.md](./docs/getting-started.md#early-tester-checklist)) on that commit.
-5. Tag it: `git tag -a v0.1.0-alpha.2 <sha> && git push origin v0.1.0-alpha.2`.
-6. The `release` workflow builds the Linux tarballs and the multi-arch GHCR image and creates the GitHub Release (pre-release for suffixed tags) with the pins and artifact notes. Paste the CHANGELOG section into the Release body.
-7. After the release, record the commit and image digest in the connector row of `versions.lock.md`.
+1. In a PR to `main`: set `version` in every `crates/*/Cargo.toml` to the tag without the `v`, pre-release included (`0.1.0-alpha.2` for `v0.1.0-alpha.2`), and refresh `Cargo.lock` (`cargo update -w`); give the version's heading in [`CHANGELOG.md`](./CHANGELOG.md) its date; set `PRODUCT_VERSION` in `versions.lock.md` to the tag. The release workflow refuses a tag that is not exactly `v` + the crate version ([`scripts/release-version.sh`](./scripts/release-version.sh)).
+2. Check that the commit has a successful `ci` run with every required check green. A merge that took the tested-tree skip does not: run `gh workflow run ci.yml --ref main` and wait for it first. `scripts/release-gate.sh` refuses the tag otherwise.
+3. Run the local early-tester checklist ([docs/getting-started.md](./docs/getting-started.md#early-tester-checklist)) on that commit.
+4. Tag it: `git tag -a v0.1.0-alpha.2 <sha> && git push origin v0.1.0-alpha.2`.
+5. The `release` workflow builds the Linux tarballs and the multi-arch GHCR image and creates the GitHub Release (pre-release for suffixed tags) with the pins and artifact notes. Paste the CHANGELOG section into the Release body.
+6. After the release, record the commit and image digest in the connector row of `versions.lock.md`.
 
 A manual dispatch of `release` builds and tests the artifacts but publishes nothing. Do not market an alpha as production-ready.
 

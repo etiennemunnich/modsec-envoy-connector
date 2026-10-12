@@ -550,6 +550,33 @@ check "release-gate: checks from another suite (neg)" 1 "$(gate identical "$(gat
 check "release-gate: one e2e check missing (neg)"     1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions 'e2e-full-duplex / e2e (aarch64, FULL_DUPLEX_STREAMED)')")"
 check "release-gate: ci-ok missing (neg)"             1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions ci-ok)")"
 
+# --- release-version.sh: the tag equals v + every crate version -------------
+# relver <engine version> <connector version> <tag> -> 0 accepted, 1 refused
+relver() {
+  local root="${TMP}/relver-${RANDOM}"
+  mkdir -p "${root}/crates/modsec-engine" "${root}/crates/ext-proc-modsec"
+  printf '[package]\nname = "modsec-engine"\nversion = "%s"\n' "$1" >"${root}/crates/modsec-engine/Cargo.toml"
+  printf '[package]\nname = "ext-proc-modsec"\nversion = "%s"\n\n[dependencies]\nmodsec-engine = { version = "9.9.9" }\n' "$2" \
+    >"${root}/crates/ext-proc-modsec/Cargo.toml"
+  RELEASE_VERSION_ROOT="${root}" "${ROOT}/scripts/release-version.sh" "$3" >/dev/null 2>&1 && echo 0 || echo 1
+}
+check "release-version: pre-release tag = crate version"  0 "$(relver 0.1.0-alpha.2 0.1.0-alpha.2 v0.1.0-alpha.2)"
+check "release-version: final tag = crate version"        0 "$(relver 0.1.0 0.1.0 v0.1.0)"
+check "release-version: pre-release tag, crate X.Y.Z (neg)" 1 "$(relver 0.1.0 0.1.0 v0.1.0-alpha.2)"
+check "release-version: final tag, pre-release crate (neg)" 1 "$(relver 0.1.0-alpha.2 0.1.0-alpha.2 v0.1.0)"
+check "release-version: other pre-release (neg)"          1 "$(relver 0.1.0-alpha.1 0.1.0-alpha.1 v0.1.0-alpha.2)"
+check "release-version: one crate behind (neg)"           1 "$(relver 0.1.0-alpha.1 0.1.0-alpha.2 v0.1.0-alpha.2)"
+check "release-version: tag without v (neg)"              1 "$(relver 0.1.0 0.1.0 0.1.0)"
+check "release-version: not semver (neg)"                 1 "$(relver 0.1.0 0.1.0 v0.1)"
+empty_root="${TMP}/relver-empty"
+mkdir -p "${empty_root}/crates"
+RELEASE_VERSION_ROOT="${empty_root}" "${ROOT}/scripts/release-version.sh" v0.1.0 >/dev/null 2>&1 && ok=0 || ok=1
+check "release-version: no crates (neg)" 1 "${ok}"
+"${ROOT}/scripts/release-version.sh" >/dev/null 2>&1 && ok=0 || ok=1
+check "release-version: no tag (neg)" 1 "${ok}"
+grep -q 'release-version.sh "${GITHUB_REF_NAME}"' "${ROOT}/.github/workflows/release.yml" && ok=0 || ok=1
+check "release-version: gate job calls it" 0 "${ok}"
+
 # --- demo port remap (placeholders, not chained sed) -----------------------
 # shellcheck source=remap-demo-ports.sh
 source "${ROOT}/scripts/remap-demo-ports.sh"

@@ -1,12 +1,14 @@
 name: release
 
-# Tag vX.Y.Z on main → gate (scripts/release-gate.sh: the tag commit is on
-# main, and a successful ci.yml run for that exact commit has every required
-# check green from GitHub Actions) → per-arch native release build (x86_64,
-# aarch64) → ext-proc-modsec-<ver>-linux-<arch>.tar.gz + .sha256 (bin/ finds
-# lib/libmodsecurity.so via RUNPATH $ORIGIN/../lib) → per-arch image pushed
-# by digest (untagged) → multi-arch manifest ghcr.io/<owner>/<repo>:<ver> from
-# both digests → GitHub Release (a pre-release for vX.Y.Z-suffix tags).
+# Tag vX.Y.Z on main → gate (scripts/release-version.sh: the tag equals v +
+# every crate version, pre-release included; scripts/release-gate.sh: the tag
+# commit is on main, and a successful ci.yml run for that exact commit has
+# every required check green from GitHub Actions) → per-arch native release
+# build (x86_64, aarch64) → ext-proc-modsec-<ver>-linux-<arch>.tar.gz +
+# .sha256 (bin/ finds lib/libmodsecurity.so via RUNPATH $ORIGIN/../lib) →
+# per-arch image pushed by digest (untagged) → multi-arch manifest
+# ghcr.io/<owner>/<repo>:<ver> from both digests → GitHub Release (a
+# pre-release for vX.Y.Z-suffix tags).
 # Build provenance is attested when the repo is public.
 # workflow_dispatch is a build-only dry run from any ref: it builds and tests
 # the tarballs and images and uploads the tarballs as run artifacts. It pushes
@@ -37,6 +39,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Tag equals v + the crate version
+        if: github.ref_type == 'tag'
+        run: ./scripts/release-version.sh "${GITHUB_REF_NAME}"
       - name: Tag commit is on main and ci is green for it
         if: github.ref_type == 'tag'
         env:
@@ -73,9 +78,7 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             ver="${GITHUB_REF_NAME}"
-            [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::tag $ver is not vX.Y.Z"; exit 1; }
-            want="v$(grep -m1 '^version' crates/ext-proc-modsec/Cargo.toml | cut -d'"' -f2)"
-            [[ "${ver%%-*}" == "$want" ]] || { echo "::error::tag $ver != crate version $want"; exit 1; }
+            ./scripts/release-version.sh "$ver"
           else
             ver="sha-${GITHUB_SHA::7}"
           fi
