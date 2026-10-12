@@ -5,7 +5,7 @@ name: ci
 # pushes do not run this workflow (no cursor/** push trigger).
 #   pin-check                          every run (pins, workflow rules, skip signal)
 #   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked); CRS pin
-#                                      installed and CONNEX_REQUIRE_CRS=1, so the
+#                                      installed and MODSEC_REQUIRE_CRS=1, so the
 #                                      engine CRS test fails rather than skips
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
@@ -146,7 +146,7 @@ jobs:
         env:
           # crs_allows_root_and_blocks_sqli_when_present fails instead of
           # skipping when demo/.crs is missing (no vacuous pass).
-          CONNEX_REQUIRE_CRS: "1"
+          MODSEC_REQUIRE_CRS: "1"
         run: cargo test --workspace --locked
 
       - name: cargo build -p ext-proc-modsec

@@ -4,7 +4,7 @@
 Appends one line per request it actually receives to a hits file, so the demo
 scripts can prove that denied and fail-closed requests never reached it.
 
-  GET /leak   → 200 text/plain containing CONNEX-LEAK-MARKER (response-path demo)
+  GET /leak   → 200 text/plain containing DEMO-LEAK-MARKER (response-path demo)
   POST *      → 200 echo of the received byte count
   anything    → 200 "origin ok"
 """
@@ -36,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._record()
         if self.path.split("?", 1)[0] == "/leak":
-            self._reply(b"internal token: CONNEX-LEAK-MARKER\n")
+            self._reply(b"internal token: DEMO-LEAK-MARKER\n")
         else:
             self._reply(f"origin ok: {self.command} {self.path}\n".encode())
 

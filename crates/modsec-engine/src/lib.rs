@@ -40,7 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::{debug, info, warn};
 
-const CONNECTOR_INFO: &str = concat!("envoy-modsec-connex/", env!("CARGO_PKG_VERSION"));
+const CONNECTOR_INFO: &str = concat!("modsec-envoy-connector/", env!("CARGO_PKG_VERSION"));
 
 /// First of the two engine-mode probe rule ids. They are only ever loaded
 /// into the throwaway probe ruleset, never into the one serving traffic.
@@ -1277,7 +1277,7 @@ mod tests {
             .expect("resp headers");
         assert_eq!(d, Decision::Allow);
         let mid = s
-            .append_response_body(b"secret: CONNEX-LEAK-MARKER\n")
+            .append_response_body(b"secret: TEST-LEAK-MARKER\n")
             .expect("append");
         let d = if mid.is_disruptive() {
             mid
@@ -1329,13 +1329,13 @@ mod tests {
         );
     }
 
-    /// Runs against a CRS checkout at `$CONNEX_CRS_DIR` (default `demo/.crs`,
+    /// Runs against a CRS checkout at `$MODSEC_CRS_DIR` (default `demo/.crs`,
     /// created by `demo/scripts/install-crs.sh`). Without CRS it skips, unless
-    /// `CONNEX_REQUIRE_CRS=1` (set in CI), where a missing CRS fails the test.
+    /// `MODSEC_REQUIRE_CRS=1` (set in CI), where a missing CRS fails the test.
     fn crs_engine() -> Option<Arc<Engine>> {
-        let required = std::env::var("CONNEX_REQUIRE_CRS").is_ok_and(|v| v == "1");
+        let required = std::env::var("MODSEC_REQUIRE_CRS").is_ok_and(|v| v == "1");
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let crs = std::env::var_os("CONNEX_CRS_DIR")
+        let crs = std::env::var_os("MODSEC_CRS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| root.join("demo/.crs"));
         let rules = crs.join("rules");
@@ -1348,7 +1348,7 @@ mod tests {
         let Some(setup) = setup.filter(|_| rules.is_dir()) else {
             assert!(
                 !required,
-                "CONNEX_REQUIRE_CRS=1 but no CRS rules/ + crs-setup.conf at {} \
+                "MODSEC_REQUIRE_CRS=1 but no CRS rules/ + crs-setup.conf at {} \
                  (run demo/scripts/install-crs.sh)",
                 crs.display()
             );

@@ -6,7 +6,7 @@
 //!      `--allow-detection-only` accepts DetectionOnly / Off,
 //!   2. the gRPC listener completes an HTTP/2 connection preface + SETTINGS
 //!      exchange (the same server stack Envoy talks to), and
-//!   3. a headers-only `GET /__connex_healthz` run through a fresh
+//!   3. a headers-only `GET /__ext_proc_healthz` run through a fresh
 //!      `Exchange` (the code `Process` runs per message, with the loaded
 //!      rules) answers request-headers Continue. The probe exchange has its
 //!      own throwaway metrics and logs its phases at DEBUG, so probes never
@@ -160,11 +160,11 @@ async fn probe(processor: &ModSecProcessor, grpc_addr: SocketAddr) -> Result<(),
             headers: Some(HeaderMap {
                 headers: vec![
                     hv(":method", "GET"),
-                    hv(":path", "/__connex_healthz"),
+                    hv(":path", "/__ext_proc_healthz"),
                     hv(":authority", "localhost"),
                     hv("user-agent", "ext-proc-modsec-healthz"),
                     hv("accept", "*/*"),
-                    hv("x-request-id", "connex-healthz-probe"),
+                    hv("x-request-id", "ext-proc-healthz-probe"),
                 ],
             }),
             end_of_stream: true,

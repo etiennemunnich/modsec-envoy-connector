@@ -39,7 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - gRPC tests for read errors and oversize messages, half-close with a held
   body, panic → reset, status-0 drop → abort, observability mode, response
   trailers, FULL_DUPLEX replies and the held cap, and probe isolation.
-- CI `rust-quality` installs the pinned CRS and sets `CONNEX_REQUIRE_CRS=1`,
+- CI `rust-quality` installs the pinned CRS and sets `MODSEC_REQUIRE_CRS=1`,
   so the engine CRS test fails instead of skipping when CRS is missing.
 
 ### Changed
