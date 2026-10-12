@@ -7,22 +7,20 @@
 .env
 .env.*
 !.env.example
-experiments/lab/logs/
 *.log
-/refs/
+__pycache__/
+*.py[cod]
 
 # Demo CRS checkout (install-crs.sh) and runtime state (up.sh)
-demo/.crs
-demo/.crs/
-demo/.run/
-demo/.run-other/
-
-# CRS checkouts for other tags (scripts/crs-version-probe.sh)
-demo/.crs-*/
+/demo/.crs/
+/demo/.run/
+# CRS checkouts for other tags (ci-live-e2e.sh with CRS_TAG)
+/demo/.crs-*/
+# Manual `go build` in demo/grpc-echo (the suites build into demo/.run/)
+/demo/grpc-echo/grpc-echo
 
 # ASH scan output. Config stays at .ash/.ash.yaml.
-.ash/ash_output/
+/.ash/ash_output*/
 
-# Docsify / GitHub Pages: never ignore .nojekyll (Pages needs it under /docs).
+# GitHub Pages: never ignore .nojekyll.
 !**/.nojekyll
-!.nojekyll
