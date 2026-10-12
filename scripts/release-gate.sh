@@ -50,7 +50,7 @@ fi
 
 while read -r suite url; do
   green="$(jq -r --argjson suite "${suite}" \
-    '.check_runs[] | select(.conclusion == "success" and .app.slug == "github-actions"
+    '.check_runs[] | select(.conclusion == "success"
        and .check_suite.id == $suite) | .name' <<<"${checks}")"
   missing=()
   for n in "${REQUIRED[@]}"; do
