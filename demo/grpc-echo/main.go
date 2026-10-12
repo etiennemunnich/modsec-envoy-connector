@@ -1,4 +1,4 @@
-// Demo gRPC (h2c) echo origin for connex hop-trace.
+// Demo gRPC (h2c) echo origin for hop-trace.
 //
 // Records one line per RPC that actually reaches this process so suites can
 // prove denies / fail-closed never hit the origin. Not a product service.
