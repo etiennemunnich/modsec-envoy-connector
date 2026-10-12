@@ -33,7 +33,7 @@ The demo scripts find a libmodsecurity in `~/.local` on their own. For `cargo` o
 ./demo/scripts/up.sh
 ```
 
-`up.sh` writes the ModSecurity rules file under `demo/.run/`, builds the connector, and starts the origin, the connector and Envoy in the background. It refuses to start if a port is taken.
+`up.sh` writes the ModSecurity rules file under `demo/.run/`, builds the connector, and starts the origin, the connector and Envoy in the background. It first stops a demo it started earlier, then refuses to start if another process holds one of its ports.
 
 | Port | Process |
 |------|---------|
