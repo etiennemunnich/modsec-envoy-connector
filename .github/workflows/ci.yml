@@ -13,6 +13,7 @@ name: ci
 #   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins; push to main,
 #                                      PRs and dispatches;
 #                                      includes buffered-oversize + connect-assert
+#                                      + h2-trailers (HTTP/2 body ends at trailers)
 #   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
 #                                      go-ftw-full via crs-full matrix incl. STREAMED)
 #   e2e-full-duplex × {x86_64, aarch64} FULL_DUPLEX product contract (same suites as
@@ -246,7 +247,7 @@ jobs:
     with:
       # Product BUFFERED contract. trailers last (restarts Envoy with SEND, then restores).
       # buffered-oversize before trailers (also restarts Envoy); connect-assert is cheap.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke buffered-oversize connect-assert trailers"
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke h2-trailers buffered-oversize connect-assert trailers"
       body_mode: BUFFERED
 
   e2e-streamed:
@@ -257,7 +258,7 @@ jobs:
     with:
       # STREAMED matches BUFFERED product contract. Full CRS is hosted via
       # crs-full matrix (BUFFERED + STREAMED + FULL_DUPLEX), not this PR cell.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke h2-trailers trailers connect-assert"
       body_mode: STREAMED
       timeout_minutes: 15
 
@@ -269,7 +270,7 @@ jobs:
     with:
       # FULL_DUPLEX matches STREAMED product contract (fail-modes hang→504 N/A —
       # Envoy disables message_timeout). go-ftw-full via crs-full matrix.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke h2-trailers trailers connect-assert"
       body_mode: FULL_DUPLEX_STREAMED
       timeout_minutes: 15
 
