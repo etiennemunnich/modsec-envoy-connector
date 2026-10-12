@@ -135,6 +135,7 @@ async fn probe(processor: &ModSecProcessor, grpc_addr: SocketAddr) -> Result<(),
             end_of_stream: true,
             ..Default::default()
         })),
+        protocol_config: Some(processor.expected_protocol_config()),
         ..Default::default()
     };
     let mut exchange = processor.probe_exchange();

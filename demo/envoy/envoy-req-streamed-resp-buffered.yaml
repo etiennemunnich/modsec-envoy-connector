@@ -70,8 +70,10 @@ static_resources:
                 response_header_mode: SEND
                 request_body_mode: STREAMED
                 response_body_mode: BUFFERED
-                request_trailer_mode: SKIP
-                response_trailer_mode: SKIP
+                # SEND: Envoy ends a body that trailers follow only with the
+                # trailers; without them the connector fails closed.
+                request_trailer_mode: SEND
+                response_trailer_mode: SEND
               # Real peer/local/protocol for ModSecurity REMOTE_ADDR etc.
               request_attributes:
               - source.address

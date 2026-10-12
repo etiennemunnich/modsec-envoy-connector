@@ -133,8 +133,10 @@ http_filters:
         response_header_mode: SEND
         request_body_mode: BUFFERED
         response_body_mode: BUFFERED
-        request_trailer_mode: SKIP
-        response_trailer_mode: SKIP
+        # SEND: Envoy ends a body that trailers follow only with the
+        # trailers; without them the connector fails closed.
+        request_trailer_mode: SEND
+        response_trailer_mode: SEND
       request_attributes: [source.address, source.port, destination.address, destination.port, request.protocol]
   - name: envoy.filters.http.router
     typed_config:

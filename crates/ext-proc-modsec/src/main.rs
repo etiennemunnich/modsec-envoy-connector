@@ -78,12 +78,21 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         body_reply = config.body_reply.as_str(),
         max_grpc_message_bytes = config.limits.max_grpc_message_bytes,
         max_held_body_bytes = config.limits.max_held_body_bytes,
+        stream_idle_timeout_s = config.limits.stream_idle_timeout.as_secs_f64(),
+        duplex_idle_timeout_s = config.limits.duplex_idle_timeout.as_secs_f64(),
+        duplex_total_timeout_s = config.limits.duplex_total_timeout.as_secs_f64(),
+        max_concurrent_streams = config.server.max_concurrent_streams,
+        http2_keepalive_interval_s = config.server.http2_keepalive_interval.as_secs_f64(),
+        http2_keepalive_timeout_s = config.server.http2_keepalive_timeout.as_secs_f64(),
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"
     );
     // Single service, no router: the generated server answers UNIMPLEMENTED
     // for any other gRPC path. TcpIncoming::from leaves TCP_NODELAY unset
     // (tonic only applies its default in bind/serve(addr)).
     Server::builder()
+        .max_concurrent_streams(Some(config.server.max_concurrent_streams))
+        .http2_keepalive_interval(Some(config.server.http2_keepalive_interval))
+        .http2_keepalive_timeout(Some(config.server.http2_keepalive_timeout))
         .serve_with_incoming_shutdown(
             processor.into_server(),
             TcpIncoming::from(grpc_listener).with_nodelay(Some(true)),
