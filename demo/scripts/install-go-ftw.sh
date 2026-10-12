@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Install go-ftw, the OWASP CRS regression test runner, at the version CI uses
-# (GO_FTW_VERSION in .github/workflows/live-e2e.yml).
+# Install go-ftw, the OWASP CRS regression test runner, at GO_FTW_PIN in
+# versions.lock.md (CI installs it with this script too).
 #   https://github.com/coreruleset/go-ftw
 # Downloads the release tarball for this OS/arch, verifies it against the
 # release's ftw-checksums.txt, and installs `ftw` into ${PREFIX}/bin
 # (default ~/.local/bin). demo/scripts/go-ftw.sh also looks there.
 set -euo pipefail
 
-GO_FTW_VERSION="${GO_FTW_VERSION:-2.6.0}"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PIN="${GO_FTW_PIN:-$(grep -E '^GO_FTW_PIN=' "$ROOT/versions.lock.md" | head -1 | cut -d= -f2)}"
+PIN="${PIN:-v2.6.0}"
+GO_FTW_VERSION="${PIN#v}"
 PREFIX="${PREFIX:-${HOME}/.local}"
 BIN_DIR="${PREFIX}/bin"
 

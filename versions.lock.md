@@ -12,6 +12,7 @@ labels as versions.
 | **B. CRS pack** | `CRS_TAG` | `v4.30.0` | Optional LTS: `v4.25.2` |
 | **D. Connector** | git SHA / OCI | *(tip SHA at tag)* | Filled when `v0.1.0-alpha.1` is tagged / image published |
 | **P. Product** | git tag | `v0.1.0-alpha.1` | Early-test pre-release; crate semver stays `0.1.0` until final |
+| **T. go-ftw** | `GO_FTW_PIN` | `v2.6.0` | CRS regression runner; `demo/scripts/install-go-ftw.sh` (local and CI) |
 | **S. ASH** | `ASH_PIN` | `af1206aff596f1288ad066828058b3011de2a998` | awslabs/automated-security-helper v3.7.1 tip (commit, not tag) |
 
 ### Consumers
@@ -29,6 +30,7 @@ CRS_TAG=v4.30.0
 CRS_LTS_TAG=v4.25.2
 PRODUCT_VERSION=v0.1.0-alpha.1
 ASH_PIN=af1206aff596f1288ad066828058b3011de2a998
+GO_FTW_PIN=v2.6.0
 ```
 
 ## Upstream references

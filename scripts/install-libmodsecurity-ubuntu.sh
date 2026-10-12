@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build/install libmodsecurity from source on Ubuntu (CI and Linux demo hosts).
-# Distro packages on Ubuntu 24.04 (Noble) ship 3.0.12, which fails
-# modsecurity-sys. Lab pin is v3.0.17 — latest stable v3 (see versions.lock.md).
+# Distro packages on Ubuntu 24.04 (Noble) ship 3.0.12; the connector is built
+# and tested against MODSECURITY_PIN in versions.lock.md. Only that exact
+# version counts as installed. Sources are cloned into a per-tag cache dir.
 #
 # Usage (CI):
 #   PREFIX=$HOME/.local ./scripts/install-libmodsecurity-ubuntu.sh
@@ -9,27 +10,24 @@
 set -euo pipefail
 
 PIN="${MODSECURITY_PIN:-v3.0.17}"
+WANT="${PIN#v}"
 PREFIX="${PREFIX:-$HOME/.local}"
-SRC_DIR="${MODSECURITY_SRC_DIR:-$HOME/src/ModSecurity}"
+SRC_DIR="${MODSECURITY_SRC_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/modsec-envoy-connector/ModSecurity-${PIN}}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This script targets Ubuntu/Linux CI. On macOS use demo/scripts/install-libmodsecurity.sh." >&2
   exit 1
 fi
 
+# Only the exact pin counts as installed; anything else is rebuilt into PREFIX.
 if command -v pkg-config >/dev/null 2>&1; then
-  if pkg-config --exists modsecurity; then
-    ver="$(pkg-config --modversion modsecurity)"
-    # Accept anything ≥ 3.0.13 already on PKG_CONFIG_PATH / system.
-    if printf '%s\n' "$ver" | awk -F. '{
-      exit !($1 > 3 || ($1 == 3 && $2 > 0) || ($1 == 3 && $2 == 0 && $3 >= 13))
-    }'; then
-      echo "libmodsecurity $ver already satisfies ≥ 3.0.13 (pkg-config)."
-      pkg-config --cflags --libs modsecurity
-      exit 0
-    fi
-    echo "Found libmodsecurity $ver (< 3.0.13); building $PIN into $PREFIX"
+  ver="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+    pkg-config --modversion modsecurity 2>/dev/null || true)"
+  if [[ "$ver" == "$WANT" ]]; then
+    echo "libmodsecurity $ver already installed (pkg-config); pin is $PIN."
+    exit 0
   fi
+  [[ -z "$ver" ]] || echo "Found libmodsecurity $ver, pin is $PIN; building $PIN into $PREFIX"
 fi
 
 # Root in containers has no sudo; CI runners are non-root and need sudo.
@@ -60,9 +58,13 @@ fi
 
 mkdir -p "$(dirname "$SRC_DIR")"
 if [[ ! -d "$SRC_DIR/.git" ]]; then
-  rm -rf "$SRC_DIR"
-  git clone --depth 1 --branch "$PIN" \
+  git -c advice.detachedHead=false clone --depth 1 --branch "$PIN" \
     https://github.com/owasp-modsecurity/ModSecurity.git "$SRC_DIR"
+fi
+tag="$(git -C "$SRC_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
+if [[ "$tag" != "$PIN" ]]; then
+  echo "$SRC_DIR is at '${tag:-no tag}', not $PIN; remove it or set MODSECURITY_SRC_DIR" >&2
+  exit 1
 fi
 
 cd "$SRC_DIR"
@@ -73,15 +75,10 @@ git submodule update --init --recursive
 make -j"$(nproc)"
 make install
 
-export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-ver="$(pkg-config --modversion modsecurity)"
+ver="$(PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --modversion modsecurity)"
 echo "Installed libmodsecurity $ver at $PREFIX"
-pkg-config --cflags --libs modsecurity
-
-# Soft assert ≥ 3.0.13
-printf '%s\n' "$ver" | awk -F. '{
-  if (!($1 > 3 || ($1 == 3 && $2 > 0) || ($1 == 3 && $2 == 0 && $3 >= 13))) {
-    print "ERROR: need libmodsecurity ≥ 3.0.13, got " $0 > "/dev/stderr"
-    exit 1
-  }
-}'
+PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" pkg-config --cflags --libs modsecurity
+if [[ "$ver" != "$WANT" ]]; then
+  echo "ERROR: built libmodsecurity $ver, pin is $PIN" >&2
+  exit 1
+fi
