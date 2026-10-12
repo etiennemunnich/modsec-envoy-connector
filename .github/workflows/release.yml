@@ -112,10 +112,11 @@ jobs:
           cp -P "${MODSECURITY_PREFIX:-$GITHUB_WORKSPACE/.local/modsecurity}"/lib/libmodsecurity.so* "${out}/lib/"
           cp LICENSE NOTICE versions.lock.md "${out}/"
           file "${out}/bin/ext-proc-modsec"
-          rpath="$(readelf -d "${out}/bin/ext-proc-modsec" | grep -E '\((RUNPATH|RPATH)\)' || true)"
+          rpath="$(readelf -d "${out}/bin/ext-proc-modsec" | grep -E '\((RUNPATH|RPATH)\)')" \
+            || { echo "::error::binary has no RUNPATH"; exit 1; }
           echo "${rpath}"
           # shellcheck disable=SC2016 # a literal $ORIGIN, expanded by ld.so
-          [[ "${rpath}" == *'[$ORIGIN/../lib]'* ]] || { echo "::error::binary has no RUNPATH \$ORIGIN/../lib"; exit 1; }
+          [[ "${rpath}" == *'[$ORIGIN/../lib]'* ]] || { echo "::error::binary RUNPATH is not \$ORIGIN/../lib"; exit 1; }
           # The libmodsecurity action exports LD_LIBRARY_PATH; prove the tarball works without it.
           env -u LD_LIBRARY_PATH ldd "${out}/bin/ext-proc-modsec" | tee "$RUNNER_TEMP/ldd.txt"
           lib="$(awk '/libmodsecurity\.so/ && $2 == "=>" { print $3; exit }' "$RUNNER_TEMP/ldd.txt")"
