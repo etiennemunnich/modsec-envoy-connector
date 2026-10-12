@@ -73,7 +73,7 @@ Include /etc/crs/rules/*.conf
 ```
 
 - `engine.conf` is a copy of [`demo/rules/engine.conf`](../demo/rules/engine.conf): engine `On`, request and response body access `On`, body limits (`SecRequestBodyNoFilesLimit` 128 KiB, `SecRequestBodyLimit` 12.5 MiB, `SecResponseBodyLimit` 512 KiB). Review the limits and audit parts for your traffic and PII rules.
-- `/etc/crs` is a CRS checkout (`CRS_DIR=/etc/crs ./demo/scripts/install-crs.sh` fetches the pinned tag) with `crs-setup.conf` copied from `crs-setup.conf.example`.
+- `/etc/crs` is a CRS checkout (`CRS_DIR=/etc/crs ./demo/scripts/install-crs.sh`, as a user who can write there, fetches the pinned tag) with `crs-setup.conf` copied from `crs-setup.conf.example`.
 - The `SecTmpDir`, `SecDataDir` and audit-log directories must exist and be writable by the connector's user.
 
 If a file is missing or a rule does not parse, the connector exits before it listens, and Envoy answers every request with **500**.
@@ -179,9 +179,9 @@ What breaks if you leave something out:
 | Missing | Effect |
 |---------|--------|
 | `http2_protocol_options` on the cluster | the gRPC side-call fails: every request **500** |
-| `failure_mode_allow: false` | a dead or failing connector lets traffic through |
+| `failure_mode_allow: false` | nothing: `false` is Envoy's default, written out so nobody flips it. With `true`, a dead or failing connector lets traffic through |
 | the CONNECT route | under BUFFERED a CONNECT request waits for a body end that never comes |
-| `request_attributes` | ModSecurity sees Envoy's address as `REMOTE_ADDR` |
+| `request_attributes` | ModSecurity sees `127.0.0.1` as `REMOTE_ADDR` and `HTTP/1.1` as the protocol (the connector logs `conn_source=fallback`), so IP-based rules misjudge |
 | trailer modes `SEND` | a body followed by trailers is not inspected and reaches the origin (see [Known issues](#known-issues)) |
 | `stat_prefix: modsec_ext_proc` | the stat names in [Health and metrics](#health-and-metrics) change |
 
