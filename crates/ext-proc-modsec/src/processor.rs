@@ -14,6 +14,20 @@
 //! stream only ends with gRPC OK after a terminal `ImmediateResponse` or when
 //! Envoy closes its side with nothing left unanswered. Envoy treats an OK
 //! close as "processing complete" and forwards whatever it holds.
+//!
+//! Body phases follow the body modes Envoy declares in the first message's
+//! `protocol_config` (a stream without one fails closed). Envoy marks a body
+//! that trailers follow with `end_of_stream=false` and, with trailer mode
+//! SKIP, never sends the trailers, so `end_of_stream` alone cannot end a
+//! body phase:
+//!
+//! - BUFFERED / BUFFERED_PARTIAL: Envoy sends one body message; it ends the
+//!   phase whatever its `end_of_stream`.
+//! - NONE: no body message comes; the phase ends at the headers.
+//! - STREAMED / FULL_DUPLEX_STREAMED: the phase ends at `end_of_stream` or
+//!   trailers. Response headers that arrive while the request body phase is
+//!   still open mean Envoy forwarded the request without a final body
+//!   (trailer mode SKIP): that fails closed instead of being inspected late.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -32,12 +46,13 @@ use crate::config::{BodyReply, Limits};
 use crate::connection_meta::ConnectionEndpoints;
 use crate::metrics::{ConnectorMetrics, Phase};
 use crate::pb::envoy::config::core::v3::HeaderValue;
+use crate::pb::envoy::extensions::filters::http::ext_proc::v3::processing_mode::BodySendMode;
 use crate::pb::envoy::service::ext_proc::v3::external_processor_server::{
     ExternalProcessor, ExternalProcessorServer,
 };
 use crate::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
 use crate::pb::envoy::service::ext_proc::v3::{
-    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse,
+    HttpBody, HttpHeaders, ProcessingRequest, ProcessingResponse, ProtocolConfiguration,
 };
 use crate::pb::google::protobuf::Struct;
 use crate::responses::{self, Direction};
@@ -120,6 +135,19 @@ impl ModSecProcessor {
             self.body_reply,
             self.limits,
         )
+    }
+
+    /// A `protocol_config` that `--body-reply` accepts (for probes).
+    pub fn expected_protocol_config(&self) -> ProtocolConfiguration {
+        let mode = match self.body_reply {
+            BodyReply::Common => BodySendMode::Buffered,
+            BodyReply::Streamed => BodySendMode::FullDuplexStreamed,
+        };
+        ProtocolConfiguration {
+            request_body_mode: mode as i32,
+            response_body_mode: mode as i32,
+            send_body_without_waiting_for_header_response: false,
+        }
     }
 
     /// Like [`Self::exchange`], for `/healthz`: same engine and rules, but
@@ -208,16 +236,25 @@ impl Driver {
             return Some((Ok(r), Some(self)));
         }
         loop {
-            let msg = match self.inbound.message().await {
-                Ok(Some(m)) => m,
+            let (deadline, timer) = self.exchange.read_deadline(Instant::now());
+            let read = tokio::time::timeout_at(deadline.into(), self.inbound.message()).await;
+            let msg = match read {
+                Ok(Ok(Some(m))) => m,
                 // Envoy closed its side: OK only if nothing awaits an answer.
-                Ok(None) => {
-                    return self
-                        .exchange
-                        .unanswered_body()
-                        .map(|dir| (Err(self.half_closed_with_held_body(dir)), None));
+                Ok(Ok(None)) => return self.half_closed(),
+                // A reset after the final verdict is Envoy tearing down a
+                // finished exchange, not a failure.
+                Ok(Err(e)) if self.exchange.verdict_complete() => {
+                    tracing::debug!(
+                        request_id = self.exchange.rid(),
+                        code = ?e.code(),
+                        "ext_proc stream reset after the final verdict"
+                    );
+                    return None;
                 }
-                Err(e) => return Some((Err(self.read_error(&e)), None)),
+                Ok(Err(e)) => return Some((Err(self.read_error(&e)), None)),
+                Err(_) if self.exchange.verdict_complete() => return None,
+                Err(_) => return Some((Ok(self.exchange.timed_out(timer)), None)),
             };
             return match run_blocking(|| self.exchange.on_message(msg)) {
                 Step::Reply(r) => Some((Ok(r), Some(self))),
@@ -256,15 +293,29 @@ impl Driver {
         ))
     }
 
-    fn half_closed_with_held_body(&self, dir: Direction) -> Status {
+    /// Envoy half-closed. A held body or a body phase that never ran means
+    /// the exchange ended without a verdict for it: non-OK, never a clean
+    /// "processing complete".
+    fn half_closed(&self) -> Option<(Reply, Option<Driver>)> {
+        let (dir, what) = if let Some(dir) = self.exchange.unanswered_body() {
+            (dir, "a body was still held unanswered")
+        } else {
+            let dir = self.exchange.open_body_phase()?;
+            (dir, "its body phase never ran (no final body or trailers)")
+        };
         warn!(
             request_id = self.exchange.rid(),
             action = "fail_closed",
             direction = ?dir,
-            "Envoy closed the stream while a body was still held unanswered; aborting stream"
+            "Envoy closed the stream while {what}; aborting stream"
         );
         self.exchange.metrics.inc_stream_errors();
-        Status::internal("ext_proc stream closed with a body still held (fail-closed)")
+        Some((
+            Err(Status::internal(format!(
+                "ext_proc stream closed before the {dir:?} body verdict (fail-closed)"
+            ))),
+            None,
+        ))
     }
 }
 
@@ -311,12 +362,87 @@ impl Step {
     }
 }
 
+/// Envoy `ProcessingMode.BodySendMode` of one direction, from the stream's
+/// `protocol_config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyMode {
+    None,
+    Streamed,
+    Buffered,
+    BufferedPartial,
+    FullDuplexStreamed,
+}
+
+impl BodyMode {
+    /// `None` for values the connector does not support, including GRPC
+    /// (not implemented in Envoy; de-framed messages need their own body
+    /// phase handling).
+    fn from_wire(value: i32) -> Option<Self> {
+        Some(match BodySendMode::try_from(value).ok()? {
+            BodySendMode::None => Self::None,
+            BodySendMode::Streamed => Self::Streamed,
+            BodySendMode::Buffered => Self::Buffered,
+            BodySendMode::BufferedPartial => Self::BufferedPartial,
+            BodySendMode::FullDuplexStreamed => Self::FullDuplexStreamed,
+            BodySendMode::Grpc => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Streamed => "STREAMED",
+            Self::Buffered => "BUFFERED",
+            Self::BufferedPartial => "BUFFERED_PARTIAL",
+            Self::FullDuplexStreamed => "FULL_DUPLEX_STREAMED",
+        }
+    }
+
+    /// Envoy sends the body (or, for PARTIAL, its inspected prefix) in one
+    /// message, with `end_of_stream=false` when trailers follow.
+    fn single_message(self) -> bool {
+        matches!(self, Self::Buffered | Self::BufferedPartial)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Modes {
+    request: BodyMode,
+    response: BodyMode,
+}
+
+/// Which connector deadline expired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timer {
+    StreamIdle,
+    DuplexIdle,
+    DuplexTotal,
+}
+
+impl Timer {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::StreamIdle => "--stream-idle-timeout",
+            Self::DuplexIdle => "--duplex-idle-timeout",
+            Self::DuplexTotal => "--duplex-total-timeout",
+        }
+    }
+}
+
 /// Per-stream state: one ModSecurity transaction plus correlation data.
 pub struct Exchange {
     engine: Arc<Engine>,
     metrics: Arc<ConnectorMetrics>,
     body_reply: BodyReply,
     limits: Limits,
+    /// From the first message's `protocol_config`; `None` until then.
+    modes: Option<Modes>,
+    started: Instant,
+    /// Response headers seen (from the origin or an Envoy local reply).
+    response_started: bool,
+    /// The response body phase ran (or the response had no body): the
+    /// final verdict for this exchange is given.
+    response_done: bool,
     /// Kept after a terminal step too, so it is dropped (logging phase) by
     /// [`retire`] rather than inline before the reply is sent.
     session: Option<InspectionSession>,
@@ -357,6 +483,10 @@ impl Exchange {
             metrics,
             body_reply,
             limits,
+            modes: None,
+            started: Instant::now(),
+            response_started: false,
+            response_done: false,
             session: None,
             request_id: None,
             endpoints: ConnectionEndpoints::fallback(),
@@ -385,6 +515,114 @@ impl Exchange {
         } else {
             None
         }
+    }
+
+    fn mode(&self, dir: Direction) -> BodyMode {
+        let modes = self
+            .modes
+            .expect("modes are adopted before any handler runs");
+        match dir {
+            Direction::Request => modes.request,
+            Direction::Response => modes.response,
+        }
+    }
+
+    /// FULL_DUPLEX_STREAMED answers body messages with `StreamedBodyResponse`
+    /// and holds them until the verdict.
+    fn streamed_reply(&self, dir: Direction) -> bool {
+        self.mode(dir) == BodyMode::FullDuplexStreamed
+    }
+
+    fn duplex(&self) -> bool {
+        self.modes.is_some_and(|m| {
+            m.request == BodyMode::FullDuplexStreamed || m.response == BodyMode::FullDuplexStreamed
+        })
+    }
+
+    /// The final verdict is given: a terminal reply, or the response body
+    /// phase ran. Nothing Envoy does afterwards needs an answer.
+    pub fn verdict_complete(&self) -> bool {
+        self.finished || self.response_done
+    }
+
+    /// A direction whose headers announced a body but whose body phase has
+    /// not run (no final body message, no trailers).
+    fn open_body_phase(&self) -> Option<Direction> {
+        if self.finished {
+            None
+        } else if self.session.is_some() && !self.request_settled {
+            Some(Direction::Request)
+        } else if self.response_started && !self.response_done {
+            Some(Direction::Response)
+        } else {
+            None
+        }
+    }
+
+    /// When the next inbound read gives up, and which deadline that is.
+    pub fn read_deadline(&self, now: Instant) -> (Instant, Timer) {
+        let mut next = (now + self.limits.stream_idle_timeout, Timer::StreamIdle);
+        if self.duplex() && !self.verdict_complete() {
+            let total = self.started + self.limits.duplex_total_timeout;
+            if total < next.0 {
+                next = (total, Timer::DuplexTotal);
+            }
+            let idle = now + self.limits.duplex_idle_timeout;
+            if self.unanswered_body().is_some() && idle < next.0 {
+                next = (idle, Timer::DuplexIdle);
+            }
+        }
+        next
+    }
+
+    /// A connector deadline expired before the verdict: 504, never Continue.
+    pub fn timed_out(&mut self, timer: Timer) -> ProcessingResponse {
+        warn!(
+            request_id = self.rid(),
+            action = "fail_closed",
+            timer = timer.flag(),
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "connector stream deadline expired before the verdict; ImmediateResponse 504"
+        );
+        self.metrics.inc_fail_closed();
+        self.finished = true;
+        responses::timed_out()
+    }
+
+    /// Take the stream's body modes from the first message. Without them the
+    /// connector cannot tell when a body phase ends.
+    fn adopt_modes(&mut self, config: Option<&ProtocolConfiguration>) -> Result<(), String> {
+        let Some(config) = config else {
+            return Err(
+                "first ProcessingRequest carries no protocol_config, so the body modes are \
+                 unknown (Envoy sends it on the first message of every stream)"
+                    .into(),
+            );
+        };
+        let mode = |dir: &str, value: i32| {
+            BodyMode::from_wire(value).ok_or_else(|| format!("unsupported {dir}_body_mode {value}"))
+        };
+        let modes = Modes {
+            request: mode("request", config.request_body_mode)?,
+            response: mode("response", config.response_body_mode)?,
+        };
+        self.modes = Some(modes);
+        let want = if self.duplex() {
+            BodyReply::Streamed
+        } else {
+            BodyReply::Common
+        };
+        if self.body_reply != want {
+            return Err(format!(
+                "Envoy body modes request={} response={} need --body-reply {}, connector runs \
+                 --body-reply {}",
+                modes.request.as_str(),
+                modes.response.as_str(),
+                want.as_str(),
+                self.body_reply.as_str()
+            ));
+        }
+        Ok(())
     }
 
     fn streamed_body_allow(&mut self, dir: Direction) -> ProcessingResponse {
@@ -418,6 +656,11 @@ impl Exchange {
                 "observability_mode message ignored (cannot enforce)"
             );
             return Step::Silent;
+        }
+        if self.modes.is_none() {
+            if let Err(e) = self.adopt_modes(msg.protocol_config.as_ref()) {
+                return self.fail_closed(Phase::RequestHeaders, e);
+            }
         }
         match msg.request {
             Some(ProcRequest::RequestHeaders(h)) => self.request_headers(&h, &msg.attributes),
@@ -522,7 +765,8 @@ impl Exchange {
             return step;
         }
 
-        if headers.end_of_stream {
+        // NONE: Envoy sends no body, so phase 2 runs now on headers and URI.
+        if headers.end_of_stream || self.mode(Direction::Request) == BodyMode::None {
             let t1 = Instant::now();
             match session.finish_request_body() {
                 Ok(d) => {
@@ -542,16 +786,22 @@ impl Exchange {
             Direction::Request => Phase::RequestBody,
             Direction::Response => Phase::ResponseBody,
         };
+        let mode = self.mode(dir);
+        if mode == BodyMode::None {
+            return self.fail_closed(phase, "body message although Envoy declared body mode NONE");
+        }
         if self.local_reply && dir == Direction::Response {
-            // Local-reply pass-through: echo as required by body_reply mode.
-            return match self.body_reply {
-                BodyReply::Common => Step::Reply(responses::body_continue(dir)),
-                BodyReply::Streamed => Step::Reply(responses::body_streamed_continue(
-                    dir,
-                    &body.body,
-                    body.end_of_stream,
-                )),
-            };
+            if body.end_of_stream || mode.single_message() {
+                self.response_done = true;
+            }
+            return Step::Reply(if self.streamed_reply(dir) {
+                responses::body_streamed_continue(dir, &body.body, body.end_of_stream)
+            } else {
+                responses::body_continue(dir)
+            });
+        }
+        if self.body_phase_done(dir) {
+            return self.fail_closed(phase, "body message after the body phase ended");
         }
         let Some(mut session) = self.session.take() else {
             return self.fail_closed(phase, "body received before headers");
@@ -572,7 +822,8 @@ impl Exchange {
         let nbytes = body.body.len() as u64;
         self.metrics.add_body_bytes(phase, nbytes);
 
-        if self.body_reply == BodyReply::Streamed {
+        let streamed = self.streamed_reply(dir);
+        if streamed {
             // The whole body is answered in one StreamedBodyResponse after
             // ModSecurity allows it, so it must stay within one gRPC message.
             let cap = self.limits.max_held_body_bytes;
@@ -603,35 +854,63 @@ impl Exchange {
             Err(e) => return self.fail_closed(phase, &e),
         }
 
-        if body.end_of_stream {
-            let finished = match dir {
-                Direction::Request => session.finish_request_body(),
-                Direction::Response => session.finish_response_body(),
-            };
-            match finished {
-                Ok(d) => {
-                    if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(nbytes)) {
-                        return step;
-                    }
-                    if dir == Direction::Request {
-                        self.mark_request_allowed();
-                    }
-                }
-                Err(e) => return self.fail_closed(phase, &e),
+        // BUFFERED / BUFFERED_PARTIAL send one body message, with
+        // end_of_stream=false when trailers follow or (PARTIAL) when only
+        // the inspected prefix is sent: it is the whole inspected body.
+        if body.end_of_stream || self.mode(dir).single_message() {
+            if let Some(step) = self.finish_body(session, dir, phase, t0, nbytes) {
+                return step;
             }
-            return match self.body_reply {
-                BodyReply::Common => Step::Reply(responses::body_continue(dir)),
-                BodyReply::Streamed => Step::Reply(self.streamed_body_allow(dir)),
-            };
+            return Step::Reply(if streamed {
+                self.streamed_body_allow(dir)
+            } else {
+                responses::body_continue(dir)
+            });
         }
 
-        match self.body_reply {
-            // BUFFERED / STREAMED / PARTIAL: empty BodyResponse Continue.
-            BodyReply::Common => Step::Reply(responses::body_continue(dir)),
+        if streamed {
             // FULL_DUPLEX: hold StreamedBodyResponse until EOS/trailers so a
             // late deny cannot race an already-forwarded body to origin.
-            BodyReply::Streamed => Step::Silent,
+            Step::Silent
+        } else {
+            Step::Reply(responses::body_continue(dir))
         }
+    }
+
+    fn body_phase_done(&self, dir: Direction) -> bool {
+        match dir {
+            Direction::Request => self.request_settled,
+            Direction::Response => self.response_done,
+        }
+    }
+
+    /// Run the body phase of `dir`. `Some` is the terminal step of a
+    /// disruptive decision or an engine error.
+    fn finish_body(
+        &mut self,
+        session: &mut InspectionSession,
+        dir: Direction,
+        phase: Phase,
+        t0: Instant,
+        nbytes: u64,
+    ) -> Option<Step> {
+        let finished = match dir {
+            Direction::Request => session.finish_request_body(),
+            Direction::Response => session.finish_response_body(),
+        };
+        match finished {
+            Ok(d) => {
+                if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(nbytes)) {
+                    return Some(step);
+                }
+            }
+            Err(e) => return Some(self.fail_closed(phase, &e)),
+        }
+        match dir {
+            Direction::Request => self.mark_request_allowed(),
+            Direction::Response => self.response_done = true,
+        }
+        None
     }
 
     /// Trailers themselves are not inspected (SecLang / CRS have no trailer
@@ -646,6 +925,9 @@ impl Exchange {
             Direction::Response => Phase::ResponseBody,
         };
         if self.local_reply {
+            if dir == Direction::Response {
+                self.response_done = true;
+            }
             return Step::Reply(responses::trailers_continue(dir));
         }
         let Some(mut session) = self.session.take() else {
@@ -665,22 +947,15 @@ impl Exchange {
         dir: Direction,
         phase: Phase,
     ) -> Step {
-        // Finalize body that Envoy ended with trailers instead of eos=true.
-        let t0 = Instant::now();
-        let finished = match dir {
-            Direction::Request => session.finish_request_body(),
-            Direction::Response => session.finish_response_body(),
-        };
-        match finished {
-            Ok(d) => {
-                if let Some(step) = self.settle(phase, d, t0.elapsed(), Some(0)) {
-                    return step;
-                }
-                if dir == Direction::Request {
-                    self.mark_request_allowed();
-                }
+        if dir == Direction::Response && !self.response_started {
+            return self.fail_closed(phase, "response trailers before response headers");
+        }
+        // Finalize a body that Envoy ended with trailers instead of eos=true
+        // (STREAMED, FULL_DUPLEX, or headers then trailers with no body).
+        if !self.body_phase_done(dir) {
+            if let Some(step) = self.finish_body(session, dir, phase, Instant::now(), 0) {
+                return step;
             }
-            Err(e) => return self.fail_closed(phase, &e),
         }
 
         phase_info!(
@@ -693,7 +968,7 @@ impl Exchange {
         // FULL_DUPLEX: release the held body now that ModSecurity allowed it.
         // Envoy sends no body message for headers → trailers, and rejects a
         // body reply it did not ask for, so only answer one that arrived.
-        if self.body_reply == BodyReply::Streamed && self.held_mut(dir).is_some() {
+        if self.streamed_reply(dir) && self.held_mut(dir).is_some() {
             let body = self.streamed_body_allow(dir);
             return Step::Replies(body, VecDeque::from([responses::trailers_continue(dir)]));
         }
@@ -704,7 +979,7 @@ impl Exchange {
         let phase = Phase::ResponseHeaders;
         let status = header(headers, ":status").and_then(|s| s.parse::<i32>().ok());
         let Some(mut session) = self.session.take() else {
-            return self.response_without_request(status);
+            return self.response_without_request(status, headers.end_of_stream);
         };
         let step = match status {
             Some(status) => self.response_headers_in(&mut session, headers, status),
@@ -721,6 +996,36 @@ impl Exchange {
         status: i32,
     ) -> Step {
         let phase = Phase::ResponseHeaders;
+        if self.response_started {
+            return self.fail_closed(phase, "response_headers received twice on one stream");
+        }
+        self.response_started = true;
+        if !self.request_settled {
+            // Envoy passed the request on without a final body message or
+            // trailers (e.g. trailer mode SKIP and a body ended by trailers),
+            // so the origin saw a request whose body phase never ran. A
+            // success must not reach the client on that basis. A 4xx/5xx is
+            // usually Envoy's own local reply (413 buffer overflow, rejected
+            // upgrade); it is inspected late, which can only tighten it.
+            let mode = self.mode(Direction::Request).as_str();
+            if status < 400 {
+                return self.fail_closed(
+                    phase,
+                    format!(
+                        "response headers (status {status}) arrived before the request body \
+                         phase ran (request body mode {mode}); Envoy needs \
+                         request_trailer_mode: SEND"
+                    ),
+                );
+            }
+            warn!(
+                request_id = self.rid(),
+                status,
+                request_body_mode = mode,
+                "response headers before the request body phase ran; inspecting the request \
+                 body late"
+            );
+        }
         let t0 = Instant::now();
         let hdrs: Vec<(String, String)> = regular_headers(headers).collect();
         let protocol = self.endpoints.response_protocol();
@@ -735,15 +1040,15 @@ impl Exchange {
         // headers; reaching here means the request path was allowed.
         self.mark_request_allowed();
 
-        if headers.end_of_stream {
-            let t1 = Instant::now();
-            match session.finish_response_body() {
-                Ok(d) => {
-                    if let Some(step) = self.settle(Phase::ResponseBody, d, t1.elapsed(), Some(0)) {
-                        return step;
-                    }
-                }
-                Err(e) => return self.fail_closed(Phase::ResponseBody, &e),
+        if headers.end_of_stream || self.mode(Direction::Response) == BodyMode::None {
+            if let Some(step) = self.finish_body(
+                session,
+                Direction::Response,
+                Phase::ResponseBody,
+                Instant::now(),
+                0,
+            ) {
+                return step;
             }
         }
         Step::Reply(responses::headers_continue(Direction::Response))
@@ -756,11 +1061,15 @@ impl Exchange {
     /// `request_header_mode: SEND`, nothing reaches the origin without a
     /// request_headers message first. A 4xx/5xx is therefore already closed
     /// and passes through unchanged; anything else fails closed.
-    fn response_without_request(&mut self, status: Option<i32>) -> Step {
+    fn response_without_request(&mut self, status: Option<i32>, headers_eos: bool) -> Step {
         let phase = Phase::ResponseHeaders;
         match status {
             Some(code) if (400..=599).contains(&code) && !self.local_reply => {
                 self.local_reply = true;
+                self.response_started = true;
+                if headers_eos || self.mode(Direction::Response) == BodyMode::None {
+                    self.response_done = true;
+                }
                 self.metrics.inc_local_reply_passthrough();
                 phase_info!(
                     self,
