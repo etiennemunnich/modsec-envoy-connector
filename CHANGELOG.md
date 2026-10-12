@@ -88,6 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MODSEC_CRS_DIR`, test markers `TEST-LEAK-MARKER` / `DEMO-LEAK-MARKER` /
   `x-demo-grpc-probe`.
 - Crate version `0.1.0-alpha.2`.
+- The demo origin writes each response in one segment. With `TCP_NODELAY` the
+  connector answers STREAMED response headers before a separately written
+  body reaches Envoy, so the phase-4 leak cells only reset the stream; the
+  docs now state that STREAMED response limit.
 
 ## [v0.1.0-alpha.1] — 2026-10-12
 
