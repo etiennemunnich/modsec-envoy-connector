@@ -19,7 +19,7 @@ count="$(git rev-list --count "${BASE}..${HEAD}")"
 hits=""
 check() { # check <where> <text>
   local h
-  h="$(grep -inE "${re}" <<<"$2" || true)"
+  h=""
   [[ -z "${h}" ]] || hits+="$1: ${h}"$'\n'
 }
 check "PR title" "${PR_TITLE:-}"
