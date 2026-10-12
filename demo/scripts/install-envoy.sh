@@ -7,7 +7,8 @@
 # signature on that file is not verified here). That list names each asset
 # either as a bare filename or as a /tmp/.../bin/<asset> path; both match.
 # Put that directory first on PATH.
-# macOS: brew install envoy (Homebrew bottles the pinned release).
+# macOS: `brew install envoy`, then the same version check (fails if Homebrew
+# has moved past the pin).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=../../scripts/envoy-checksum.sh
@@ -17,7 +18,7 @@ PIN="${PIN:-v1.39.4}"
 WANT="${PIN#v}"
 BIN_DIR="${ENVOY_BIN_DIR:-$HOME/.local/bin}"
 
-echo "envoy-modsec-connex demo: Envoy ${PIN}"
+echo "modsec-envoy-connector demo: Envoy ${PIN}"
 echo "Official guide: https://www.envoyproxy.io/docs/envoy/${PIN}/start/install"
 echo "Release: https://github.com/envoyproxy/envoy/releases/tag/${PIN}"
 echo
@@ -59,8 +60,23 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   exit 0
 fi
 
-if command -v brew >/dev/null 2>&1; then
-  echo "macOS: brew install envoy   (then re-run this script to check the version)"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  command -v brew >/dev/null 2>&1 || { echo "Homebrew required: https://brew.sh/" >&2; exit 1; }
+  if brew list --formula envoy >/dev/null 2>&1; then
+    brew upgrade envoy
+  else
+    brew install envoy
+  fi
+  VER="$("$(brew --prefix)/bin/envoy" --version 2>&1)"
+  echo "Found: $VER"
+  if echo "$VER" | grep -q "/${WANT}/"; then
+    echo "OK: Homebrew envoy matches ${PIN}"
+    exit 0
+  fi
+  echo "Homebrew envoy is not ${PIN}; the demo is tested at ${PIN} (versions.lock.md)." >&2
+  echo "Run the Linux path in a container or VM, or install ${PIN} from https://www.envoyproxy.io/docs/envoy/${PIN}/start/install" >&2
+  exit 1
 fi
-echo "Install Envoy ${PIN} — see demo/README.md"
+
+echo "unsupported OS $(uname -s); install Envoy ${PIN}: https://www.envoyproxy.io/docs/envoy/${PIN}/start/install" >&2
 exit 1

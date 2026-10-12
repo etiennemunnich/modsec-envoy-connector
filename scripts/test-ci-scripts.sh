@@ -289,9 +289,9 @@ grep -q 'stage_body_tests' "${ROOT}/demo/scripts/go-ftw.sh" && ok=0 || ok=1
 check "go-ftw: stages BODY_INCLUDE rule YAML for smoke/body" 0 "${ok}"
 grep -q 'MIN_FTW_BODY_PIN' "${ROOT}/scripts/ci-floors.sh" && ok=0 || ok=1
 check "e2e: version-aware CRS body floor (MIN_FTW_BODY_PIN)" 0 "${ok}"
-ci_ftw="$(sed -n 's/^  GO_FTW_VERSION: "\(.*\)"$/\1/p' "${ROOT}/.github/workflows/live-e2e.yml")"
-local_ftw="$(sed -n 's/^GO_FTW_VERSION="${GO_FTW_VERSION:-\(.*\)}"$/\1/p' "${ROOT}/demo/scripts/install-go-ftw.sh")"
-check "go-ftw: install-go-ftw.sh pins the CI version (${ci_ftw:-none})" "${ci_ftw:-missing}" "${local_ftw:-unset}"
+if grep -q 'install-go-ftw.sh' "${ROOT}/.github/workflows/live-e2e.yml" \
+  && ! grep -qE 'GO_FTW_VERSION: *"' "${ROOT}/.github/workflows/live-e2e.yml"; then ok=0; else ok=1; fi
+check "go-ftw: CI installs with install-go-ftw.sh (GO_FTW_PIN), no second pin" 0 "${ok}"
 grep -q 'count_ftw_body_tests' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
 check "e2e: counts BODY_INCLUDE tests for older CRS floors" 0 "${ok}"
 grep -q 'ftw_body_floor_pin' "${ROOT}/versions.one-year.yaml" && ok=0 || ok=1
