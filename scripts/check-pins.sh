@@ -3,6 +3,7 @@
 # block is well formed, and that every install script's offline fallback
 # (used when versions.lock.md cannot be read) equals the lock.
 set -euo pipefail
+negctl_unused=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCK="${ROOT}/versions.lock.md"
