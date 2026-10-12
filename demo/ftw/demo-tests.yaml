@@ -2,7 +2,7 @@
 # query string and in BUFFERED request bodies are blocked, and the demo
 # phase-4 rule blocks a response body. Run by demo/scripts/go-ftw.sh smoke.
 meta:
-  author: "envoy-modsec-connex"
+  author: "modsec-envoy-connector"
   description: "Envoy :18080 demo — allow, CRS block (query + body), response-body block"
   name: "demo-tests.yaml"
 rule_id: 949110

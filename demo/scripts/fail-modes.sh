@@ -9,6 +9,7 @@
 #   3       per-request engine/stream error → ImmediateResponse 500 (gRPC harness, see below)
 #   4       rule deny (query + body)    → 403, origin untouched
 #   5       connector hung (SIGSTOP)    → 504 after message_timeout, origin untouched
+#           (SKIP under FULL_DUPLEX_STREAMED: Envoy applies no message_timeout there)
 #   6       audit log unwritable        → decisions unchanged or connector refuses to boot
 #   fo      negative control: failure_mode_allow: true (temporary Envoy config) lets
 #           traffic through on kill and hang — proves the drills above can see fail-open
@@ -34,7 +35,7 @@ ADMIN="http://127.0.0.1:${ENVOY_ADMIN_PORT}"
 FMA_STAT="http.ingress_http.ext_proc.modsec_ext_proc.failure_mode_allowed"
 
 usage() {
-  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
   echo "usage: $0 [--proto h1|h2|both] [--class LIST]" >&2
   exit 2
 }
@@ -65,11 +66,16 @@ exec > >(tee "${TRANSCRIPT}") 2>&1
 
 PASS=0
 FAIL=0
+SKIP=0
 RESULTS=()
-record() {
+record() { # record PASS|FAIL|SKIP <id> <detail> — SKIP is a check that did not run; it never counts as PASS
   local status="$1" id="$2" detail="$3"
   RESULTS+=("${status} ${id} — ${detail}")
-  if [[ "${status}" == PASS ]]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+  case "${status}" in
+    PASS) PASS=$((PASS + 1)) ;;
+    SKIP) SKIP=$((SKIP + 1)) ;;
+    *) FAIL=$((FAIL + 1)) ;;
+  esac
   echo "  [${status}] ${id}: ${detail}"
 }
 enabled() { [[ ",${CLASSES}," == *",$1,"* ]]; }
@@ -177,17 +183,17 @@ run_class2() {
     bad="${RUN}/fail-modes-${name}.conf"
     case "${name}" in
       invalid-seclang) echo 'SecRule THIS_IS_NOT_VALID_SECLANG' >"${bad}" ;;
-      missing-include) printf 'SecRuleEngine On\nInclude /nonexistent/connex/rules.conf\n' >"${bad}" ;;
+      missing-include) printf 'SecRuleEngine On\nInclude /nonexistent/demo/rules.conf\n' >"${bad}" ;;
     esac
     stop_pidfile "${RUN}/connector.pid" KILL
     rc=0
-    "${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen 127.0.0.1:18082 \
+    "${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen "127.0.0.1:${METRICS_PORT}" \
       --modsec-rules "${bad}" >>"${RUN}/connector.log" 2>&1 || rc=$?
     hz="$(http_code "${METRICS}/healthz")"
-    if [[ "${rc}" -ne 0 && -z "$(port_pid 18081)" && "${hz}" != 200 ]]; then
-      record PASS "${id}-${name}-boot" "exit ${rc}, nothing on :18081, healthz ${hz}"
+    if [[ "${rc}" -ne 0 && -z "$(port_pid "${CONNECTOR_PORT}")" && "${hz}" != 200 ]]; then
+      record PASS "${id}-${name}-boot" "exit ${rc}, nothing on :${CONNECTOR_PORT}, healthz ${hz}"
     else
-      record FAIL "${id}-${name}-boot" "exit ${rc}, listener pid '$(port_pid 18081)', healthz ${hz}"
+      record FAIL "${id}-${name}-boot" "exit ${rc}, listener pid '$(port_pid "${CONNECTOR_PORT}")', healthz ${hz}"
     fi
     expect "${id}-${name}-get" 500 0 "${BASE}/"
   done
@@ -228,8 +234,8 @@ run_class5() {
   local id="FC5-${PROTO}" t0 t1
   if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
     # Envoy disables message_timeout under FULL_DUPLEX_STREAMED — hang→504 is N/A.
-    record PASS "${id}-hang" "skipped (no message_timeout under FULL_DUPLEX_STREAMED)"
-    record PASS "${id}-timing" "skipped (no message_timeout under FULL_DUPLEX_STREAMED)"
+    record SKIP "${id}-hang" "not run: no message_timeout under FULL_DUPLEX_STREAMED"
+    record SKIP "${id}-timing" "not run: no message_timeout under FULL_DUPLEX_STREAMED"
     expect "${id}-restored" 200 1 "${BASE}/"
     return 0
   fi
@@ -249,7 +255,7 @@ run_class5() {
 
 run_class6() {
   local id="FC6-${PROTO}" rules="${RUN}/fail-modes-audit.conf" hz
-  sed "s#^SecAuditLog .*#SecAuditLog /nonexistent/connex/modsec-audit.log#" "${RULES_FILE}" >"${rules}"
+  sed "s#^SecAuditLog .*#SecAuditLog /nonexistent/demo/modsec-audit.log#" "${RULES_FILE}" >"${rules}"
   grep -q '^SecAuditLog /nonexistent/' "${rules}" || { record FAIL "${id}" "could not rewrite SecAuditLog"; return 0; }
   stop_pidfile "${RUN}/connector.pid" KILL
   CONNECTOR_RULES="${rules}" start_connector
@@ -285,7 +291,7 @@ run_fail_open_control() {
   fi
   restore_connector
   if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
-    record PASS "${id}-hang-lets-through" "skipped (no message_timeout under FULL_DUPLEX_STREAMED)"
+    record SKIP "${id}-hang-lets-through" "not run: no message_timeout under FULL_DUPLEX_STREAMED"
   else
     kill -STOP "$(connector_pid)"
     expect "${id}-hang-lets-through" 200 1 "${BASE}/"
@@ -379,7 +385,7 @@ done
 echo
 echo "======== fail-modes summary ========"
 for r in "${RESULTS[@]}"; do echo "  ${r}"; done
-echo "summary: PASS=${PASS} FAIL=${FAIL}"
+echo "summary: PASS=${PASS} FAIL=${FAIL} SKIP=${SKIP}"
 if [[ "${FAIL}" -ne 0 ]]; then
   echo "FAIL-MODES FAILED"
   exit 1

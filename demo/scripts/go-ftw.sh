@@ -8,7 +8,8 @@
 #   ./demo/scripts/go-ftw.sh full    the whole CRS tests/regression/tests tree
 #
 # Env:
-#   FTW_BIN        go-ftw binary (default: ftw or go-ftw on PATH)
+#   FTW_BIN        go-ftw binary (default: ~/.local/bin/ftw from install-go-ftw.sh,
+#                  else ftw or go-ftw on PATH)
 #   FTW_INCLUDE    Go regex for --include (overrides the body-heavy id list)
 #   FTW_OVERRIDES  overrides file, or "none" to measure without Envoy overrides
 #
@@ -29,7 +30,13 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DEFAULT_BODY_INCLUDE='^(942100|942130|942140|942160|942170|941100|941110|941160)-'
 BODY_INCLUDE="${FTW_INCLUDE:-${DEFAULT_BODY_INCLUDE}}"
 
-FTW="${FTW_BIN:-$(command -v ftw || command -v go-ftw || true)}"
+if [[ -n "${FTW_BIN:-}" ]]; then
+  FTW="${FTW_BIN}"
+elif [[ -x "${HOME}/.local/bin/ftw" ]]; then
+  FTW="${HOME}/.local/bin/ftw"
+else
+  FTW="$(command -v ftw || command -v go-ftw || true)"
+fi
 [[ -n "${FTW}" ]] || { echo "go-ftw not found — run demo/scripts/install-go-ftw.sh" >&2; exit 2; }
 [[ -d "${CRS_TESTS}" ]] || { echo "missing ${CRS_TESTS} — run demo/scripts/install-crs.sh" >&2; exit 2; }
 grep -q "^Include ${CRS_DIR}/rules/" "${RULES_FILE}" 2>/dev/null \
@@ -159,7 +166,7 @@ run_ftw() {
 BODY_TESTS_DIR="${CRS_TESTS}"
 BODY_STAGE=""
 cleanup_body_stage() {
-  [[ -n "${BODY_STAGE}" && -d "${BODY_STAGE}" ]] && rm -rf "${BODY_STAGE}" || true
+  if [[ -n "${BODY_STAGE}" && -d "${BODY_STAGE}" ]]; then rm -rf "${BODY_STAGE}"; fi
 }
 if [[ "${MODE}" == "smoke" || "${MODE}" == "body" ]]; then
   BODY_STAGE="$(mktemp -d "${OUT_DIR}/body-stage.XXXXXX")"

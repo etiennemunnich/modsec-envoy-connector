@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WebSocket handshake hop-trace proof for the connex demo.
+# WebSocket handshake hop-trace proof for the demo.
 # Honest scope: HTTP Upgrade handshake only. Not frame CRS. Not "full WS WAF".
 #
 #   ./demo/scripts/up.sh

@@ -15,7 +15,8 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 FAIL=0
-pass() { echo "  PASS $*"; }
+PASS=0
+pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=1; }
 
 [[ "${BODY_MODE}" == "BUFFERED" ]] \
@@ -45,7 +46,7 @@ OVERSIZE_ENVOY_CFG="${DEMO}/envoy/envoy-buffered-oversize.yaml"
   echo "SecAuditLogFormat JSON"
   echo "SecAuditLogType Serial"
   echo "SecAuditLog ${RUN}/modsec-audit.log"
-  echo "Include ${DEMO}/rules/connex-demo.conf"
+  echo "Include ${DEMO}/rules/demo-response.conf"
 } >"${OVERSIZE_RULES}"
 
 restore() {
@@ -161,4 +162,4 @@ if [[ "$FAIL" -ne 0 ]]; then
   echo "BUFFERED-OVERSIZE FAILED body_mode=${BODY_MODE}"
   exit 1
 fi
-echo "BUFFERED-OVERSIZE PASSED body_mode=${BODY_MODE} checks=4"
+echo "BUFFERED-OVERSIZE PASSED body_mode=${BODY_MODE} checks=${PASS}"

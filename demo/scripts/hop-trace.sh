@@ -20,7 +20,7 @@
 #   to demo/envoy/envoy-grpc.yaml and started demo/grpc-echo on :18090.
 #   ./demo/scripts/hop-trace.sh --proto grpc --expect-grpc-ok yes --expect-origin yes
 #   ./demo/scripts/hop-trace.sh --proto grpc --expect-grpc-ok no --expect-origin no \
-#       --grpc-header 'x-connex-grpc-probe: deny'
+#       --grpc-header 'x-demo-grpc-probe: deny'
 #
 # Report: demo/.run/hop-trace/<request-id>.txt
 set -euo pipefail
@@ -77,9 +77,10 @@ case "${EXPECT_GRPC_OK}" in "" | yes | no) ;; *) usage ;; esac
 REQ_PATH="/"
 CURL_ARGS=()
 if [[ "${PROTO}" != "grpc" ]]; then
-  [[ $# -ge 1 ]] || usage
-  REQ_PATH="$1"
-  shift
+  if [[ $# -ge 1 ]]; then
+    REQ_PATH="$1"
+    shift
+  fi
   CURL_ARGS=("$@")
 elif [[ $# -gt 0 ]]; then
   echo "grpc mode does not take a PATH argument (got: $*)" >&2
@@ -117,7 +118,8 @@ REPORT="${RUN}/hop-trace/${RID}.txt"
 exec > >(tee "${REPORT}") 2>&1
 
 FAIL=0
-ok() { echo "  OK   $*"; }
+OKS=0
+ok() { echo "  OK   $*"; OKS=$((OKS + 1)); }
 bad() { echo "  FAIL $*"; FAIL=1; }
 
 CODE=""
@@ -335,9 +337,9 @@ if [[ "${FAIL}" -ne 0 ]]; then
   exit 1
 fi
 if [[ "${PROTO}" == "ws" ]]; then
-  echo "HOP-TRACE OK (ws handshake only — not full WS WAF)"
+  echo "HOP-TRACE OK checks=${OKS} (ws handshake only — not full WS WAF)"
 elif [[ "${PROTO}" == "grpc" ]]; then
-  echo "HOP-TRACE OK (grpc headers/path only — not protobuf CRS)"
+  echo "HOP-TRACE OK checks=${OKS} (grpc headers/path only — not protobuf CRS)"
 else
-  echo "HOP-TRACE OK"
+  echo "HOP-TRACE OK checks=${OKS}"
 fi

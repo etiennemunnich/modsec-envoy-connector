@@ -122,71 +122,83 @@ YAML
 }
 check "check-workflows: stable-window missing schedule cron (neg)" 1 "$(cron_neg)"
 
-# --- ci-live-e2e smoke summary + floor (body_mode suffix regression) --------
-# Keep SUMMARY_RE / smoke floor rules in sync with scripts/ci-live-e2e.sh.
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS'
-smoke_floor() { # smoke_floor <log> -> 0/1 (mirrors ci-live-e2e.sh floor smoke)
-  local n
-  grep -qE '\bSMOKE PASSED\b' "$1" || { echo "missing SMOKE PASSED"; return 1; }
-  n="$(grep -Eo 'body_checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 5 ]] || { echo "body_checks=${n:-0} < 5"; return 1; }
-  return 0
+# --- ci-live-e2e floors: the real floor() and SUMMARY_RE from ci-floors.sh ---
+# floor_ok <body_mode> <suite> <log line...> -> 0 when the floor holds, 1 when not.
+floor_ok() {
+  local mode="$1" suite="$2" log="${TMP}/floor-${RANDOM}.log"
+  shift 2
+  printf '%s\n' "$@" >"${log}"
+  (
+    unset "${!MIN_@}"
+    BODY_MODE="${mode}"
+    # shellcheck source=ci-floors.sh
+    source "${ROOT}/scripts/ci-floors.sh"
+    floor "${suite}" "${log}" >/dev/null
+  ) && echo 0 || echo 1
 }
-trailers_floor() { # mirrors ci-live-e2e.sh floor trailers
-  local n
-  grep -qE '\bTRAILERS PASSED\b' "$1" || { echo "missing TRAILERS PASSED"; return 1; }
-  n="$(grep -Eo 'trailer_checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 5 ]] || { echo "trailer_checks=${n:-0} < 5"; return 1; }
-  return 0
+summary_hits() { # summary_hits <line> -> how many SUMMARY_RE matches
+  (
+    # shellcheck source=ci-floors.sh
+    source "${ROOT}/scripts/ci-floors.sh"
+    printf '%s\n' "$1" | grep -cE "${SUMMARY_RE}" || true
+  )
 }
-printf '%s\n' 'SMOKE PASSED body_mode=BUFFERED body_checks=6' >"${TMP}/smoke-ok.log"
-printf '%s\n' 'SMOKE PASSED body_mode=STREAMED body_checks=7' >"${TMP}/smoke-streamed.log"
-printf '%s\n' 'SMOKE FAILED body_mode=BUFFERED' >"${TMP}/smoke-failed.log"
-printf '%s\n' 'body_checks=99' >"${TMP}/smoke-fake.log" # floor number without PASSED
-printf '%s\n' 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=5' >"${TMP}/trailers-ok.log"
-printf '%s\n' 'TRAILERS FAILED body_mode=BUFFERED PASS=0' >"${TMP}/trailers-failed.log"
-printf '%s\n' 'trailer_checks=99' >"${TMP}/trailers-fake.log"
-check "e2e summary: PASSED with body_mode (BUFFERED)" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/smoke-ok.log")"
-check "e2e summary: PASSED with body_mode (STREAMED)" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/smoke-streamed.log")"
-check "e2e summary: TRAILERS PASSED matches SUMMARY_RE" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/trailers-ok.log")"
-check "e2e summary: old PASSED\$ misses body_mode suffix" 0 \
-  "$(grep -cE 'PASSED$' "${TMP}/smoke-ok.log" || true)"
-smoke_floor "${TMP}/smoke-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real SMOKE PASSED + body_checks passes" 0 "${ok}"
-smoke_floor "${TMP}/smoke-streamed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: STREAMED SMOKE PASSED passes" 0 "${ok}"
-smoke_floor "${TMP}/smoke-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: SMOKE FAILED fails (negative)" 1 "${ok}"
-smoke_floor "${TMP}/smoke-fake.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: fake body_checks without PASSED fails (negative)" 1 "${ok}"
-trailers_floor "${TMP}/trailers-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real TRAILERS PASSED passes" 0 "${ok}"
-trailers_floor "${TMP}/trailers-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: TRAILERS FAILED fails (negative)" 1 "${ok}"
-trailers_floor "${TMP}/trailers-fake.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: fake trailer_checks without PASSED fails (negative)" 1 "${ok}"
-
-grpc_floor() { # mirrors ci-live-e2e.sh floor hop-trace-grpc
-  local n
-  grep -qE '\bHOP-TRACE-GRPC PASSED\b' "$1" || { echo "missing HOP-TRACE-GRPC PASSED"; return 1; }
-  n="$(grep -Eo 'checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 6 ]] || { echo "checks=${n:-0} < 6"; return 1; }
-  return 0
-}
-printf '%s\n' 'HOP-TRACE-GRPC PASSED checks=13 (headers/path only — not protobuf CRS)' >"${TMP}/grpc-ok.log"
-printf '%s\n' 'HOP-TRACE-GRPC FAILED (9 passed)' >"${TMP}/grpc-failed.log"
-printf '%s\n' 'checks=99' >"${TMP}/grpc-fake.log"
-check "e2e summary: HOP-TRACE-GRPC PASSED matches SUMMARY_RE" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/grpc-ok.log")"
-grpc_floor "${TMP}/grpc-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real HOP-TRACE-GRPC PASSED passes" 0 "${ok}"
-grpc_floor "${TMP}/grpc-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: HOP-TRACE-GRPC FAILED fails (negative)" 1 "${ok}"
-grpc_floor "${TMP}/grpc-fake.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: fake checks without PASSED fails (negative)" 1 "${ok}"
+check "floor: smoke BUFFERED body_checks=6"            0 "$(floor_ok BUFFERED smoke 'SMOKE PASSED body_mode=BUFFERED body_checks=6')"
+check "floor: smoke STREAMED body_checks=7"            0 "$(floor_ok STREAMED smoke 'SMOKE PASSED body_mode=STREAMED body_checks=7')"
+check "floor: smoke NONE header_checks=5"              0 "$(floor_ok NONE smoke 'SMOKE PASSED body_mode=NONE body_checks=0 header_checks=5')"
+check "floor: smoke NONE header_checks=4 (neg)"        1 "$(floor_ok NONE smoke 'SMOKE PASSED body_mode=NONE body_checks=0 header_checks=4')"
+check "floor: smoke body_checks=4 (neg)"               1 "$(floor_ok BUFFERED smoke 'SMOKE PASSED body_mode=BUFFERED body_checks=4')"
+check "floor: smoke FAILED (neg)"                      1 "$(floor_ok BUFFERED smoke 'SMOKE FAILED body_mode=BUFFERED')"
+check "floor: smoke count without PASSED (neg)"        1 "$(floor_ok BUFFERED smoke 'body_checks=99')"
+check "floor: fail-closed 13"                          0 "$(floor_ok BUFFERED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=13 skipped=0')"
+check "floor: fail-closed 12 (neg)"                    1 "$(floor_ok BUFFERED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=12 skipped=0')"
+check "floor: fail-closed FULL_DUPLEX 11"              0 "$(floor_ok FULL_DUPLEX_STREAMED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=11 skipped=1')"
+check "floor: fail-closed FULL_DUPLEX 10 (neg)"        1 "$(floor_ok FULL_DUPLEX_STREAMED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=10 skipped=1')"
+check "floor: fail-closed old line, no count (neg)"    1 "$(floor_ok BUFFERED fail-closed 'FAIL-CLOSED DRILLS PASSED')"
+check "floor: fail-closed count on another line (neg)" 1 "$(floor_ok BUFFERED fail-closed 'checks=99' 'FAIL-CLOSED DRILLS PASSED')"
+check "floor: fail-modes 59"                           0 "$(floor_ok BUFFERED fail-modes 'summary: PASS=59 FAIL=0 SKIP=0' 'FAIL-MODES PASSED')"
+check "floor: fail-modes 56 (neg)"                     1 "$(floor_ok BUFFERED fail-modes 'summary: PASS=56 FAIL=0 SKIP=0' 'FAIL-MODES PASSED')"
+check "floor: fail-modes FULL_DUPLEX 53 + 6 SKIP"      0 "$(floor_ok FULL_DUPLEX_STREAMED fail-modes 'summary: PASS=53 FAIL=0 SKIP=6' 'FAIL-MODES PASSED')"
+check "floor: fail-modes FULL_DUPLEX 50 (neg)"         1 "$(floor_ok FULL_DUPLEX_STREAMED fail-modes 'summary: PASS=50 FAIL=0 SKIP=6' 'FAIL-MODES PASSED')"
+check "floor: fail-modes without PASSED (neg)"         1 "$(floor_ok BUFFERED fail-modes 'summary: PASS=59 FAIL=1 SKIP=0' 'FAIL-MODES FAILED')"
+check "floor: hop-trace OK 4"                          0 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE OK checks=4')"
+check "floor: hop-trace OK 3 (neg)"                    1 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE OK checks=3')"
+check "floor: hop-trace OK, no count (neg)"            1 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE OK')"
+check "floor: hop-trace FAILED (neg)"                  1 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE FAILED')"
+check "floor: trailers 6"                              0 "$(floor_ok BUFFERED trailers 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=6 skipped=0')"
+check "floor: trailers 4 (neg)"                        1 "$(floor_ok BUFFERED trailers 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=4 skipped=1')"
+check "floor: trailers FAILED (neg)"                   1 "$(floor_ok BUFFERED trailers 'TRAILERS FAILED body_mode=BUFFERED PASS=0')"
+check "floor: trailers count without PASSED (neg)"     1 "$(floor_ok BUFFERED trailers 'trailer_checks=99')"
+check "floor: hop-trace-grpc 13"                       0 "$(floor_ok BUFFERED hop-trace-grpc 'HOP-TRACE-GRPC PASSED checks=13 (headers/path only — not protobuf CRS)')"
+check "floor: hop-trace-grpc FAILED (neg)"             1 "$(floor_ok BUFFERED hop-trace-grpc 'HOP-TRACE-GRPC FAILED (9 passed)')"
+check "floor: hop-trace-ws-frames 9"                   0 "$(floor_ok BUFFERED hop-trace-ws-frames 'HOP-TRACE-WS-FRAMES PASSED checks=9 (handshake ModSec yes; frame CRS no)')"
+check "floor: hop-trace-ws-frames 5 (neg)"             1 "$(floor_ok BUFFERED hop-trace-ws-frames 'HOP-TRACE-WS-FRAMES PASSED checks=5')"
+check "floor: partial-honesty 3"                       0 "$(floor_ok BUFFERED_PARTIAL partial-honesty 'PARTIAL-HONESTY PASSED body_mode=BUFFERED_PARTIAL checks=3 soft_limit_bytes=1048576')"
+check "floor: partial-honesty 2 (neg)"                 1 "$(floor_ok BUFFERED_PARTIAL partial-honesty 'PARTIAL-HONESTY PASSED body_mode=BUFFERED_PARTIAL checks=2')"
+check "floor: buffered-oversize 4"                     0 "$(floor_ok BUFFERED buffered-oversize 'BUFFERED-OVERSIZE PASSED body_mode=BUFFERED checks=4')"
+check "floor: buffered-oversize 3 (neg)"               1 "$(floor_ok BUFFERED buffered-oversize 'BUFFERED-OVERSIZE PASSED body_mode=BUFFERED checks=3')"
+check "floor: connect-assert 1"                        0 "$(floor_ok BUFFERED connect-assert 'CONNECT-ASSERT PASSED body_mode=BUFFERED checks=1')"
+check "floor: connect-assert 0 (neg)"                  1 "$(floor_ok BUFFERED connect-assert 'CONNECT-ASSERT PASSED body_mode=BUFFERED checks=0')"
+check "floor: go-ftw-smoke 8 + 118"                    0 "$(floor_ok BUFFERED go-ftw-smoke 'demo tests: success=8 failed=0' 'CRS body ids: success=118 failed=0')"
+check "floor: go-ftw-smoke body 99 (neg)"              1 "$(floor_ok BUFFERED go-ftw-smoke 'demo tests: success=8 failed=0' 'CRS body ids: success=99 failed=0')"
+check "floor: go-ftw-smoke no demo line (neg)"         1 "$(floor_ok BUFFERED go-ftw-smoke 'CRS body ids: success=118 failed=0')"
+check "floor: go-ftw-full 5231"                        0 "$(floor_ok BUFFERED go-ftw-full 'CRS full: success=5231 failed=0')"
+check "floor: go-ftw-full 4999 (neg)"                  1 "$(floor_ok BUFFERED go-ftw-full 'CRS full: success=4999 failed=0')"
+check "floor: unknown suite has no floor (neg)"        1 "$(floor_ok BUFFERED no-such-suite 'NO-SUCH PASSED checks=99')"
+check "summary: SMOKE PASSED with body_mode suffix"    1 "$(summary_hits 'SMOKE PASSED body_mode=BUFFERED body_checks=6')"
+check "summary: TRAILERS PASSED"                       1 "$(summary_hits 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=6 skipped=0')"
+check "summary: HOP-TRACE-GRPC PASSED"                 1 "$(summary_hits 'HOP-TRACE-GRPC PASSED checks=13')"
+check "summary: PARTIAL-HONESTY PASSED"                1 "$(summary_hits 'PARTIAL-HONESTY PASSED checks=3')"
+check "summary: fail-modes summary line"               1 "$(summary_hits 'summary: PASS=59 FAIL=0 SKIP=0')"
+check "summary: plain PASS line is not a summary"      0 "$(summary_hits '  PASS [baseline] 200')"
+# ci-live-e2e.sh must use these floors, and refuse an empty suite list.
+grep -q 'source "${ROOT}/scripts/ci-floors.sh"' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
+check "e2e: ci-live-e2e.sh sources ci-floors.sh" 0 "${ok}"
+grep -qE '^floor\(\)' "${ROOT}/scripts/ci-live-e2e.sh" && ok=1 || ok=0
+check "e2e: no private floor() copy in ci-live-e2e.sh" 0 "${ok}"
+out="$(SUITES=' ' "${ROOT}/scripts/ci-live-e2e.sh" 2>&1 || true)"
+[[ "${out}" == *"SUITES is empty"* ]] && ok=0 || ok=1
+check "e2e: empty SUITES refused before anything starts" 0 "${ok}"
 
 # Thin presence hook for gRPC hop-trace artifacts (no live Envoy).
 [[ -x "${ROOT}/demo/scripts/hop-trace-grpc.sh" ]] && ok=0 || ok=1
@@ -195,8 +207,8 @@ check "demo: hop-trace-grpc.sh executable" 0 "${ok}"
 check "demo: envoy-grpc.yaml present" 0 "${ok}"
 [[ -f "${ROOT}/demo/grpc-echo/echo.proto" ]] && ok=0 || ok=1
 check "demo: grpc-echo proto present" 0 "${ok}"
-[[ -f "${ROOT}/demo/rules/connex-grpc-demo.conf" ]] && ok=0 || ok=1
-check "demo: connex-grpc-demo.conf present" 0 "${ok}"
+[[ -f "${ROOT}/demo/rules/demo-grpc.conf" ]] && ok=0 || ok=1
+check "demo: demo-grpc.conf present" 0 "${ok}"
 grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
 check "demo: envoy-grpc fail-closed" 0 "${ok}"
 grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
@@ -249,24 +261,8 @@ grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-ws-headers.yaml" && 
 check "demo: envoy-ws-headers bodies NONE" 0 "${ok}"
 grep -q 'request_body_mode: BUFFERED' "${ROOT}/demo/envoy/envoy-ws-buffered.yaml" && ok=0 || ok=1
 check "demo: envoy-ws-buffered hang config" 0 "${ok}"
-[[ -f "${ROOT}/demo/rules/connex-ws-demo.conf" ]] && ok=0 || ok=1
-check "demo: connex-ws-demo.conf present" 0 "${ok}"
-
-ws_floor() {
-  local n
-  grep -qE '\bHOP-TRACE-WS-FRAMES PASSED\b' "$1" || { echo "missing HOP-TRACE-WS-FRAMES PASSED"; return 1; }
-  n="$(grep -Eo 'checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 6 ]] || { echo "checks=${n:-0} < 6"; return 1; }
-  return 0
-}
-printf '%s\n' 'HOP-TRACE-WS-FRAMES PASSED checks=9 (handshake ModSec yes; frame CRS no)' >"${TMP}/wsf-ok.log"
-printf '%s\n' 'HOP-TRACE-WS-FRAMES FAILED (8 passed)' >"${TMP}/wsf-failed.log"
-check "e2e summary: HOP-TRACE-WS-FRAMES PASSED matches SUMMARY_RE" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/wsf-ok.log")"
-ws_floor "${TMP}/wsf-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real HOP-TRACE-WS-FRAMES PASSED passes" 0 "${ok}"
-ws_floor "${TMP}/wsf-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: HOP-TRACE-WS-FRAMES FAILED fails (negative)" 1 "${ok}"
+[[ -f "${ROOT}/demo/rules/demo-ws.conf" ]] && ok=0 || ok=1
+check "demo: demo-ws.conf present" 0 "${ok}"
 
 # --- one-year matrix policy + cartesian guard (offline) --------------------
 [[ -x "${ROOT}/scripts/one-year-matrix.sh" ]] && ok=0 || ok=1
@@ -291,8 +287,11 @@ check "one-year: unknown profile refused" 0 "${ok}"
 # --- go-ftw body staging + version-aware CRS body floor (offline) ----------
 grep -q 'stage_body_tests' "${ROOT}/demo/scripts/go-ftw.sh" && ok=0 || ok=1
 check "go-ftw: stages BODY_INCLUDE rule YAML for smoke/body" 0 "${ok}"
-grep -q 'MIN_FTW_BODY_PIN' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
+grep -q 'MIN_FTW_BODY_PIN' "${ROOT}/scripts/ci-floors.sh" && ok=0 || ok=1
 check "e2e: version-aware CRS body floor (MIN_FTW_BODY_PIN)" 0 "${ok}"
+ci_ftw="$(sed -n 's/^  GO_FTW_VERSION: "\(.*\)"$/\1/p' "${ROOT}/.github/workflows/live-e2e.yml")"
+local_ftw="$(sed -n 's/^GO_FTW_VERSION="${GO_FTW_VERSION:-\(.*\)}"$/\1/p' "${ROOT}/demo/scripts/install-go-ftw.sh")"
+check "go-ftw: install-go-ftw.sh pins the CI version (${ci_ftw:-none})" "${ci_ftw:-missing}" "${local_ftw:-unset}"
 grep -q 'count_ftw_body_tests' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
 check "e2e: counts BODY_INCLUDE tests for older CRS floors" 0 "${ok}"
 grep -q 'ftw_body_floor_pin' "${ROOT}/versions.one-year.yaml" && ok=0 || ok=1
@@ -352,7 +351,7 @@ cat >"${TMP}/runs.json" <<JSON
  {"html_url":"https://x/fork","head_repository":{"full_name":"someone/fork"},"head_commit":{"tree_id":"${T2}"}},
  {"html_url":"https://x/ours","head_repository":{"full_name":"o/r"},"head_commit":{"tree_id":"${T1}"}}]}
 JSON
-tested() { GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/runs.json" "$@" "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1; }
+tested() { GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/runs.json" "$@" "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1; }
 check "tested-tree: same tree, same repo" tested=true "$(tested env TREE=${T1})"
 check "tested-tree: a fork's run does not count" tested=false "$(tested env TREE=${T2})"
 check "tested-tree: unknown tree" tested=false "$(tested env TREE=3333333333333333333333333333333333333333)"
@@ -360,7 +359,7 @@ check "tested-tree: no tree id" tested=false "$(tested env TREE=)"
 check "tested-tree: not a tree id" tested=false "$(tested env TREE='x\" or 1')"
 check "tested-tree: a re-run runs everything" tested=false "$(tested env TREE=${T1} GITHUB_RUN_ATTEMPT=2)"
 printf "not json" >"${TMP}/bad.json"
-check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
+check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
 
 # --- demo port remap (placeholders, not chained sed) -----------------------
 # shellcheck source=remap-demo-ports.sh
@@ -410,7 +409,7 @@ check "port remap: lib.sh DEMO_PORT_BASE=18081 admin 18090" \
 check "port remap: lib.sh DEMO_PORT_BASE=18081 origin 18099" \
   1 "$(port_count 18099 "${lib_cfg}")"
 rm -f "${lib_cfg}"
-for f in demo/scripts/lib.sh demo/scripts/trailers.sh scripts/body-modes-other-lab.sh; do
+for f in demo/scripts/lib.sh demo/scripts/trailers.sh; do
   grep -q 'remap_stock_ports' "${ROOT}/${f}" && ok=0 || ok=1
   check "port remap: ${f} calls remap_stock_ports" 0 "${ok}"
 done

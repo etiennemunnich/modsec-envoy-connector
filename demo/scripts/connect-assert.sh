@@ -12,7 +12,8 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 FAIL=0
-pass() { echo "  PASS $*"; }
+PASS=0
+pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=1; }
 
 wait_http "${BASE}/" 50 || { echo "demo not up at ${BASE} — run ./demo/scripts/up.sh" >&2; exit 2; }
@@ -103,4 +104,4 @@ if [[ "$FAIL" -ne 0 ]]; then
   echo "CONNECT-ASSERT FAILED body_mode=${BODY_MODE}"
   exit 1
 fi
-echo "CONNECT-ASSERT PASSED body_mode=${BODY_MODE} checks=1"
+echo "CONNECT-ASSERT PASSED body_mode=${BODY_MODE} checks=${PASS}"

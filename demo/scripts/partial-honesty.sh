@@ -21,7 +21,8 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 FAIL=0
-pass() { echo "  PASS $*"; }
+PASS=0
+pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=1; }
 
 # Oversize PARTIAL miss / pass-through: origin must see the request and CRS must
@@ -98,4 +99,4 @@ if [[ "$FAIL" -ne 0 ]]; then
   echo "PARTIAL-HONESTY FAILED body_mode=${BODY_MODE}"
   exit 1
 fi
-echo "PARTIAL-HONESTY PASSED body_mode=${BODY_MODE} checks=3 soft_limit_bytes=1048576 miss_pad_bytes=${PAD_2MIB}"
+echo "PARTIAL-HONESTY PASSED body_mode=${BODY_MODE} checks=${PASS} soft_limit_bytes=1048576 miss_pad_bytes=${PAD_2MIB}"
