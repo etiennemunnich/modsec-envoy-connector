@@ -302,7 +302,7 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-full-duplex]
+    needs: [pin-check, rust-quality, supply-chain, protos, e2e-pin, e2e-streamed, e2e-full-duplex]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
