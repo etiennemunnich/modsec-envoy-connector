@@ -40,6 +40,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   start. An empty ruleset would have allowed every request.
 - `/healthz` probes no longer count in `ext_proc_*` metrics and log their
   phases at DEBUG instead of INFO.
+- Header values reach ModSecurity as the raw bytes Envoy forwards. A lossy
+  UTF-8 conversion turned non-UTF-8 bytes into U+FFFD, so a rule matching
+  such a byte could not fire while the origin received it.
 - A read error or idle stream after the final verdict ends the stream OK
   instead of counting as a stream error; before the verdict it still aborts.
 
