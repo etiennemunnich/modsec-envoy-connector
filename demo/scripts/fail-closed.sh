@@ -4,8 +4,10 @@
 #
 #   1. connector killed (SIGKILL)      → Envoy 500, origin untouched
 #   2. connector hung (SIGSTOP)        → Envoy 504 after message_timeout, origin untouched
+#                                        (SKIP under FULL_DUPLEX_STREAMED: no message_timeout)
 #   3. connector restarted with broken rules → process exits non-zero, Envoy 500
 #   4. connector restored              → 200 again
+#   Envoy failure_mode_allowed stays 0 throughout.
 #
 # Requires ./demo/scripts/up.sh.
 set -euo pipefail
@@ -13,8 +15,11 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 FAIL=0
-pass() { echo "  PASS $*"; }
+PASS=0
+SKIP=0
+pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=1; }
+skip() { echo "  SKIP $*"; SKIP=$((SKIP + 1)); }
 
 # drill <name> <allowed-codes-regex> <curl args...>
 drill() {
@@ -44,7 +49,7 @@ wait_http "${BASE}/" 50 || { echo "demo not up at ${BASE} — run ./demo/scripts
 
 echo "==> baseline"
 code="$(http_code "${BASE}/")"
-[[ "$code" == "200" ]] && pass "[baseline] 200" || { fail "[baseline] $code"; exit 1; }
+if [[ "$code" == "200" ]]; then pass "[baseline] 200"; else fail "[baseline] $code"; exit 1; fi
 
 echo "==> 1. connector killed (SIGKILL)"
 kill -KILL "$(connector_pid)"
@@ -53,12 +58,12 @@ drill "killed-get" "500" "${BASE}/"
 drill "killed-post" "500" -X POST -H 'Content-Type: application/x-www-form-urlencoded' \
   --data-binary 'name=alice' "${BASE}/post"
 drill "killed-attack" "500" "${BASE}/search?q=1%27%20UNION%20SELECT%201--"
-restore && pass "[restore] connector ready" || fail "[restore] connector not ready"
+if restore; then pass "[restore] connector ready"; else fail "[restore] connector not ready"; fi
 
 if [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
   # Envoy disables message_timeout under FULL_DUPLEX_STREAMED — hang→504 is N/A.
-  echo "==> 2. connector hung (SKIPPED under FULL_DUPLEX_STREAMED — no message_timeout)"
-  pass "[hung-get] skipped (Envoy disables message_timeout for FULL_DUPLEX_STREAMED)"
+  echo "==> 2. connector hung (not run under FULL_DUPLEX_STREAMED — no message_timeout)"
+  skip "[hung-get] Envoy disables message_timeout for FULL_DUPLEX_STREAMED"
 else
   echo "==> 2. connector hung (SIGSTOP; Envoy message_timeout 2s)"
   kill -STOP "$(connector_pid)"
@@ -67,7 +72,7 @@ else
   t1=$(date +%s)
   echo "  (answered in $((t1 - t0))s)"
   kill -CONT "$(connector_pid)"
-  restore && pass "[restore] connector ready" || fail "[restore] connector not ready"
+  if restore; then pass "[restore] connector ready"; else fail "[restore] connector not ready"; fi
 fi
 
 echo "==> 3. connector restarted with broken rules (boot must refuse to serve)"
@@ -75,26 +80,36 @@ stop_pidfile "${RUN}/connector.pid" KILL
 bad="${RUN}/broken-rules.conf"
 echo 'SecRule THIS_IS_NOT_VALID_SECLANG' >"${bad}"
 set +e
-"${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen 127.0.0.1:18082 \
+"${CONNECTOR_BIN}" --listen "${CONNECTOR_LISTEN}" --metrics-listen "127.0.0.1:${METRICS_PORT}" \
   --modsec-rules "${bad}" >>"${RUN}/connector.log" 2>&1
 rc=$?
 set -e
-[[ "$rc" -ne 0 ]] && pass "[bad-rules] connector exited rc=${rc}" || fail "[bad-rules] connector exited 0"
-[[ -z "$(port_pid 18081)" ]] && pass "[bad-rules] nothing listening on :18081" || fail "[bad-rules] :18081 is listening"
+if [[ "$rc" -ne 0 ]]; then pass "[bad-rules] connector exited rc=${rc}"; else fail "[bad-rules] connector exited 0"; fi
+if [[ -z "$(port_pid "${CONNECTOR_PORT}")" ]]; then
+  pass "[bad-rules] nothing listening on :${CONNECTOR_PORT}"
+else
+  fail "[bad-rules] :${CONNECTOR_PORT} is listening"
+fi
 drill "bad-rules-get" "500" "${BASE}/"
 
 echo "==> 4. restore"
-restore && pass "[restore] connector ready" || fail "[restore] connector not ready"
+if restore; then pass "[restore] connector ready"; else fail "[restore] connector not ready"; fi
 code="$(http_code "${BASE}/")"
-[[ "$code" == "200" ]] && pass "[restored] 200" || fail "[restored] $code"
+if [[ "$code" == "200" ]]; then pass "[restored] 200"; else fail "[restored] $code"; fi
 
 echo "==> Envoy ext_proc counters"
-curl -s "http://127.0.0.1:${ENVOY_ADMIN_PORT}/stats" \
-  | grep -E 'ext_proc\.modsec_ext_proc\.(streams_failed|message_timeouts|failure_mode_allowed|streams_started)' \
-  | sed 's/^/  /' || true
+stats="$(curl -s --max-time 5 "http://127.0.0.1:${ENVOY_ADMIN_PORT}/stats")"
+grep -E 'ext_proc\.modsec_ext_proc\.(streams_failed|message_timeouts|failure_mode_allowed|streams_started)' <<<"${stats}" \
+  | sed 's/^/  /'
+fma="$(awk -F': ' '$1 ~ /ext_proc\.modsec_ext_proc\.failure_mode_allowed$/ {print $2; exit}' <<<"${stats}")"
+if [[ "${fma}" == "0" ]]; then
+  pass "[envoy] failure_mode_allowed=0 (no request was let through on a connector failure)"
+else
+  fail "[envoy] failure_mode_allowed='${fma}' (want 0)"
+fi
 
 if [[ "$FAIL" -ne 0 ]]; then
-  echo "FAIL-CLOSED DRILLS FAILED"
+  echo "FAIL-CLOSED DRILLS FAILED checks=${PASS} skipped=${SKIP}"
   exit 1
 fi
-echo "FAIL-CLOSED DRILLS PASSED"
+echo "FAIL-CLOSED DRILLS PASSED checks=${PASS} skipped=${SKIP}"

@@ -42,7 +42,7 @@ wait_http "${METRICS}/healthz" 25 || {
 
 mkdir -p "${OUT_DIR}"
 
-SMALL_BENIGN="name=alice&note=hello-connex-perf"
+SMALL_BENIGN="name=alice&note=hello-demo-perf"
 SMALL_SQLI="var=1'%20UNION%20SELECT%201,2--"
 MEDIUM_PAD="$(python3 -c 'print("x"*8000)')"
 MEDIUM_BENIGN="name=alice&blob=${MEDIUM_PAD}"
@@ -81,7 +81,7 @@ sample_get() {
   for _ in 1 2 3 4 5; do
     curl -s -o /dev/null --max-time 10 "$url" || true
   done
-  for i in $(seq 1 "$N"); do
+  for _ in $(seq 1 "$N"); do
     line="$(curl -s -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" "$url" || true)"
     [[ -z "$line" ]] && line="000 0"
     code="${line%% *}"
@@ -135,7 +135,7 @@ sample_post() {
       -H "Content-Type: application/x-www-form-urlencoded" \
       --data-binary "$data" "$url" || true
   done
-  for i in $(seq 1 "$N"); do
+  for _ in $(seq 1 "$N"); do
     line="$(curl -s -o /dev/null --max-time 10 -w "%{http_code} %{time_total}" \
       -X POST -H "Content-Type: application/x-www-form-urlencoded" \
       --data-binary "$data" "$url" || true)"
@@ -181,7 +181,7 @@ sample_post() {
 }
 
 {
-  echo "# connex demo latency samples — not an SLO"
+  echo "# demo latency samples — not an SLO"
   echo "# path: Envoy→ext_proc→libmodsecurity+CRS (BUFFERED bodies)→demo origin"
   echo "# stamp=${STAMP} host=${HOST} body_mode=${BODY_MODE} base=${BASE} origin=${ORIGIN_HTTP}"
   echo "# floors: PERF_N≥${MIN_N} status_match==N on ≥${MIN_PATHS} WAF paths"

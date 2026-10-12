@@ -5,7 +5,7 @@
 # at ASH's built-in defaults.
 # Report-only for the first integration: a scan of this tree already has
 # actionable findings. Set fail_on_findings to true to fail the job.
-project_name: envoy-modsec-connex
+project_name: modsec-envoy-connector
 global_settings:
   severity_threshold: MEDIUM
 fail_on_findings: false

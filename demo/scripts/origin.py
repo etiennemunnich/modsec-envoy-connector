@@ -17,7 +17,7 @@ HITS_LOCK = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "connex-demo-origin"
+    server_version = "demo-origin"
     protocol_version = "HTTP/1.1"
 
     def _record(self):

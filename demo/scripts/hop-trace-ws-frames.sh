@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WebSocket frame-bound proof for the connex demo (option A - truth + tests).
+# WebSocket frame-bound proof for the demo (option A - truth + tests).
 #
 # Honest scope:
 #   - Stock demo: no upgrade_configs → handshake rejected (upgrade_failed).
@@ -180,7 +180,7 @@ restore_stock() {
       echo "Include ${CRS_DIR}/crs-setup.conf"
       echo "Include ${CRS_DIR}/rules/*.conf"
     fi
-    echo "Include ${DEMO}/rules/connex-demo.conf"
+    echo "Include ${DEMO}/rules/demo-response.conf"
   } >"${RULES_FILE}"
   CONNECTOR_RULES="" start_connector
   wait_http "${METRICS}/healthz" 100 || return 1
@@ -214,9 +214,9 @@ for _ in $(seq 1 50); do
   if [[ -n "$(port_pid "${WS_ORIGIN_PORT}")" ]]; then ready=1; break; fi
   sleep 0.1
 done
-[[ "${ready}" -eq 1 ]] && pass "ws-echo listening" || { fail "ws-echo not listening"; exit 1; }
+if [[ "${ready}" -eq 1 ]]; then pass "ws-echo listening"; else fail "ws-echo not listening"; exit 1; fi
 
-echo "==> reload connector with CRS + connex-ws-demo.conf (phase-1 UNION deny)"
+echo "==> reload connector with CRS + demo-ws.conf (phase-1 UNION deny)"
 # Without phase-1 deny, CRS can Continue headers then block at phase 2 after the
 # upgrade already reached the origin (measured). Early deny keeps origin clean.
 {
@@ -233,8 +233,8 @@ echo "==> reload connector with CRS + connex-ws-demo.conf (phase-1 UNION deny)"
   [[ -d "${CRS_DIR}/rules" ]] || "${DEMO}/scripts/install-crs.sh" >&2
   echo "Include ${CRS_DIR}/crs-setup.conf"
   echo "Include ${CRS_DIR}/rules/*.conf"
-  echo "Include ${DEMO}/rules/connex-demo.conf"
-  echo "Include ${DEMO}/rules/connex-ws-demo.conf"
+  echo "Include ${DEMO}/rules/demo-response.conf"
+  echo "Include ${DEMO}/rules/demo-ws.conf"
 } >"${RUN}/modsec-ws.conf"
 stop_pidfile "${RUN}/connector.pid" KILL
 CONNECTOR_RULES="${RUN}/modsec-ws.conf" start_connector
@@ -325,9 +325,11 @@ else
   fail "[fail-closed] ${summary} hits ${before}→${after}"
 fi
 CONNECTOR_RULES="" start_connector
-wait_http "${METRICS}/healthz" 100 \
-  && pass "[fail-closed] connector restored" \
-  || fail "[fail-closed] connector restore failed"
+if wait_http "${METRICS}/healthz" 100; then
+  pass "[fail-closed] connector restored"
+else
+  fail "[fail-closed] connector restore failed"
+fi
 
 echo "==> 6. BUFFERED + upgrade hang bound (short timeout; must not 101)"
 stop_pidfile "${RUN}/envoy.pid" TERM
@@ -353,9 +355,11 @@ daemonize "${RUN}/envoy.log" "${RUN}/envoy.pid" \
 wait_http "http://127.0.0.1:${ENVOY_ADMIN_PORT}/ready" 100 || true
 
 echo
-[[ "${PASS}" -ge "${MIN_WS_FRAME_CHECKS}" ]] \
-  && pass "[floor] PASS=${PASS} (≥ ${MIN_WS_FRAME_CHECKS})" \
-  || fail "[floor] PASS=${PASS} < ${MIN_WS_FRAME_CHECKS}"
+if [[ "${PASS}" -ge "${MIN_WS_FRAME_CHECKS}" ]]; then
+  echo "  floor PASS=${PASS} (≥ ${MIN_WS_FRAME_CHECKS})"
+else
+  fail "[floor] PASS=${PASS} < ${MIN_WS_FRAME_CHECKS}"
+fi
 
 echo "transcript: ${TRANSCRIPT}"
 if [[ "${FAIL}" -ne 0 ]]; then

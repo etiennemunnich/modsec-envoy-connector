@@ -5,7 +5,7 @@
 #   - Inspected: request headers / :path / gRPC metadata (HTTP/2 headers).
 #   - NOT claimed: full protobuf CRS, streaming RPC WAF, or "gRPC body CRS".
 #   - Envoy config: demo/envoy/envoy-grpc.yaml (HTTP/2, body modes NONE).
-#   - Allow/deny cells use DEMO_CRS=0 + connex-grpc-demo.conf so benign Unary
+#   - Allow/deny cells use DEMO_CRS=0 + demo-grpc.conf so benign Unary
 #     can Continue; a separate cell reloads stock CRS to show path anomaly deny.
 #
 # Floors (empty suite cannot go green):
@@ -24,7 +24,7 @@ MIN_GRPC_CHECKS="${MIN_GRPC_CHECKS:-6}"
 GRPC_ORIGIN_PORT=18090
 GRPC_HITS="${RUN}/grpc-origin-hits.log"
 GRPC_CFG="${DEMO}/envoy/envoy-grpc.yaml"
-GRPC_RULES_DEMO="${DEMO}/rules/connex-grpc-demo.conf"
+GRPC_RULES_DEMO="${DEMO}/rules/demo-grpc.conf"
 GRPC_ECHO_DIR="${DEMO}/grpc-echo"
 OUT_DIR="${RUN}/hop-trace-grpc"
 mkdir -p "${OUT_DIR}"
@@ -112,7 +112,7 @@ restore_stock() {
       echo "Include ${CRS_DIR}/crs-setup.conf"
       echo "Include ${CRS_DIR}/rules/*.conf"
     fi
-    echo "Include ${DEMO}/rules/connex-demo.conf"
+    echo "Include ${DEMO}/rules/demo-response.conf"
   } >"${RULES_FILE}"
   CONNECTOR_RULES="" start_connector
   wait_http "${METRICS}/healthz" 100 \
@@ -148,11 +148,13 @@ for _ in $(seq 1 50); do
   fi
   sleep 0.1
 done
-[[ "${ready}" -eq 1 ]] \
-  && pass "grpc-echo listening" \
-  || { fail "grpc-echo not listening"; tail -n 20 "${RUN}/grpc-echo.log" >&2; exit 1; }
+if [[ "${ready}" -eq 1 ]]; then
+  pass "grpc-echo listening"
+else
+  fail "grpc-echo not listening"; tail -n 20 "${RUN}/grpc-echo.log" >&2; exit 1
+fi
 
-echo "==> restart connector with DEMO_CRS=0 + connex-grpc-demo.conf"
+echo "==> restart connector with DEMO_CRS=0 + demo-grpc.conf"
 build_grpc_rules_no_crs
 stop_pidfile "${RUN}/connector.pid" KILL
 CONNECTOR_RULES="${RUN}/modsec-grpc.conf" start_connector
@@ -185,12 +187,12 @@ else
   cat "${OUT_DIR}/${RID}.err" | tail -20 || true
 fi
 line="$(grep -F "rid=${RID} " "${RUN}/envoy.log" | tail -1 || true)"
-[[ -n "${line}" ]] && pass "[benign] Envoy access log" || fail "[benign] no Envoy access log"
+if [[ -n "${line}" ]]; then pass "[benign] Envoy access log"; else fail "[benign] no Envoy access log"; fi
 
-echo "==> 2. deny metadata header x-connex-grpc-probe: deny (origin untouched)"
+echo "==> 2. deny metadata header x-demo-grpc-probe: deny (origin untouched)"
 RID="grpc-deny-hdr-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 before="$(grpc_hits)"
-summary="$(grpc_call "${RID}" -v -H 'x-connex-grpc-probe: deny')"
+summary="$(grpc_call "${RID}" -v -H 'x-demo-grpc-probe: deny')"
 echo "  client ${summary}"
 after="$(grpc_hits)"
 # Envoy local reply from ModSec is typically HTTP 403; grpcurl non-zero.
@@ -279,7 +281,7 @@ else
 fi
 if "${DEMO}/scripts/hop-trace.sh" --proto grpc --expect-grpc-ok no --expect-origin no \
     --grpc-method echo.Echo/Unary \
-    --grpc-header 'x-connex-grpc-probe: deny'; then
+    --grpc-header 'x-demo-grpc-probe: deny'; then
   pass "[hop-trace] deny-header grpc hop-trace OK"
 else
   fail "[hop-trace] deny-header grpc hop-trace FAILED"
@@ -303,7 +305,7 @@ echo "==> 6. stock CRS on gRPC codec (path SQLi — HTTP-shaped CRS, not protobu
   [[ -d "${CRS_DIR}/rules" ]] || "${DEMO}/scripts/install-crs.sh" >&2
   echo "Include ${CRS_DIR}/crs-setup.conf"
   echo "Include ${CRS_DIR}/rules/*.conf"
-  echo "Include ${DEMO}/rules/connex-demo.conf"
+  echo "Include ${DEMO}/rules/demo-response.conf"
 } >"${RUN}/modsec-grpc-crs.conf"
 stop_pidfile "${RUN}/connector.pid" KILL
 CONNECTOR_RULES="${RUN}/modsec-grpc-crs.conf" start_connector
@@ -336,9 +338,11 @@ else
 fi
 
 echo
-[[ "${PASS}" -ge "${MIN_GRPC_CHECKS}" ]] \
-  && pass "[floor] PASS=${PASS} (≥ ${MIN_GRPC_CHECKS})" \
-  || fail "[floor] PASS=${PASS} < ${MIN_GRPC_CHECKS}"
+if [[ "${PASS}" -ge "${MIN_GRPC_CHECKS}" ]]; then
+  echo "  floor PASS=${PASS} (≥ ${MIN_GRPC_CHECKS})"
+else
+  fail "[floor] PASS=${PASS} < ${MIN_GRPC_CHECKS}"
+fi
 
 echo "transcript: ${TRANSCRIPT}"
 if [[ "${FAIL}" -ne 0 ]]; then

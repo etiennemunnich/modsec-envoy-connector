@@ -47,7 +47,7 @@ wait_http "${BASE}/" 50 || { echo "demo not up at ${BASE} — run ./demo/scripts
 echo "==> body_mode=${BODY_MODE} (config $(basename "${ENVOY_CFG}"))"
 echo "==> connector readiness"
 code="$(http_code "${METRICS}/healthz")"
-[[ "$code" == "200" ]] && pass "[healthz] 200" || fail "[healthz] $code"
+if [[ "$code" == "200" ]]; then pass "[healthz] 200"; else fail "[healthz] $code"; fi
 
 echo "==> benign traffic (expect 200, reaches origin)"
 expect "get-root" 200 1 "${BASE}/"
@@ -186,17 +186,21 @@ else
   want_deny=9
   [[ "${REQUEST_BODY_MODE}" == "STREAMED" ]] && want_deny=10
 fi
-[[ "${deny:-0}" -ge "${want_deny}" ]] && pass "[metrics] deny_total=${deny}" || fail "[metrics] deny_total=${deny:-?} (want ≥ ${want_deny})"
-[[ "${fc:-0}" -eq 0 ]] && pass "[metrics] fail_closed_total=0" || fail "[metrics] fail_closed_total=${fc}"
+if [[ "${deny:-0}" -ge "${want_deny}" ]]; then pass "[metrics] deny_total=${deny}"; else fail "[metrics] deny_total=${deny:-?} (want ≥ ${want_deny})"; fi
+if [[ "${fc:-0}" -eq 0 ]]; then pass "[metrics] fail_closed_total=0"; else fail "[metrics] fail_closed_total=${fc}"; fi
 
 if [[ "${BODY_MODE}" == "NONE" ]]; then
-  [[ "${HEADER_PASS}" -ge "${MIN_HEADER_CHECKS}" ]] \
-    && pass "[floor] header-path checks PASS=${HEADER_PASS} (≥ ${MIN_HEADER_CHECKS})" \
-    || fail "[floor] header-path checks PASS=${HEADER_PASS} < ${MIN_HEADER_CHECKS}"
+  if [[ "${HEADER_PASS}" -ge "${MIN_HEADER_CHECKS}" ]]; then
+    pass "[floor] header-path checks PASS=${HEADER_PASS} (≥ ${MIN_HEADER_CHECKS})"
+  else
+    fail "[floor] header-path checks PASS=${HEADER_PASS} < ${MIN_HEADER_CHECKS}"
+  fi
 else
-  [[ "${BODY_PASS}" -ge "${MIN_BODY_CHECKS}" ]] \
-    && pass "[floor] body-path checks PASS=${BODY_PASS} (≥ ${MIN_BODY_CHECKS})" \
-    || fail "[floor] body-path checks PASS=${BODY_PASS} < ${MIN_BODY_CHECKS}"
+  if [[ "${BODY_PASS}" -ge "${MIN_BODY_CHECKS}" ]]; then
+    pass "[floor] body-path checks PASS=${BODY_PASS} (≥ ${MIN_BODY_CHECKS})"
+  else
+    fail "[floor] body-path checks PASS=${BODY_PASS} < ${MIN_BODY_CHECKS}"
+  fi
 fi
 
 if [[ "$FAIL" -ne 0 ]]; then

@@ -70,7 +70,7 @@ EOF
 
 # Fetch all versions as a JSON array (paginated). On 403, fail with refresh hint.
 fetch_versions() {
-  local tmp http_code body
+  local tmp body
   tmp="$(mktemp)"
   # gh api --paginate concatenates page arrays into a stream of objects when
   # using --jq, but raw paginate yields concatenated JSON arrays. Use --slurp
