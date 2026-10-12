@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Live trailer safety cells through Envoy → connector → origin.
 #
-# Default demo configs keep trailer modes SKIP (product default). This suite
-# temporarily restarts Envoy with request/response trailer mode SEND so Envoy
-# actually delivers trailers to the connector.
+# Every stock config with a body mode sends trailers (trailer mode SEND), so
+# the connector can end a body that trailers follow. For BUFFERED / STREAMED
+# this suite restarts Envoy with its own trailer SEND config; FULL_DUPLEX
+# reuses the stock one. HTTP/2 trailer cells live in h2-trailers.sh.
 #
 # Honest bounds:
 #   - Trailer *values* are NOT CRS-inspected (attack only in a trailer → 200).

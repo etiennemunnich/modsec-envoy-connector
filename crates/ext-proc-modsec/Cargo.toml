@@ -1,10 +1,12 @@
 [package]
 name = "ext-proc-modsec"
-version = "0.1.0"
+version = "0.1.0-alpha.2"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Etienne Munnich"]
+repository = "https://github.com/etiennemunnich/modsec-envoy-connector"
+readme = "../../README.md"
 description = "Envoy ExternalProcessor (ext_proc) gRPC server that inspects request and response headers and bodies with libmodsecurity, fail-closed."
 publish = false
 

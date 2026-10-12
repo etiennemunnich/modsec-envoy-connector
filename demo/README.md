@@ -20,7 +20,8 @@ curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 
 | [`smoke.sh`](./scripts/smoke.sh) | Benign GET, form and JSON → **200**; SQLi, XSS and traversal in the URL or body → **403**; response-body rule → **403**; CONNECT → **403**. Checks the origin hit count every time. At least 5 body checks must pass (NONE: 5 header checks). |
 | [`fail-closed.sh`](./scripts/fail-closed.sh) | Connector killed → **500**; frozen with SIGSTOP → **504** after 2 s (`SKIP` under FULL_DUPLEX_STREAMED); restarted with broken rules → **500**; then restored → **200**. The origin must receive nothing during any failure. |
 | [`fail-modes.sh`](./scripts/fail-modes.sh) | Failure classes 1–6 over HTTP/1.1 and HTTP/2: kill, bad rules, rule deny, hang, unwritable audit log, split `Cookie` headers, an attack only in the last chunk, and a negative control with `failure_mode_allow: true`. `--proto h1\|h2`, `--class 1,4,5`. |
-| [`trailers.sh`](./scripts/trailers.sh) | Restarts Envoy with trailer mode `SEND`: allow + trailers **200**, body SQLi + trailers **403** with the origin untouched, benign + trailers **200**, plus the gRPC trailers-without-session **500** test. Restores the stock config. |
+| [`trailers.sh`](./scripts/trailers.sh) | Restarts Envoy with HTTP/1 trailers enabled: allow + trailers **200**, body SQLi + trailers **403** with the origin untouched, benign + trailers **200**, plus the gRPC trailers-without-session **500** test. Restores the stock config. |
+| [`h2-trailers.sh`](./scripts/h2-trailers.sh) | HTTP/2 requests whose body ends in trailers, sent with [`h2c.py`](./scripts/h2c.py) through the stock config: SQLi body + trailers and SQLi query with trailers but no body → **403**, origin untouched; benign body + trailers and benign trailers-only → **200**, origin +1. At least 4 must pass (3 under NONE). |
 | [`go-ftw.sh`](./scripts/go-ftw.sh) | OWASP CRS regression tests with [go-ftw](https://github.com/coreruleset/go-ftw), HTTP/1.x, judged by status code: `smoke`, `body` or `full`. Uses `FTW_BIN`, else `~/.local/bin/ftw`, else `PATH`. Results in `demo/.run/go-ftw/`. |
 | [`hop-trace.sh`](./scripts/hop-trace.sh) | One request (default `GET /`) followed by request id through the Envoy access log, connector phases, CRS matches and the origin. `--expect-status`, `--expect-origin yes\|no`, `--proto h1\|h2\|ws\|grpc`. |
 | [`hop-trace-ws.sh`](./scripts/hop-trace-ws.sh) | WebSocket handshake trace: the stock config rejects the upgrade (`upgrade_failed`, **403**). Frames are not inspected. |
@@ -31,7 +32,7 @@ curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 
 | [`connect-assert.sh`](./scripts/connect-assert.sh) | CONNECT → **403** fast, origin untouched, ext_proc disabled on that route. |
 | [`perf.sh`](./scripts/perf.sh) | Latency samples (p50/p99) for allow and deny paths; fails on an empty or partial run. Not an SLO. Results in `demo/.run/perf/`. |
 | [`down.sh`](./scripts/down.sh) | Stops everything `up.sh` started. |
-| [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit with its request id), a detach helper, shared settings. |
+| [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit with its request id and writes each response in one segment), a detach helper, shared settings. |
 
 Logs, pid files, generated rules and the ModSecurity audit log go to `demo/.run/`.
 
@@ -39,20 +40,20 @@ Logs, pid files, generated rules and the ModSecurity audit log go to `demo/.run/
 
 | File | Role |
 |------|------|
-| [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Stock config: listener :18080, `ext_proc` → `modsec_ext_proc` cluster, `failure_mode_allow: false`, `message_timeout: 2s`, BUFFERED bodies, trailers `SKIP`, `request_attributes`, CONNECT answered by Envoy. |
+| [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Stock config: listener :18080, `ext_proc` → `modsec_ext_proc` cluster, `failure_mode_allow: false`, `message_timeout: 2s`, BUFFERED bodies, trailers `SEND` (the connector ends a body that trailers follow at the trailers), `request_attributes`, CONNECT answered by Envoy. |
 | [`envoy/envoy-streamed.yaml`](./envoy/envoy-streamed.yaml) | STREAMED bodies (`BODY_MODE=STREAMED`). |
 | [`envoy/envoy-full-duplex.yaml`](./envoy/envoy-full-duplex.yaml) | FULL_DUPLEX_STREAMED bodies, trailers `SEND`; the connector runs with `--body-reply streamed`. |
 | [`envoy/envoy-none.yaml`](./envoy/envoy-none.yaml) | NONE: headers only (`BODY_MODE=NONE`). |
 | [`envoy/envoy-buffered-partial.yaml`](./envoy/envoy-buffered-partial.yaml) | BUFFERED_PARTIAL with `per_connection_buffer_limit_bytes: 1048576` (1 MiB). |
 | [`envoy/envoy-req-buffered-resp-streamed.yaml`](./envoy/envoy-req-buffered-resp-streamed.yaml), [`envoy/envoy-req-streamed-resp-buffered.yaml`](./envoy/envoy-req-streamed-resp-buffered.yaml) | Different body modes per direction. |
-| [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml), [`envoy/envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Trailer mode `SEND`, for `trailers.sh`. |
+| [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml), [`envoy/envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | The stock and STREAMED configs plus HTTP/1 `enable_trailers`, for `trailers.sh`. |
 | [`envoy/envoy-buffered-oversize.yaml`](./envoy/envoy-buffered-oversize.yaml) | BUFFERED with a 1 KiB buffer limit, for `buffered-oversize.sh`. |
 | [`envoy/envoy-grpc.yaml`](./envoy/envoy-grpc.yaml) | HTTP/2, headers only → `grpc-echo` :18090, for `hop-trace-grpc.sh`. |
 | [`envoy/envoy-ws-headers.yaml`](./envoy/envoy-ws-headers.yaml), [`envoy/envoy-ws-buffered.yaml`](./envoy/envoy-ws-buffered.yaml) | WebSocket upgrade with headers only, and with BUFFERED (the hang bound), for `hop-trace-ws-frames.sh`. |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives, based on `modsecurity.conf-recommended`: engine `On`, response body inspection `On`. |
 | [`rules/engine-partial-overlay.conf`](./rules/engine-partial-overlay.conf) | BUFFERED_PARTIAL: raises `SecRequestBodyNoFilesLimit` to 2 MiB so ModSecurity does not reject the 1 MiB prefix itself. |
 | [`rules/engine-oversize-overlay.conf`](./rules/engine-oversize-overlay.conf) | 1 KiB `SecRequestBodyLimit` with `Reject`, for `buffered-oversize.sh`. |
-| [`rules/demo-response.conf`](./rules/demo-response.conf) | One rule that blocks responses containing `CONNEX-LEAK-MARKER`, to show the response path. |
+| [`rules/demo-response.conf`](./rules/demo-response.conf) | One rule that blocks responses containing `DEMO-LEAK-MARKER`, to show the response path. |
 | [`rules/demo-grpc.conf`](./rules/demo-grpc.conf) | gRPC trace rule: deny when the metadata `x-demo-grpc-probe: deny` is sent. |
 | [`rules/demo-ws.conf`](./rules/demo-ws.conf) | WebSocket trace rule: a phase-1 deny on `UNION` in the URI. |
 | [`ftw/`](./ftw/) | go-ftw config, demo test cases, and `envoy-overrides.yaml`: measured Envoy platform differences, like CRS's own nginx overrides. |

@@ -28,6 +28,12 @@ MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
 MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
 MIN_SMOKE_HEADER="${MIN_SMOKE_HEADER:-5}"
 MIN_TRAILERS="${MIN_TRAILERS:-5}"
+# h2-trailers: 4 cells; NONE skips the body cell (bodies are not inspected).
+if [[ "${BODY_MODE:-BUFFERED}" == "NONE" ]]; then
+  MIN_H2_TRAILERS="${MIN_H2_TRAILERS:-3}"
+else
+  MIN_H2_TRAILERS="${MIN_H2_TRAILERS:-4}"
+fi
 # hop-trace CI cell: status, Envoy log, connector phases, origin untouched.
 MIN_HOP_TRACE="${MIN_HOP_TRACE:-4}"
 MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
@@ -83,6 +89,7 @@ floor() {
       ;;
     hop-trace) marker_count "$2" 'HOP-TRACE OK' checks "${MIN_HOP_TRACE}" || return 1 ;;
     trailers) marker_count "$2" 'TRAILERS PASSED' trailer_checks "${MIN_TRAILERS}" || return 1 ;;
+    h2-trailers) marker_count "$2" 'H2 TRAILERS PASSED' checks "${MIN_H2_TRAILERS}" || return 1 ;;
     hop-trace-grpc) marker_count "$2" 'HOP-TRACE-GRPC PASSED' checks "${MIN_GRPC_HOP}" || return 1 ;;
     hop-trace-ws-frames) marker_count "$2" 'HOP-TRACE-WS-FRAMES PASSED' checks "${MIN_WS_FRAMES}" || return 1 ;;
     partial-honesty) marker_count "$2" 'PARTIAL-HONESTY PASSED' checks "${MIN_PARTIAL_HONESTY}" || return 1 ;;
