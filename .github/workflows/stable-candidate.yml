@@ -27,9 +27,11 @@ on:
 
 run-name: stable-candidate ${{ inputs.component }} ${{ inputs.version }}
 
+# Dispatched on main: one group per run, so a re-dispatch never cancels a
+# candidate whose result is still to be recorded.
 concurrency:
-  group: stable-candidate-${{ inputs.component }}-${{ inputs.version }}
-  cancel-in-progress: true
+  group: ${{ github.ref == 'refs/heads/main' && format('stable-candidate-main-{0}', github.run_id) || format('stable-candidate-{0}-{1}-{2}', inputs.component, inputs.version, github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -48,7 +50,7 @@ jobs:
     name: report
     needs: e2e
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

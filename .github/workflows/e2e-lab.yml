@@ -10,9 +10,11 @@ on:
     - cron: "47 5 * * 1"
   workflow_dispatch:
 
+# Runs on main (every schedule) get their own group, so they are never
+# cancelled; other refs keep one run each.
 concurrency:
-  group: e2e-lab
-  cancel-in-progress: true
+  group: ${{ github.ref == 'refs/heads/main' && format('e2e-lab-main-{0}', github.run_id) || format('e2e-lab-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -63,7 +65,7 @@ jobs:
       - e2e-asymm-req-buf-resp-str
       - e2e-asymm-req-str-resp-buf
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

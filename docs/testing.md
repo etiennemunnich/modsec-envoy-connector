@@ -1,143 +1,134 @@
 # Testing
 
-Every push to `main` runs, natively on GitHub-hosted `x86_64` and `aarch64` Ubuntu, the Rust gate (fmt, clippy, tests with libmodsecurity linked) **and** the live Envoy → connector → libmodsecurity + CRS suites (smoke, fail-closed, the HTTP/1.1 + HTTP/2 fail-mode matrix, hop-trace, go-ftw smoke). New stable Envoy / libmodsecurity / CRS releases are detected daily and tested on both architectures; the last three stables of each axis weekly; an optional ~12-month axis-at-a-time matrix on demand; and the full CRS regression monthly.
+What each test proves, where it runs, and how to run it yourself. Pins are in [`versions.lock.md`](../versions.lock.md); the failure model is in [fail-closed.md](./fail-closed.md).
 
-Cross-links: [how-it-works.md](./how-it-works.md) · [fail-closed.md](./fail-closed.md) · [ash.md](./ash.md) · [`versions.lock.md`](../versions.lock.md) · [`versions.one-year.yaml`](../versions.one-year.yaml) · [`scripts/one-year-matrix.sh`](../scripts/one-year-matrix.sh).
+Every pull request, push to `main` and dispatch of `ci` runs, natively on GitHub-hosted `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), the Rust checks **and** the live Envoy → connector → libmodsecurity + CRS suites in the three product body modes (BUFFERED, STREAMED, FULL_DUPLEX_STREAMED). The limited body modes, the full CRS regression and other upstream versions run on schedules. There is no self-hosted or Mac runner, no QEMU and no cross-compiling.
 
----
+## What is proven
 
-## Layer map
+| Layer | Proves | Runs in |
+|-------|--------|---------|
+| Rust | engine and connector unit tests; gRPC tests against the real libmodsecurity: allow, deny, redirect, multi-chunk bodies, `REMOTE_ADDR` from Envoy attributes, engine-error → 500 (class 3, ≥ 8 tests), trailers, `/healthz` | `rust-quality` × arch; `cargo test --workspace` |
+| Smoke | benign **200**; URL, request-body and response-body attacks **403**; CONNECT **403**; origin not contacted on a deny | `smoke.sh` |
+| Fail-closed | connector killed → **500**; connector hung → **504** (not under FULL_DUPLEX_STREAMED, see [fail-closed.md](./fail-closed.md#full_duplex_streamed-and-a-hung-connector)); bad rules → **500**; origin not contacted | `fail-closed.sh` |
+| Fail-mode matrix | failure classes 1–6 over HTTP/1.1 **and** HTTP/2 (protocol read from the Envoy access log); split `Cookie` headers; an attack only in the last body chunk; a negative control with `failure_mode_allow: true` that shows the same kill and hang *do* reach the origin, so the checks can see a fail-open | `fail-modes.sh` |
+| Hop trace | one request followed by `x-request-id` through the Envoy access log, connector phases, CRS matches and the origin | `hop-trace.sh` |
+| Trailers | with trailer mode `SEND`: allow + trailers **200**, body SQLi + trailers **403**, Envoy delivers trailers to the connector, trailers without a session **500** (gRPC test). Trailer *values* are not inspected | `trailers.sh` |
+| CRS (go-ftw) | OWASP CRS `tests/regression` through Envoy, judged by status code, **HTTP/1.x only** | `go-ftw.sh smoke` on every PR; `go-ftw.sh full` monthly |
+| Upstream versions | new stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x releases and the last three stables of each axis pass the live suites, one axis moved off its pin at a time | `release-watch`, `stable-candidate`, `stable-window` |
 
-| Layer | Proves | Where it runs |
-|-------|--------|---------------|
-| **A — Pins + Rust** | pins; engine + connector unit tests; gRPC integration tests against libmodsecurity (allow, deny, redirect, BUFFERED/STREAMED-style multi-chunk body, REMOTE_ADDR from attributes, class-3 fail-closed 500 paths ≥ 8, trailers safe, `/healthz`) | `ci`: `pin-check`, `rust-quality (x86_64)`, `rust-quality (aarch64)`; `cargo test --workspace` locally |
-| **B — Live smoke + fail-closed** | Envoy → connector → libmodsecurity + CRS: benign **200**, SQLi/XSS URL + body **403**, response-body **403**; kill → **500**, hang → **504** (N/A under FULL_DUPLEX), bad rules → **500**; origin untouched on every deny / failure. Body-path floor ≥ 5 (NONE: header floor ≥ 5 + body bypass honesty). | `ci` → `e2e-pin` × arch (**BUFFERED**); `e2e-streamed`; `e2e-full-duplex`; weekly `e2e-lab` → `e2e-buffered-partial` + `e2e-none` (headers + FC); `BODY_MODE=… ./demo/scripts/up.sh` then `smoke.sh`, `fail-closed.sh` |
-| **C — Fail-mode matrix (H1 + H2)** | Fail-closed classes 1–6 over HTTP/1.1 **and** HTTP/2 prior knowledge, protocol proven from the Envoy access log; split `Cookie` crumbs inspected; an attack only in the last chunk / DATA frames still **403**; class-3 gRPC floor ≥ 8; negative control (`failure_mode_allow: true`) shows the same kill / hang *does* let traffic through, so the checks can see fail-open. Hang cells **skipped** under FULL_DUPLEX (`message_timeout` disabled). | `ci` → `e2e-pin` + `e2e-streamed` + `e2e-full-duplex` × arch; `demo/scripts/fail-modes.sh` |
-| **D — CRS regression (go-ftw)** | OWASP CRS `tests/regression` through Envoy, HTTP/1.x, judged by status code for every Envoy-implemented full-CRS mode | smoke: `e2e-pin` + `e2e-streamed` + `e2e-full-duplex` × arch; full: `crs-full` matrix × **BUFFERED + STREAMED + FULL_DUPLEX_STREAMED** × arch (monthly); PARTIAL under-limit only; NONE body CRS n/a |
-| **E — Stable versions** | a new stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x release, the last three stables of each axis, and (on demand) stables from the last ~12 months, pass layers B–D with the other axes at their pins (axis-at-a-time; Cartesian opt-in only) | `release-watch` (daily) → `stable-candidate` × arch → issue; `stable-window` × arch (weekly); `stable-one-year` × arch (`workflow_dispatch` only); locally `scripts/one-year-matrix.sh plan\|run`, or `scripts/ci-live-e2e.sh` with `ENVOY_VERSION` / `MODSECURITY_PIN` / `CRS_TAG`, or `scripts/probe-modsec-pin.sh` |
-| **Trace** | one request followed across every hop by `x-request-id` (Envoy access log → connector phases → CRS matches → origin) | `ci` → `e2e-pin` + `e2e-streamed` + `e2e-full-duplex` × arch; `demo/scripts/hop-trace.sh` |
-| **Trailers (SEND)** | Trailer safety with temporary trailer `SEND` Envoy config: allow+trailers **200**, body SQLi+trailers **403**, live `trailers_continue` (BUFFERED/STREAMED), gRPC trailers-alone **500**. Floor ≥ 5. Trailer *values* not CRS-inspected. FULL_DUPLEX stock YAML already has SEND; Envoy may fold trailers into body EOS (no separate `RequestTrailers`). | `ci` → `e2e-pin` + `e2e-streamed` + `e2e-full-duplex` × arch; `demo/scripts/trailers.sh` |
+Each live suite must also reach a minimum count of passing checks, not only exit 0, so a suite that silently runs fewer checks fails. SKIP lines never count. The floors are in [`scripts/ci-floors.sh`](../scripts/ci-floors.sh): smoke body checks ≥ 5, fail-closed ≥ 13 (≥ 11 under FULL_DUPLEX_STREAMED), fail-modes ≥ 57 (≥ 51), go-ftw demo tests ≥ 8, CRS body tests ≥ 100 at the pin, CRS full ≥ 5000, trailers ≥ 5. After every go-ftw run the same connector process must still be serving `/metrics` with no new `ext_proc_stream_errors_total`. Each cell asserts the architecture it ran on.
 
-All of it runs on GitHub-hosted runners (`ubuntu-24.04`, `ubuntu-24.04-arm`), natively per architecture — no self-hosted or Mac runner, no QEMU, no cross-compiling. See [Hosted CI](#hosted-ci).
+## Body-mode coverage
 
----
+| Body mode | Product suites | go-ftw smoke | go-ftw full | Notes |
+|-----------|----------------|--------------|-------------|-------|
+| BUFFERED | every PR (`e2e-pin`) | every PR | monthly (`crs-full`) | product default |
+| STREAMED | every PR (`e2e-streamed`) | every PR | monthly | phase-2 and phase-4 rules still decide at end of stream |
+| FULL_DUPLEX_STREAMED | every PR (`e2e-full-duplex`) | every PR | monthly | hang → 504 does not apply |
+| BUFFERED_PARTIAL | weekly (`e2e-lab`) | under the limit only | not run | bytes past the limit are not inspected; never a full-CRS claim |
+| NONE | weekly, headers and fail-closed only | n/a | n/a | body attacks reach the origin |
+| asymmetric (request BUFFERED / response STREAMED and the reverse) | weekly | weekly | not run | lab only |
 
-## Local gates
+go-ftw full regression: 5231/5231 in BUFFERED, STREAMED and FULL_DUPLEX_STREAMED in a local x86_64 Linux run at the current pins on 2026-10-12. `crs-full` has not yet run in this repository; it is scheduled monthly. go-ftw is HTTP/1.x and judges status codes only; the HTTP/2 evidence is `fail-modes.sh --proto h2`.
+
+## Run it locally
+
+Install and bring the demo up first ([getting-started.md](./getting-started.md)). Transcripts land in `demo/.run/`.
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 
-./demo/scripts/up.sh                  # Envoy + connector + CRS + origin (BUFFERED)
-./demo/scripts/smoke.sh               # allow / deny / body / response path (body floor ≥ 5)
-./demo/scripts/fail-closed.sh         # kill → 500, hang → 504, bad rules → 500
-./demo/scripts/fail-modes.sh          # classes 1–6 + controls, H1 and H2 (class-3 gRPC floor ≥ 8)
-BODY_MODE=STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh && ./demo/scripts/fail-closed.sh
-BODY_MODE=NONE ./demo/scripts/up.sh && ./demo/scripts/smoke.sh && ./demo/scripts/fail-closed.sh   # headers + body bypass
-BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh && ./demo/scripts/fail-closed.sh
-BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/fail-modes.sh   # hang cells skipped
-BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/hop-trace.sh --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
-BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/trailers.sh     # stock YAML already SEND
-BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/go-ftw.sh smoke   # after up; hang→504 N/A under duplex
-BODY_MODE=STREAMED ./demo/scripts/go-ftw.sh full               # after up; also hosted via crs-full matrix
-./demo/scripts/go-ftw.sh smoke        # demo tests + body-heavy CRS SQLi/XSS tests (BUFFERED default)
-./demo/scripts/go-ftw.sh full         # whole CRS regression tree
-./demo/scripts/hop-trace.sh --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
-./demo/scripts/perf.sh                # latency samples; floors so empty runs fail
+./demo/scripts/up.sh                  # BUFFERED; BODY_MODE=STREAMED|FULL_DUPLEX_STREAMED|NONE|BUFFERED_PARTIAL ./demo/scripts/up.sh
+./demo/scripts/smoke.sh
+./demo/scripts/fail-closed.sh
+./demo/scripts/fail-modes.sh          # H1 and H2
+./demo/scripts/hop-trace.sh           # traces GET /; for a deny add: --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
+./demo/scripts/trailers.sh
+./demo/scripts/install-go-ftw.sh      # go-ftw at GO_FTW_PIN, into ~/.local/bin
+./demo/scripts/go-ftw.sh smoke        # or: body | full
+./demo/scripts/perf.sh                # latency samples, not an SLO
 ./demo/scripts/down.sh
 ```
 
-go-ftw: `./demo/scripts/install-go-ftw.sh`. Results and transcripts land in `demo/.run/` (`go-ftw/`, `fail-modes/`, `hop-trace/`).
+Other scripts: `partial-honesty.sh` (BUFFERED_PARTIAL: an in-prefix SQLi is **403**, a SQLi past the limit can reach the origin), `buffered-oversize.sh`, `connect-assert.sh`, `hop-trace-ws.sh` and `hop-trace-ws-frames.sh` (WebSocket handshake and frame bounds; frames are not CRS-inspected), `hop-trace-grpc.sh` (gRPC headers and metadata; needs `go` and `grpcurl`; protobuf bodies are not CRS-inspected).
 
----
+To run one CI cell exactly as CI does, including the floors, or to try another upstream version:
 
-## Measured results (2026-09-27)
+```bash
+BODY_MODE=STREAMED SUITES="smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert" \
+  ./scripts/ci-live-e2e.sh
+ENVOY_VERSION=v1.38.4 SUITES="smoke fail-closed" ./scripts/ci-live-e2e.sh   # that Envoy must be on PATH
+CRS_TAG=v4.25.2 SUITES="smoke go-ftw-smoke" ./scripts/ci-live-e2e.sh        # fetched into demo/.crs-v4.25.2
+```
 
-Current pins are Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. The table below is a local macOS (arm64) run from 2026-09-27 on Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, and go-ftw v2.6.0. Those counts are not a result for the current pins.
+Current pins are Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. CI-side checks, offline: `./scripts/check-pins.sh`, `./scripts/check-workflows.sh`, `./scripts/test-ci-scripts.sh`.
 
-Hosted Linux on both architectures from the same date: [Hosted CI](#measured-2026-09-27-private-repo-2-vcpu-runners).
-
-| Suite | Result |
-|-------|--------|
-| `cargo test --workspace` | 65 passed, 0 failed (class-3 gRPC fail-closed filter: 12) |
-| `smoke.sh` | passed |
-| `fail-closed.sh` | passed |
-| `fail-modes.sh` (H1 + H2) | 59 passed, 0 failed |
-| `go-ftw.sh smoke` | demo tests 8/8; CRS body-heavy tests 118/118 |
-| `go-ftw.sh full` | **5091 passed, 0 failed** of 5091 (42 of the passes are judged through `demo/ftw/envoy-overrides.yaml`) |
-
-`920100-8` and `920610-2` send a URI with a `#fragment`, which Envoy rejects itself with a local **400** before the request phase. The connector passes Envoy's local reply through (see [fail-closed.md](./fail-closed.md#envoys-own-local-replies-not-a-failure-class)), so the client gets the 400 CRS expects.
-
-The overrides file records measured Envoy platform differences, like CRS's own `nginx-overrides.yaml`: 36 tests where Envoy's HTTP/1 codec drops a malformed request (client sees an empty reply, envoy#29440) and 6 where CRS's expected status was written for Apache's parser (the outcome here is still a 403 block, or matches CRS's nginx override). Each of the 42 entries was re-measured by removing it and running its test alone: all 42 still fail without their override.
-
----
-
-## Hosted CI
-
-GitHub-hosted runners only: `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), each building and testing natively. Both are pinned to the same Ubuntu release (never `ubuntu-latest`), and the libmodsecurity and cargo caches are keyed on the OS release, so a move to a newer Ubuntu is one deliberate change for both architectures. `ubuntu-slim` runs the release watcher and short on-failure `report` jobs.
+## Workflows
 
 | Workflow | Trigger | What runs (× x86_64, aarch64) | Reports |
 |----------|---------|-------------------------------|---------|
-| `ci` | every push to `main`, PR, dispatch (a branch is tested by its PR; no `cursor/**` push trigger); runs on `main` are never cancelled | `pin-check` (pins + install-script fallbacks + ASH commit pin, workflow rules, CI-script tests, plus docs/tree skip signal); `rust-quality` × arch (fmt, clippy, tests, build, all `--locked`, Rust from `rust-toolchain.toml`); `msrv` (`cargo check` at `rust-version`); `supply-chain` (cargo-deny: RustSec, licenses, sources); `protos` (`gen-protos.sh --check`, protoc 25.3); product e2e × arch = **BUFFERED** (`e2e-pin`) + **STREAMED** (`e2e-streamed`) + **FULL_DUPLEX** (`e2e-full-duplex`); `ci-ok` = one verdict. Docs-only changes (`docs/**`, `*.md` except `versions.lock.md`), and a push to `main` whose tree already passed on a PR from this repository (`scripts/ci-tested-tree.sh`), skip the heavy jobs and still get a `ci-ok` | check status |
-| `e2e-lab` | weekly (Mon 05:47 UTC), dispatch | PARTIAL / NONE / asymmetric body-mode labs × both arches (same floors as when they lived under `ci`) | issue `e2e-lab: failing cells` on failure, closed when green |
-| `ash` | PRs that touch workflows / `.ash/` / Rust / scripts / deps / demo / compose (not docs-only); weekly (Mon 03:11 UTC) full-tree scan; dispatch | AWS ASH local mode (report-only); install commit-pinned via `ASH_PIN` | artifact `ash-results` |
-| `release-watch` | daily 05:17 UTC, dispatch (`force=<axis>:<tag>`, `dry_run`) | lists stable releases (Envoy `v1.x.y`, libmodsecurity `v3.0.x`, CRS `v4.x.y` — all pages of the release list, never `releases/latest`); the latest stable **and** the top patch of the pinned minor line, when newer than the pin, each get a `stable-candidate` dispatch (the issue is opened after the dispatch succeeds); newer tags outside those patterns are flagged "new line — not tracked"; a tag is retested until its issue has a ✅ result (or 3 ❌); `report` on `ubuntu-slim` | issue `stable-candidate: <axis> <tag>`; its own failures: issue `release-watch: failing` |
-| `stable-candidate` | dispatch (from `release-watch` or by hand) | that axis at the candidate, the others at their pins; same live suites as `e2e-pin` | comment on the issue: per-arch result, measured minutes, bump lines |
-| `stable-window` | weekly (Mon 04:23 UTC), dispatch (`depth`) | pins + the last 3 stables of each axis + the CRS LTS (`CRS_LTS_TAG`) when outside that window, one axis moved per cell (8 cells); libmodsecurity below v3.0.13 is skipped; live suites | issue `stable-window: failing cells` on failure, closed when green |
-| `stable-one-year` | **dispatch only** (`strategy`, `days`, `profile`, `dry_run`, `confirm_cartesian`) — no cron | ~12-month stables (`published_at`, never `releases/latest`): default **axis** (~19 cells × 2 arches, ~90–130 warm job-min); optional **diagonal**; **cartesian** only with `confirm_cartesian=yes` (~176 cells / ~800+ min — never schedule). Profiles: `smoke` … `full-cell`. Empty matrix fails. | issue `stable-one-year: failing cells` on failure, closed when green; dry_run prints the plan only |
-| `crs-full` | monthly (7th, 03:41 UTC), dispatch | full CRS go-ftw at the pins for **BUFFERED + STREAMED + FULL_DUPLEX_STREAMED** × both arches | issue `crs-full: go-ftw failing` on failure, closed when green |
-| `release` | tag `vX.Y.Z` (`vX.Y.Z-rc.N` = pre-release); dispatch | tags only: `gate` = the tag commit is on `main` and has green `ci-ok`, `pin-check`, `rust-quality` × arch, `msrv`, `e2e-pin` × arch. Then release build per arch → `ext-proc-modsec-<ver>-linux-{x86_64,aarch64}.tar.gz` (+ `.sha256`; bundles `libmodsecurity.so`), per-arch image pushed by digest, multi-arch `ghcr.io/<owner>/modsec-envoy-connector:<ver>` from both digests, GitHub Release (tag only); build provenance attested once the repo is public. A dispatch skips the gate and the Release but **does push** the image, tagged `sha-<short>` | Release page |
+| `ci` | pull requests, pushes to `main`, dispatch. Branch pushes run nothing; runs on `main` are never cancelled | `pin-check` (pins, workflow rules, shellcheck, CI-script tests, the skip decision, and on PRs the CI-skip-token guard); `rust-quality` × arch (fmt, clippy, test, build, all `--locked`); `msrv`; `supply-chain` (cargo-deny); `protos` (`gen-protos.sh --check`); `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch; `ci-ok`, the single verdict | check status |
+| `e2e-lab` | weekly (Mon 05:47 UTC), dispatch | BUFFERED_PARTIAL, NONE and the two asymmetric body modes | issue `e2e-lab: failing cells` |
+| `crs-full` | monthly (7th, 03:41 UTC), dispatch | `go-ftw.sh full` in BUFFERED, STREAMED, FULL_DUPLEX_STREAMED | issue `crs-full: go-ftw failing` |
+| `release-watch` | daily 05:17 UTC, dispatch | lists stable releases of each axis; the latest stable **and** the top patch of the pinned line, when newer than the pin, each get a `stable-candidate` dispatch; newer release lines the patterns do not cover are flagged; a tag is retested until its issue records a result | issue `stable-candidate: <axis> <tag>`; its own failures: `release-watch: failing` |
+| `stable-candidate` | dispatch (by `release-watch` or by hand) | that axis at the candidate, the others at their pins: smoke, fail-closed, fail-modes, hop-trace, go-ftw smoke | comment on the candidate issue |
+| `stable-window` | weekly (Mon 04:23 UTC), dispatch | the last 3 stables of each axis, plus the CRS LTS when outside that window, one axis moved per cell; libmodsecurity below v3.0.13 is skipped | issue `stable-window: failing cells` |
+| `stable-one-year` | dispatch only | stables from the last ~12 months, one axis at a time by default ([`versions.one-year.yaml`](../versions.one-year.yaml), [`scripts/one-year-matrix.sh`](../scripts/one-year-matrix.sh)); a Cartesian product needs `confirm_cartesian=yes` | issue `stable-one-year: failing cells` |
+| `ash` | PRs touching workflows, ASH config, Rust, scripts, demo, tools, packaging or dependencies; weekly (Mon 03:11 UTC); dispatch | [ASH](#security-scan-ash), report-only | artifact `ash-results`; on `main`, issue `ash: failing` |
+| `release` | tag `v*` (any `vX.Y.Z-<suffix>` is a pre-release); dispatch | see [Releases](#releases) | Release page |
 
-### Schedule proof (cron configured + last proven run)
+Issues are closed again when the workflow goes green. Report jobs run unless the run was cancelled.
 
-Historical Actions links below point at the predecessor private repo `envoy-modsec-connex` (those run IDs are not on this repository). A schedule is proven only by a run with `event=schedule` (`gh run view <id> --json event,conclusion,headSha`). `workflow_dispatch` proves the same job graph before the cron fires; it is **not** a schedule proof. `scripts/check-workflows.sh` asserts both workflows keep their cron + `workflow_dispatch`.
+### When `ci` skips the heavy jobs
 
-| Workflow | Cron (UTC) | Last proven run | `event` | `conclusion` | `headSha` |
-|----------|------------|-----------------|---------|--------------|-----------|
-| `stable-window` | `23 4 * * 1` (Mon) | [36413020845](https://github.com/etiennemunnich/envoy-modsec-connex/actions/runs/36413020845) | **schedule** | success | `3249f96909991437afb2f4effb5de564a0307c13` |
-| `ash` | `11 3 * * 1` (Mon) | — (cron configured; prove with `event=schedule` after unpause) | — | — | — |
-| `e2e-lab` | `47 5 * * 1` (Mon) | — (cron configured; prove with `event=schedule` after unpause) | — | — | — |
-| `crs-full` | `41 3 7 * *` (7th) | [36363409290](https://github.com/etiennemunnich/envoy-modsec-connex/actions/runs/36363409290) (path via dispatch; **no `event=schedule` yet** — next window ~7th of month) | workflow_dispatch | success | `bab5dc79c3ef75be63bd5ad1e7c63ec91a916d7c` |
+`ci-ok` always reports. The heavy jobs are skipped in exactly two cases:
 
-Candidates never bump anything: after a green `stable-candidate`, a human or agent edits `versions.lock.md` (plus the offline fallback in that axis's install script, which `pin-check` compares) on `main`, and `ci` re-runs as the gate.
+- **Docs only.** Every changed file is under `docs/` or ends in `.md` (except `versions.lock.md`), **and** the base commit itself has a successful `ci` run ([`scripts/ci-changes.sh`](../scripts/ci-changes.sh)). A docs change on top of an untested commit runs everything.
+- **Tree already tested.** A push to `main` whose git tree is exactly the merge tree that a successful same-repository pull-request run tested. On a PR, `ci-ok` uploads the artifact `tested-tree-<tree>` after every job passed; [`scripts/ci-tested-tree.sh`](../scripts/ci-tested-tree.sh) looks it up. Bring a branch up to date with `main` before merging, or `main` re-runs everything.
 
-Every live suite must also reach a floor of passing checks, not just exit 0: smoke body-path checks ≥ 5, fail-modes ≥ 57 (class-3 gRPC ≥ 8), go-ftw demo tests ≥ 8, CRS body ids ≥ **100 at the pin** (version-aware for older CRS tags that ship fewer BODY_INCLUDE tests — e.g. v4.19.0 has 92; empty selection still fails), CRS full ≥ 5000 (`scripts/ci-live-e2e.sh`), go-ftw smoke/body stages only the BODY_INCLUDE rule YAML so a one-tag CRS parse poison (v4.23.0 `920640.yaml` `status: [400]` vs go-ftw 2.6) cannot empty the JSON summary. and each go-ftw run must end with the same connector process serving `/metrics` and no new `ext_proc_stream_errors_total`. Each cell asserts it ran on the expected architecture. Report jobs run unless the run was cancelled, and a run whose jobs were all skipped counts as a failure.
+There are no other skips. On pull requests `pin-check` fails if the PR title, the PR body or any commit message carries a token that makes GitHub skip workflows ([`scripts/ci-skip-tokens.sh`](../scripts/ci-skip-tokens.sh)), because a squash merge would copy it onto `main` and that commit would get no `ci` run at all.
 
-### Measured (2026-09-27, private repo, 2-vCPU runners)
+### Releases
 
-| Run | x86_64 | aarch64 | Result |
-|-----|--------|---------|--------|
-| `ci`, warm caches | rust-quality 52s · e2e-pin 95s | rust-quality 61s · e2e-pin 80s | green; 8 job-minutes |
-| `ci`, cold aarch64 (libmodsecurity built from source) | rust-quality 91s · e2e-pin 122s | rust-quality 407s · e2e-pin 446s | green; 21 job-minutes |
-| `release-watch` | — | — | 10–12s on `ubuntu-slim`; 1 job-minute |
-| `stable-candidate envoy v1.38.4` (forced proof via `release-watch`) | 87s | 405s (cold) | both green, fail-modes 59/59; 10 job-minutes |
-| `crs-full` | 333s (go-ftw 259s) | 302s (go-ftw 247s) | **5091/5091** on both; 13 job-minutes |
-| `stable-window depth=2` (4 cells) | 91–109s per cell | 90–100s per cell; 411s for libmodsecurity v3.0.15 (cold) | 8/8 green; 23 job-minutes |
-| `release` dispatch | 99s | 111s | tarballs + multi-arch manifest (`linux/amd64`, `linux/arm64`); 5 job-minutes |
+On a tag, `gate` runs [`scripts/release-gate.sh`](../scripts/release-gate.sh): the tag commit must be on `main`, and a successful `ci` run for exactly that commit, from this repository, must have these 13 checks green from GitHub Actions in its own check suite: `ci-ok`, `pin-check`, `rust-quality` × 2, `msrv`, `supply-chain`, `protos`, and `e2e-pin`, `e2e-streamed`, `e2e-full-duplex` × 2. A same-named check from another app or workflow does not count. A `main` commit whose heavy jobs were skipped has no such run: dispatch `ci` on `main` for it before tagging.
 
-"Job-minutes" rounds each job up to a whole minute, as Actions billing does. The run-timing API reports 0 billable ms for these runs, so the numbers come from job start/end times. At these rates a month of 30 `main` pushes, the daily watcher, one weekly 7-cell window, one monthly full CRS run and a release is roughly 450 job-minutes, well inside the 2,000 free private minutes. A cold libmodsecurity build (new tag or evicted cache) adds about 5 minutes on aarch64.
+Then each architecture builds `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` (+ `.sha256`). The tarball bundles `lib/libmodsecurity.so*`, and the binary finds it through RUNPATH `$ORIGIN/../lib`; the job fails if the RUNPATH is missing or `ldd` resolves libmodsecurity anywhere else. Per-arch images are built, tested and pushed by digest; the multi-arch tag `ghcr.io/<owner>/modsec-envoy-connector:<ver>` is made from both digests, then the GitHub Release is created. Build provenance is attested once the repository is public.
 
----
+A dispatch of `release` is a build-only dry run from any ref: it builds and tests the tarballs and images and uploads the tarballs as run artifacts. It pushes nothing to GHCR, creates no tag and no Release.
 
-## Honest boundaries
+### Schedule proof
 
-- **go-ftw is HTTP/1.x only** and judges by status code. A green run says nothing about HTTP/2; the H2 evidence is `fail-modes.sh --proto h2`.
-- **Class 3** (per-request engine error mid-exchange) cannot be injected through a well-behaved Envoy; see [fail-closed.md](./fail-closed.md#why-class-3-has-no-live-envoy-drill). Covered by gRPC tests (real `EngineError` + test-only `fail-inject` feature off in the product binary), floor ≥ 8; `fail-modes.sh` runs them.
-- **STREAMED** matches BUFFERED on hosted product suites (smoke, fail-closed, fail-modes, hop-trace, go-ftw smoke, trailers). Full CRS (`go-ftw-full`) is hosted for STREAMED (and FULL_DUPLEX) via the monthly `crs-full` matrix — Envoy supports STREAMED; the connector no longer treats full CRS as BUFFERED-only policy. Phase-2/4 rules still decide at EOS.
-- **NONE** is Envoy's default BodySendMode: stock `BODY_MODE=NONE` / `envoy-none.yaml` + weekly `e2e-lab` `e2e-none` (headers smoke + fail-closed). Body CRS / go-ftw body suites are **n/a**; body attacks must reach origin.
-- **BUFFERED_PARTIAL** stays honesty-only (under-limit CRS + soft-limit miss). Never claim full CRS.
-- **FULL_DUPLEX_STREAMED** product suites match STREAMED; hang→504 is **N/A** (Envoy disables `message_timeout`). Do not fake hang tests. Full CRS via `crs-full` matrix.
-- **`BodySendMode.GRPC`** is `[#not-implemented-hide:]` on pinned Envoy v1.39.4 (committed proto generated from the v1.39.1 API closure) — out of scope (no YAML / CI / fake CRS).
-- **Trailers** values are not CRS-inspected. Product demo keeps trailer mode `SKIP`. With `SEND`, unfinished body is finalized when trailers mark EOS; trailers alone / no session → **500** (gRPC). Live: `demo/scripts/trailers.sh` (floor ≥ 5); gated in `e2e-pin` + `e2e-streamed` + `e2e-full-duplex`.
-- **Class 6:** with `SecAuditLog` pointing at an unwritable path, libmodsecurity v3.0.16 still loads the rules; the suite proves decisions are unchanged (attack **403**, origin untouched; benign **200**).
-- **HTTP/3 and WebSocket frames** are not CRS-inspected and not claimed as a WAF surface. Handshake hop-trace: `demo/scripts/hop-trace-ws.sh`. Frame bound suite: `demo/scripts/hop-trace-ws-frames.sh` (floor ≥ 6) — stock `upgrade_failed`; headers-only 101 + handshake ModSec; frames echo without CRS; fail-closed on handshake; BUFFERED+upgrade hang.
-- **gRPC hop-trace** (headers/path/metadata): `demo/scripts/hop-trace-grpc.sh` (floor ≥ 6). Needs `go` + `grpcurl`. Switches to `envoy-grpc.yaml` (body `NONE`) and `demo/grpc-echo` :18090, then restores stock HTTP demo. **Not** protobuf CRS. Optional via `SUITES=… hop-trace-grpc` in `ci-live-e2e.sh` (not default hosted e2e).
-- Perf latency samples: `demo/scripts/perf.sh` (floors; not an SLO).
-- **CI runs on `main` pushes, PRs and dispatches.** A branch push runs nothing: open a PR, or `gh workflow run ci.yml --ref <branch>`. A merge to `main` whose tree a PR already passed skips the heavy jobs.
-- **Release notes path:** [`CHANGELOG.md`](../CHANGELOG.md). Cutting tags: [CONTRIBUTING — Releases](../CONTRIBUTING.md#releases). Early UAT: [docs/modes/uat.md](./modes/uat.md).
-- **Prior pre-release `v0.1.0-rc.1`** proved the release workflow once (gate → both arch builds → multi-arch image → GitHub pre-release); the **GitHub Release + git tag were deleted**. No final `v0.1.0` yet; next intended early-test tag is `PRODUCT_VERSION` in [`versions.lock.md`](../versions.lock.md) (`v0.1.0-alpha.1`). Stale GHCR tags on the predecessor package may remain until someone with `read:packages` + `delete:packages` runs `PACKAGE=envoy-modsec-connex ./scripts/ghcr-delete-stale.sh` (see [CONTRIBUTING — Ops / cleanup](../CONTRIBUTING.md#ops--cleanup)).
-- **Build provenance is not attested yet:** GitHub artifact attestations need a public repo on this plan, so those steps are skipped while the repo is private.
-- **`main` has no branch protection or ruleset:** both need GitHub Pro or a public repo. `ci-ok` is the check to require once they are available.
-- **Tarballs are not static:** they bundle `libmodsecurity.so` but need Ubuntu 24.04's pcre2, libxml2, yajl, curl, GeoIP and LMDB runtime libraries (the image has them).
-- **Pins:** quote [`versions.lock.md`](../versions.lock.md) — do not invent tip flags.
+A schedule is proven only by a run with `event=schedule` (read with `gh run view <id> --json event,conclusion,headSha`); a dispatch proves the same job graph but not the cron.
+
+| Workflow | Cron (UTC) | Last `event=schedule` run in this repository |
+|----------|------------|-----------------------------------------------|
+| `stable-window` | `23 4 * * 1` | [38247631117](https://github.com/etiennemunnich/modsec-envoy-connector/actions/runs/38247631117): success, `b7751c4c61ee61dbffea807319db3f7ce45f492f` |
+| `release-watch` | `17 5 * * *` | — |
+| `e2e-lab` | `47 5 * * 1` | — |
+| `ash` | `11 3 * * 1` | — |
+| `crs-full` | `41 3 7 * *` | — |
+
+Candidates never bump anything. After a green `stable-candidate`, edit `versions.lock.md` and the offline fallback in that axis's install script (which `pin-check` compares) in a pull request; `ci` is the gate.
+
+## Security scan (ASH)
+
+`ash` runs [AWS Automated Security Helper](https://github.com/awslabs/automated-security-helper) v3.7.1 in local mode, installed at the commit `ASH_PIN` in `versions.lock.md` (not the tag). Config: [`.ash/.ash.yaml`](../.ash/.ash.yaml), severity threshold `MEDIUM`. It is report-only (`fail_on_findings: false`): findings go to the `ash-results` artifact. Local mode runs the scanners ASH installs itself (Bandit, Checkov, Semgrep, detect-secrets, npm-audit); Grype, Syft, cfn-nag, cdk-nag and OpenGrep run only if already on `PATH`.
+
+Locally (Python 3.10+, [uv](https://docs.astral.sh/uv/)):
+
+```bash
+uvx git+https://github.com/awslabs/automated-security-helper.git@af1206aff596f1288ad066828058b3011de2a998 --mode local
+```
+
+Reports go to `.ash/ash_output/` (ignored by git).
+
+## Limits
+
+- **go-ftw is HTTP/1.x only.** A green go-ftw run says nothing about HTTP/2.
+- **Class 3** (an engine error in the middle of a request) cannot be injected through a well-behaved Envoy; the gRPC tests cover it ([fail-closed.md](./fail-closed.md#why-class-3-has-no-live-envoy-drill)).
+- **Class 6:** with `SecAuditLog` pointing at an unwritable path, the pinned libmodsecurity still loads the rules; the suite proves decisions are unchanged.
+- **Not inspected:** HTTP/3, WebSocket frames, gRPC message bodies and trailer values. `BodySendMode.GRPC` is not implemented in the pinned Envoy.
+- **Tarballs are not static:** they need Ubuntu 24.04's pcre2, libxml2, yajl, curl, GeoIP and LMDB runtime libraries ([deploy.md](./deploy.md#release-tarball)).

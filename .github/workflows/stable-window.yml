@@ -18,9 +18,11 @@ on:
         default: "3"
         type: string
 
+# Runs on main (every schedule) get their own group, so they are never
+# cancelled; other refs keep one run each.
 concurrency:
-  group: stable-window
-  cancel-in-progress: true
+  group: ${{ github.ref == 'refs/heads/main' && format('stable-window-main-{0}', github.run_id) || format('stable-window-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -28,7 +30,7 @@ permissions:
 jobs:
   plan:
     name: plan
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       cells: ${{ steps.plan.outputs.cells }}
@@ -98,7 +100,7 @@ jobs:
     name: report
     needs: cell
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
