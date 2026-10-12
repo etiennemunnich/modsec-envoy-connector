@@ -17,6 +17,8 @@ use crate::pb::envoy::service::ext_proc::v3::{
 /// `ImmediateResponse.details` for fail-closed replies (visible in Envoy
 /// access logs as `%RESPONSE_CODE_DETAILS%`).
 pub const DETAILS_FAIL_CLOSED: &str = "modsec_fail_closed";
+/// `ImmediateResponse.details` when a connector stream deadline expired.
+pub const DETAILS_TIMEOUT: &str = "modsec_stream_timeout";
 
 /// Which side of the exchange a Continue answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +90,17 @@ pub fn fail_closed() -> ProcessingResponse {
         StatusCode::InternalServerError,
         b"modsecurity evaluation error\n",
         DETAILS_FAIL_CLOSED,
+        None,
+    )
+}
+
+/// The connector's own stream deadline expired before the verdict: 504,
+/// like Envoy's `message_timeout` in the modes where that timer runs.
+pub fn timed_out() -> ProcessingResponse {
+    immediate(
+        StatusCode::GatewayTimeout,
+        b"modsecurity inspection timeout\n",
+        DETAILS_TIMEOUT,
         None,
     )
 }

@@ -8,16 +8,17 @@ Every pull request, push to `main` and dispatch of `ci` runs, natively on GitHub
 
 | Layer | Proves | Runs in |
 |-------|--------|---------|
-| Rust | engine and connector unit tests; gRPC tests against the real libmodsecurity: allow, deny, redirect, multi-chunk bodies, `REMOTE_ADDR` from Envoy attributes, engine-error → 500 (class 3, ≥ 8 tests), trailers, `/healthz` | `rust-quality` × arch; `cargo test --workspace` |
+| Rust | engine and connector unit tests; gRPC tests against the real libmodsecurity: allow, deny, redirect, multi-chunk bodies, `REMOTE_ADDR` from Envoy attributes, engine-error → 500 (class 3, ≥ 8 tests), body modes from `protocol_config`, trailers ending the body phase, `/healthz` (503 unless the engine is On; probes kept out of the metrics); the stream never ends gRPC OK without a verdict (oversize or unreadable message, half-close with a held body, panic, status-0 drop); the FULL_DUPLEX reply path and held-body cap; the idle and duplex deadlines → 504; 0-rule rulesets refused; the engine CRS test, which CI makes mandatory (`MODSEC_REQUIRE_CRS=1`) | `rust-quality` × arch; `cargo test --workspace` |
 | Smoke | benign **200**; URL, request-body and response-body attacks **403**; CONNECT **403**; origin not contacted on a deny | `smoke.sh` |
 | Fail-closed | connector killed → **500**; connector hung → **504** (not under FULL_DUPLEX_STREAMED, see [fail-closed.md](./fail-closed.md#full_duplex_streamed-and-a-hung-connector)); bad rules → **500**; origin not contacted | `fail-closed.sh` |
 | Fail-mode matrix | failure classes 1–6 over HTTP/1.1 **and** HTTP/2 (protocol read from the Envoy access log); split `Cookie` headers; an attack only in the last body chunk; a negative control with `failure_mode_allow: true` that shows the same kill and hang *do* reach the origin, so the checks can see a fail-open | `fail-modes.sh` |
 | Hop trace | one request followed by `x-request-id` through the Envoy access log, connector phases, CRS matches and the origin | `hop-trace.sh` |
-| Trailers | with trailer mode `SEND`: allow + trailers **200**, body SQLi + trailers **403**, Envoy delivers trailers to the connector, trailers without a session **500** (gRPC test). Trailer *values* are not inspected | `trailers.sh` |
+| Trailers | HTTP/1.1 with trailers enabled in Envoy: allow + trailers **200**, body SQLi + trailers **403**, Envoy delivers trailers to the connector, trailers without a session **500** (gRPC test). Trailer *values* are not inspected | `trailers.sh` |
+| HTTP/2 trailers | through the stock config: SQLi body + trailers, and a SQLi query with trailers but no body, **403** with the origin untouched; benign body + trailers and benign trailers-only **200**, origin +1 | `h2-trailers.sh` |
 | CRS (go-ftw) | OWASP CRS `tests/regression` through Envoy, judged by status code, **HTTP/1.x only** | `go-ftw.sh smoke` on every PR; `go-ftw.sh full` monthly |
 | Upstream versions | new stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x releases and the last three stables of each axis pass the live suites, one axis moved off its pin at a time | `release-watch`, `stable-candidate`, `stable-window` |
 
-Each live suite must also reach a minimum count of passing checks, not only exit 0, so a suite that silently runs fewer checks fails. SKIP lines never count. The floors are in [`scripts/ci-floors.sh`](../scripts/ci-floors.sh): smoke body checks ≥ 5, fail-closed ≥ 13 (≥ 11 under FULL_DUPLEX_STREAMED), fail-modes ≥ 57 (≥ 51), go-ftw demo tests ≥ 8, CRS body tests ≥ 100 at the pin, CRS full ≥ 5000, trailers ≥ 5. After every go-ftw run the same connector process must still be serving `/metrics` with no new `ext_proc_stream_errors_total`. Each cell asserts the architecture it ran on.
+Each live suite must also reach a minimum count of passing checks, not only exit 0, so a suite that silently runs fewer checks fails. SKIP lines never count. The floors are in [`scripts/ci-floors.sh`](../scripts/ci-floors.sh): smoke body checks ≥ 5, fail-closed ≥ 13 (≥ 11 under FULL_DUPLEX_STREAMED), fail-modes ≥ 57 (≥ 51), go-ftw demo tests ≥ 8, CRS body tests ≥ 100 at the pin, CRS full ≥ 5000, trailers ≥ 5, HTTP/2 trailers ≥ 4 (≥ 3 under NONE, which skips the body cell). After every go-ftw run the same connector process must still be serving `/metrics` with no new `ext_proc_stream_errors_total`. Each cell asserts the architecture it ran on.
 
 ## Body-mode coverage
 
@@ -47,6 +48,7 @@ cargo test --workspace --locked
 ./demo/scripts/fail-modes.sh          # H1 and H2
 ./demo/scripts/hop-trace.sh           # traces GET /; for a deny add: --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
 ./demo/scripts/trailers.sh
+./demo/scripts/h2-trailers.sh         # HTTP/2 bodies that end in trailers
 ./demo/scripts/install-go-ftw.sh      # go-ftw at GO_FTW_PIN, into ~/.local/bin
 ./demo/scripts/go-ftw.sh smoke        # or: body | full
 ./demo/scripts/perf.sh                # latency samples, not an SLO
@@ -64,13 +66,13 @@ ENVOY_VERSION=v1.38.4 SUITES="smoke fail-closed" ./scripts/ci-live-e2e.sh   # th
 CRS_TAG=v4.25.2 SUITES="smoke go-ftw-smoke" ./scripts/ci-live-e2e.sh        # fetched into demo/.crs-v4.25.2
 ```
 
-Current pins are Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. CI-side checks, offline: `./scripts/check-pins.sh`, `./scripts/check-workflows.sh`, `./scripts/test-ci-scripts.sh`.
+CI-side checks, offline: `./scripts/check-pins.sh`, `./scripts/check-workflows.sh`, `./scripts/test-ci-scripts.sh`.
 
 ## Workflows
 
 | Workflow | Trigger | What runs (× x86_64, aarch64) | Reports |
 |----------|---------|-------------------------------|---------|
-| `ci` | pull requests, pushes to `main`, dispatch. Branch pushes run nothing; runs on `main` are never cancelled | `pin-check` (pins, workflow rules, shellcheck, CI-script tests, the skip decision, and on PRs the CI-skip-token guard); `rust-quality` × arch (fmt, clippy, test, build, all `--locked`); `msrv`; `supply-chain` (cargo-deny); `protos` (`gen-protos.sh --check`); `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch; `ci-ok`, the single verdict | check status |
+| `ci` | pull requests, pushes to `main`, dispatch. Branch pushes run nothing; runs on `main` are never cancelled | `pin-check` (pins, workflow rules, shellcheck, CI-script tests, the skip decision, and on PRs the CI-skip-token guard); `rust-quality` × arch (fmt, clippy, test, build, all `--locked`; installs the CRS pin and sets `MODSEC_REQUIRE_CRS=1`, so the engine CRS test fails rather than skips); `msrv`; `supply-chain` (cargo-deny); `protos` (`gen-protos.sh --check`); `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch; `ci-ok`, the single verdict | check status |
 | `e2e-lab` | weekly (Mon 05:47 UTC), dispatch | BUFFERED_PARTIAL, NONE and the two asymmetric body modes | issue `e2e-lab: failing cells` |
 | `crs-full` | monthly (7th, 03:41 UTC), dispatch | `go-ftw.sh full` in BUFFERED, STREAMED, FULL_DUPLEX_STREAMED | issue `crs-full: go-ftw failing` |
 | `release-watch` | daily 05:17 UTC, dispatch | lists stable releases of each axis; the latest stable **and** the top patch of the pinned line, when newer than the pin, each get a `stable-candidate` dispatch; newer release lines the patterns do not cover are flagged; a tag is retested until its issue records a result | issue `stable-candidate: <axis> <tag>`; its own failures: `release-watch: failing` |
@@ -130,5 +132,6 @@ Reports go to `.ash/ash_output/` (ignored by git).
 - **go-ftw is HTTP/1.x only.** A green go-ftw run says nothing about HTTP/2.
 - **Class 3** (an engine error in the middle of a request) cannot be injected through a well-behaved Envoy; the gRPC tests cover it ([fail-closed.md](./fail-closed.md#why-class-3-has-no-live-envoy-drill)).
 - **Class 6:** with `SecAuditLog` pointing at an unwritable path, the pinned libmodsecurity still loads the rules; the suite proves decisions are unchanged.
-- **Not inspected:** HTTP/3, WebSocket frames, gRPC message bodies and trailer values. `BodySendMode.GRPC` is not implemented in the pinned Envoy.
+- **Not inspected:** HTTP/3, WebSocket frames, gRPC message bodies and trailer values. Trailers only end a STREAMED / FULL_DUPLEX body phase; every shipped config with a body mode sets trailer mode `SEND`. `BodySendMode.GRPC` is not implemented in the pinned Envoy.
+- **STREAMED responses:** a phase-4 deny on a body that reaches Envoy after the response headers resets the client stream instead of answering 403 ([body-modes.md](./body-modes.md#streamed)). The demo origin writes each response in one segment, so the suites' response-body cells see 403.
 - **Tarballs are not static:** they need Ubuntu 24.04's pcre2, libxml2, yajl, curl, GeoIP and LMDB runtime libraries ([deploy.md](./deploy.md#release-tarball)).

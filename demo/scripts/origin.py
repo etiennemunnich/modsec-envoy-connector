@@ -4,7 +4,7 @@
 Appends one line per request it actually receives to a hits file, so the demo
 scripts can prove that denied and fail-closed requests never reached it.
 
-  GET /leak   → 200 text/plain containing CONNEX-LEAK-MARKER (response-path demo)
+  GET /leak   → 200 text/plain containing DEMO-LEAK-MARKER (response-path demo)
   POST *      → 200 echo of the received byte count
   anything    → 200 "origin ok"
 """
@@ -19,6 +19,10 @@ HITS_LOCK = threading.Lock()
 class Handler(BaseHTTPRequestHandler):
     server_version = "demo-origin"
     protocol_version = "HTTP/1.1"
+    # Headers and body leave in one write. Under a STREAMED response, Envoy
+    # forwards the headers once ext_proc answers them; a body that arrives
+    # later can only reset the stream on a phase-4 deny, not turn it into 403.
+    wbufsize = 64 * 1024
 
     def _record(self):
         with HITS_LOCK, open(self.server.hits_path, "a", encoding="utf-8") as f:
@@ -36,7 +40,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._record()
         if self.path.split("?", 1)[0] == "/leak":
-            self._reply(b"internal token: CONNEX-LEAK-MARKER\n")
+            self._reply(b"internal token: DEMO-LEAK-MARKER\n")
         else:
             self._reply(f"origin ok: {self.command} {self.path}\n".encode())
 

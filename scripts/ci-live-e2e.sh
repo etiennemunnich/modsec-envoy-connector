@@ -6,7 +6,7 @@
 #   SUITES="smoke fail-closed fail-modes go-ftw-smoke" ./scripts/ci-live-e2e.sh
 #
 # Env:
-#   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace
+#   SUITES           any of: smoke fail-closed fail-modes trailers h2-trailers hop-trace
 #                    hop-trace-grpc hop-trace-ws-frames go-ftw-smoke go-ftw-body go-ftw-full
 #                    partial-honesty (BUFFERED_PARTIAL only)
 #                    buffered-oversize (BUFFERED only) connect-assert
@@ -165,7 +165,7 @@ for suite in ${SUITES}; do
   echo "==> ${suite}"
   log="${ROOT}/demo/.run/e2e-${suite}.log"
   case "${suite}" in
-    smoke | fail-closed | fail-modes | trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
+    smoke | fail-closed | fail-modes | trailers | h2-trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
     hop-trace-grpc) cmd=("${DEMO}/hop-trace-grpc.sh") ;;
     hop-trace-ws-frames) cmd=("${DEMO}/hop-trace-ws-frames.sh") ;;

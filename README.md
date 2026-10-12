@@ -4,7 +4,7 @@ Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **M
 
 Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS) in-process, and tells Envoy to allow or block. Envoy alone forwards traffic to your origin, and only after the connector allows it.
 
-**Status:** `v0.1.0-alpha.1`, for early testing only; not a production release. Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). The repository, container image and release assets are private: early testers need read access.
+**Status:** early testing only; not a production release. The next pre-release is `v0.1.0-alpha.2`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). The repository, container image and release assets are private: early testers need read access.
 
 ## How it decides
 
@@ -38,10 +38,10 @@ Full walkthrough, other body modes and the early-tester checklist: [Getting star
 
 ## Run it beside your own Envoy
 
-1. Get the connector: a Linux release tarball, the image `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.1`, or `cargo build --release -p ext-proc-modsec`.
+1. Get the connector: a Linux release tarball or the image `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` from `v0.1.0-alpha.2` on, or `cargo build --release -p ext-proc-modsec`.
 2. Write one rules entry file, for example `/etc/modsecurity/main.conf`, that `Include`s the engine settings, `crs-setup.conf` and `rules/*.conf`.
 3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf`.
-4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`.
+4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`. With any body mode other than NONE, also set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; without them a request whose body ends in trailers fails closed (**500**).
 5. Check: `/healthz` is 200, a SQLi gets 403, and with the connector stopped requests get 500.
 
 Complete Envoy config, body-mode settings, timeouts, health checks and security notes: [Deploy](./docs/deploy.md).

@@ -7,12 +7,15 @@ name: ci
 #   pin-check                          every run: pins, workflow rules, shellcheck,
 #                                      offline CI-script tests, the skip signal, and
 #                                      on PRs no CI-skip token in title/body/commits
-#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked)
+#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked); CRS pin
+#                                      installed and MODSEC_REQUIRE_CRS=1, so the
+#                                      engine CRS test fails rather than skips
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
 #   e2e-pin × {x86_64, aarch64}        live BUFFERED suites at the pins;
 #                                      includes buffered-oversize + connect-assert
+#                                      + h2-trailers (HTTP/2 body ends at trailers)
 #   e2e-streamed × {x86_64, aarch64}   STREAMED product contract (same suites as e2e-pin;
 #                                      go-ftw-full via crs-full matrix incl. STREAMED)
 #   e2e-full-duplex × {x86_64, aarch64} FULL_DUPLEX product contract (same suites as
@@ -172,7 +175,14 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: CRS pin for the engine CRS test (versions.lock.md CRS_TAG)
+        run: ./demo/scripts/install-crs.sh
+
       - name: cargo test
+        env:
+          # crs_allows_root_and_blocks_sqli_when_present fails instead of
+          # skipping when demo/.crs is missing (no vacuous pass).
+          MODSEC_REQUIRE_CRS: "1"
         run: cargo test --workspace --locked
 
       - name: cargo build -p ext-proc-modsec
@@ -273,7 +283,7 @@ jobs:
     with:
       # Product BUFFERED contract. trailers last (restarts Envoy with SEND, then restores).
       # buffered-oversize before trailers (also restarts Envoy); connect-assert is cheap.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke buffered-oversize connect-assert trailers"
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke h2-trailers buffered-oversize connect-assert trailers"
       body_mode: BUFFERED
 
   e2e-streamed:
@@ -284,7 +294,7 @@ jobs:
     with:
       # STREAMED matches BUFFERED product contract. Full CRS is hosted via
       # crs-full matrix (BUFFERED + STREAMED + FULL_DUPLEX), not this PR cell.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke h2-trailers trailers connect-assert"
       body_mode: STREAMED
       timeout_minutes: 15
 
@@ -296,7 +306,7 @@ jobs:
     with:
       # FULL_DUPLEX matches STREAMED product contract (fail-modes hang→504 N/A —
       # Envoy disables message_timeout). go-ftw-full via crs-full matrix.
-      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke trailers connect-assert"
+      suites: "smoke fail-closed fail-modes hop-trace go-ftw-smoke h2-trailers trailers connect-assert"
       body_mode: FULL_DUPLEX_STREAMED
       timeout_minutes: 15
 
