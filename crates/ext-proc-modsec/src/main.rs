@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use ext_proc_modsec::config::{Command, Config, USAGE};
 use ext_proc_modsec::metrics::ConnectorMetrics;
-use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
 use ext_proc_modsec::{logging, metrics_server, ModSecProcessor};
 use modsec_engine::Engine;
 use tokio::net::TcpListener;
@@ -51,7 +50,11 @@ async fn main() -> ExitCode {
 async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let engine = Engine::load_files(&config.modsec_rules)
         .map_err(|e| format!("ModSecurity rules failed to load: {e}"))?;
-    info!(rules = ?engine.rules_paths(), "ModSecurity engine ready");
+    info!(
+        rules = ?engine.rules_paths(),
+        rule_count = engine.rule_count(),
+        "ModSecurity engine ready"
+    );
 
     let grpc_listener = TcpListener::bind(config.listen)
         .await
@@ -62,7 +65,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("bind metrics {}: {e}", config.metrics_listen))?;
 
     let metrics = Arc::new(ConnectorMetrics::default());
-    let processor = ModSecProcessor::with_body_reply(engine, metrics, config.body_reply);
+    let processor = ModSecProcessor::with_limits(engine, metrics, config.body_reply, config.limits);
     tokio::spawn(metrics_server::serve(
         metrics_listener,
         processor.clone(),
@@ -73,14 +76,17 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         listen = %grpc_addr,
         metrics = %config.metrics_listen,
         body_reply = config.body_reply.as_str(),
+        max_grpc_message_bytes = config.limits.max_grpc_message_bytes,
+        max_held_body_bytes = config.limits.max_held_body_bytes,
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"
     );
     // Single service, no router: the generated server answers UNIMPLEMENTED
-    // for any other gRPC path.
+    // for any other gRPC path. TcpIncoming::from leaves TCP_NODELAY unset
+    // (tonic only applies its default in bind/serve(addr)).
     Server::builder()
         .serve_with_incoming_shutdown(
-            ExternalProcessorServer::new(processor),
-            TcpIncoming::from(grpc_listener),
+            processor.into_server(),
+            TcpIncoming::from(grpc_listener).with_nodelay(Some(true)),
             shutdown_signal(),
         )
         .await?;

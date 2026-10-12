@@ -11,15 +11,15 @@ use std::time::Duration;
 use ext_proc_modsec::connection_meta::EXT_PROC_ATTR_NAMESPACE;
 use ext_proc_modsec::metrics::ConnectorMetrics;
 use ext_proc_modsec::pb::envoy::config::core::v3::{HeaderMap, HeaderValue};
+use ext_proc_modsec::pb::envoy::service::ext_proc::v3::body_mutation::Mutation;
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient;
-use ext_proc_modsec::pb::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer;
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::processing_request::Request as ProcRequest;
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::processing_response::Response as ProcResponse;
 use ext_proc_modsec::pb::envoy::service::ext_proc::v3::{
     HttpBody, HttpHeaders, HttpTrailers, ProcessingRequest, ProcessingResponse,
 };
 use ext_proc_modsec::pb::google::protobuf::{value::Kind, Struct, Value};
-use ext_proc_modsec::{metrics_server, ModSecProcessor};
+use ext_proc_modsec::{metrics_server, BodyReply, Limits, ModSecProcessor};
 use modsec_engine::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -43,16 +43,38 @@ struct Harness {
 }
 
 fn processor() -> ModSecProcessor {
+    processor_with(BodyReply::Common, Limits::default())
+}
+
+fn processor_with(body_reply: BodyReply, limits: Limits) -> ModSecProcessor {
     let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
-    ModSecProcessor::new(engine, Arc::new(ConnectorMetrics::default()))
+    ModSecProcessor::with_limits(
+        engine,
+        Arc::new(ConnectorMetrics::default()),
+        body_reply,
+        limits,
+    )
 }
 
 async fn start() -> Harness {
-    let processor = processor();
+    start_with(BodyReply::Common, Limits::default()).await
+}
+
+/// `--body-reply streamed` (Envoy FULL_DUPLEX_STREAMED).
+async fn start_duplex() -> Harness {
+    start_with(BodyReply::Streamed, Limits::default()).await
+}
+
+async fn start_with(body_reply: BodyReply, limits: Limits) -> Harness {
+    serve(processor_with(body_reply, limits)).await
+}
+
+async fn serve(processor: ModSecProcessor) -> Harness {
     let metrics = Arc::clone(processor.metrics());
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let svc = ExternalProcessorServer::new(processor.clone());
+    // Same service construction (message limits) as the product binary.
+    let svc = processor.clone().into_server();
     tokio::spawn(async move {
         Server::builder()
             .serve_with_incoming(svc, TcpIncoming::from(listener))
@@ -79,7 +101,10 @@ impl Stream {
             .connect()
             .await
             .expect("connect");
-        let mut client = ExternalProcessorClient::new(channel);
+        // Envoy's ext_proc client has no receive limit by default.
+        let mut client = ExternalProcessorClient::new(channel)
+            .max_decoding_message_size(usize::MAX)
+            .max_encoding_message_size(usize::MAX);
         let (tx, rx) = mpsc::channel(8);
         let rx = client
             .process(ReceiverStream::new(rx))
@@ -97,12 +122,88 @@ impl Stream {
             .expect("stream answered")
     }
 
+    /// Send without waiting for an answer (FULL_DUPLEX holds body chunks;
+    /// observability mode expects none).
+    async fn push(&mut self, req: ProcessingRequest) {
+        self.tx.send(req).await.expect("send");
+    }
+
+    /// The next item on the reply stream: `None` is a gRPC-OK close.
+    async fn next(&mut self) -> Option<Result<ProcessingResponse, tonic::Status>> {
+        tokio::time::timeout(Duration::from_secs(10), self.rx.next())
+            .await
+            .expect("stream item within 10s")
+    }
+
+    /// Envoy half-closes its side; returns what the connector does next.
+    async fn close_send(mut self) -> Option<Result<ProcessingResponse, tonic::Status>> {
+        drop(self.tx);
+        tokio::time::timeout(Duration::from_secs(5), self.rx.next())
+            .await
+            .expect("stream item within 5s")
+    }
+
     async fn expect_closed(&mut self) {
         let next = tokio::time::timeout(Duration::from_secs(5), self.rx.next())
             .await
             .expect("close within 5s");
         assert!(next.is_none(), "stream must close after a terminal reply");
     }
+}
+
+/// A read error, panic or drop must reach Envoy as a non-OK gRPC status:
+/// a clean close (`None`) makes Envoy continue the exchange uninspected.
+fn assert_stream_error(
+    next: Option<Result<ProcessingResponse, tonic::Status>>,
+    want: tonic::Code,
+    what: &str,
+) -> tonic::Status {
+    match next {
+        Some(Err(status)) => {
+            assert_ne!(status.code(), tonic::Code::Ok, "{what}");
+            assert_eq!(status.code(), want, "{what}: {status:?}");
+            status
+        }
+        Some(Ok(r)) => panic!("{what}: want gRPC error, got reply {:?}", r.response),
+        None => panic!("{what}: stream ended with gRPC OK (Envoy would continue = fail-open)"),
+    }
+}
+
+fn streamed_echo(r: &ProcessingResponse, dir: &str) -> (Vec<u8>, bool) {
+    let body = match (&r.response, dir) {
+        (Some(ProcResponse::RequestBody(b)), "request") => b,
+        (Some(ProcResponse::ResponseBody(b)), "response") => b,
+        other => panic!("want {dir} StreamedBodyResponse, got {other:?}"),
+    };
+    let mutation = body
+        .response
+        .as_ref()
+        .and_then(|c| c.body_mutation.as_ref())
+        .and_then(|m| m.mutation.as_ref());
+    match mutation {
+        Some(Mutation::StreamedResponse(s)) => (s.body.clone(), s.end_of_stream),
+        other => panic!("want streamed_response mutation, got {other:?}"),
+    }
+}
+
+fn resp_trailers() -> ProcessingRequest {
+    ProcessingRequest {
+        request: Some(ProcRequest::ResponseTrailers(HttpTrailers {
+            trailers: Some(HeaderMap {
+                headers: vec![hv("grpc-status", "0")],
+            }),
+        })),
+        ..Default::default()
+    }
+}
+
+fn form_post() -> ProcessingRequest {
+    req_headers(
+        "POST",
+        "/post",
+        &[("content-type", "application/x-www-form-urlencoded")],
+        false,
+    )
 }
 
 fn hv(k: &str, v: &str) -> HeaderValue {
@@ -903,12 +1004,30 @@ async fn healthz_exercises_process_and_metrics_render() {
     let maddr = listener.local_addr().unwrap();
     tokio::spawn(metrics_server::serve(listener, h.processor.clone(), h.addr));
 
-    let health = http_get(maddr, "/healthz").await;
-    assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    for _ in 0..5 {
+        let health = http_get(maddr, "/healthz").await;
+        assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    }
 
+    // Probes run the real Exchange but must not count as traffic.
     let metrics = http_get(maddr, "/metrics").await;
     assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
-    assert!(metrics.contains("ext_proc_requests_total 1"), "{metrics}");
+    assert!(metrics.contains("ext_proc_requests_total 0\n"), "{metrics}");
+    assert!(metrics.contains("ext_proc_allow_total 0\n"), "{metrics}");
+    assert!(
+        metrics.contains("ext_proc_phase_request_headers_seconds_count 0\n"),
+        "{metrics}"
+    );
+    assert_eq!(h.metrics.allow_total(), 0);
+
+    // Real traffic still counts.
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    let metrics = http_get(maddr, "/metrics").await;
+    assert!(metrics.contains("ext_proc_requests_total 1\n"), "{metrics}");
     assert!(metrics.contains("ext_proc_phase_request_headers_seconds_bucket"));
 
     let missing = http_get(maddr, "/nope").await;
@@ -941,4 +1060,502 @@ async fn healthz_is_503_when_listener_does_not_speak_http2() {
     tokio::spawn(metrics_server::serve(listener, processor(), fake_addr));
     let health = http_get(maddr, "/healthz").await;
     assert!(health.starts_with("HTTP/1.1 503"), "{health}");
+}
+
+// --- Stream termination: never a gRPC-OK close without a verdict -------------
+// Envoy v1.39 treats an OK close as "processing complete" and forwards
+// whatever it holds (onGrpcClose → clearAsyncState), so every abnormal end
+// must be a non-OK status, which failure_mode_allow: false turns into 500.
+
+fn sqli_body(len: usize) -> Vec<u8> {
+    let mut body = b"q=1 UNION SELECT password FROM users&pad=".to_vec();
+    body.resize(len, b'A');
+    body
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversize_message_aborts_stream_never_ok() {
+    // 5 MiB > default --max-grpc-message-bytes (4 MiB): tonic cannot decode
+    // it. Before the fix this closed the stream with grpc-status 0 and Envoy
+    // forwarded the SQLi body to origin.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(&sqli_body(5 * 1024 * 1024), true)).await;
+    let status = assert_stream_error(s.next().await, tonic::Code::Internal, "oversize body");
+    assert!(status.message().contains("fail-closed"), "{status:?}");
+    assert!(s.next().await.is_none(), "nothing follows the error");
+    assert_eq!(h.metrics.stream_errors_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversize_message_never_ok_in_full_duplex() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(&sqli_body(5 * 1024 * 1024), true)).await;
+    assert_stream_error(
+        s.next().await,
+        tonic::Code::Internal,
+        "oversize duplex body",
+    );
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raised_message_limit_inspects_large_body() {
+    // Negative control for the oversize case: with the limit raised above the
+    // message, the same 5 MiB body is decoded and CRS-style denied.
+    let limits = Limits {
+        max_grpc_message_bytes: 8 * 1024 * 1024,
+        max_held_body_bytes: 8 * 1024 * 1024,
+    };
+    let h = start_with(BodyReply::Common, limits).await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    let r = s
+        .send(req_body(&sqli_body(5 * 1024 * 1024), true))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("deny").0, 403);
+    s.expect_closed().await;
+    assert_eq!(h.metrics.stream_errors_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn half_close_with_held_body_aborts_stream() {
+    // FULL_DUPLEX holds the body unanswered; if Envoy's side ends there, an
+    // OK close would let Envoy inject the held chunks uninspected.
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(b"q=1 UNION SELECT password", false)).await;
+    let next = s.close_send().await;
+    assert_stream_error(next, tonic::Code::Internal, "half-close with held body");
+    assert_eq!(h.metrics.stream_errors_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn half_close_with_nothing_pending_is_clean() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert!(
+        s.close_send().await.is_none(),
+        "every message answered: OK close"
+    );
+    assert_eq!(h.metrics.stream_errors_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn panic_resets_stream_never_ok() {
+    // A connector panic must reach Envoy as a stream reset (h2 RST_STREAM →
+    // tonic Cancelled/Unknown), never a clean OK close.
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    h.processor.engine().inject_panic_next_transaction_step();
+    s.push(req_body(b"name=alice", true)).await;
+    match s.next().await {
+        Some(Err(status)) => assert_ne!(status.code(), tonic::Code::Ok, "{status:?}"),
+        Some(Ok(r)) => panic!("panic answered a reply: {:?}", r.response),
+        None => panic!("panic ended the stream with gRPC OK (fail-open)"),
+    }
+    assert_eq!(h.metrics.allow_total(), 0);
+
+    // The server keeps serving other streams.
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "after panic",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_intervention_aborts_stream() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    s.push(req_headers("GET", "/drop-zero", &[], true)).await;
+    assert_stream_error(s.next().await, tonic::Code::Aborted, "status-0 drop");
+    assert_eq!(h.metrics.deny_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observability_mode_messages_get_no_answer() {
+    // Envoy does not wait for answers in observability mode; the connector
+    // must not answer (a deny would be meaningless and desync the stream).
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    let mut observed = req_headers("GET", "/admin", &[], true);
+    observed.observability_mode = true;
+    s.push(observed).await;
+    let r = s.send(req_headers("GET", "/", &[], true)).await.unwrap();
+    assert!(
+        matches!(r.response, Some(ProcResponse::RequestHeaders(_))),
+        "first answer belongs to the non-observability message, got {:?}",
+        r.response
+    );
+    assert_eq!(h.metrics.deny_total(), 0);
+    assert_eq!(h.metrics.allow_total(), 1);
+}
+
+// --- Response trailers --------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_trailers_continue_after_allowed_response() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp",
+    );
+    assert_continue(
+        &s.send(resp_body(b"hello", false)).await.unwrap(),
+        "resp body",
+    );
+    let r = s.send(resp_trailers()).await.unwrap();
+    assert!(
+        matches!(r.response, Some(ProcResponse::ResponseTrailers(_))),
+        "{:?}",
+        r.response
+    );
+    assert_eq!(h.metrics.deny_total(), 0);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_body_denied_when_response_trailers_mark_eos() {
+    let h = start().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp",
+    );
+    assert_continue(
+        &s.send(resp_body(b"token=CONNEX-LEAK-MARKER", false))
+            .await
+            .unwrap(),
+        "resp body eos=false",
+    );
+    let r = s.send(resp_trailers()).await.unwrap();
+    assert_eq!(immediate(&r).expect("deny at trailers").0, 403);
+    s.expect_closed().await;
+}
+
+// --- FULL_DUPLEX_STREAMED (--body-reply streamed) ------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_benign_chunks_echo_once_after_allow() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(b"name=", false)).await;
+    s.push(req_body(b"alice", false)).await;
+    s.push(req_body(b"", true)).await;
+    // The first answer is the whole body: nothing was released per chunk.
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_eq!(streamed_echo(&r, "request"), (b"name=alice".to_vec(), true));
+    assert_eq!(h.metrics.allow_total(), 1);
+
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp",
+    );
+    s.push(resp_body(b"hello ", false)).await;
+    s.push(resp_body(b"world", true)).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_eq!(
+        streamed_echo(&r, "response"),
+        (b"hello world".to_vec(), true)
+    );
+    assert!(s.close_send().await.is_none(), "all answered: OK close");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_sqli_denied_at_eos_nothing_echoed() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(b"q=1 ", false)).await;
+    s.push(req_body(b"UNION ", false)).await;
+    s.push(req_body(b"SELECT password FROM users", true)).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_eq!(immediate(&r).expect("deny, not echo").0, 403);
+    s.expect_closed().await;
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_trailers_release_held_body_then_trailers() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(b"name=alice", false)).await;
+    s.push(req_trailers(&[("x-trailer", "1")])).await;
+    let r = s.next().await.expect("body").expect("ok");
+    assert_eq!(streamed_echo(&r, "request"), (b"name=alice".to_vec(), true));
+    let r = s.next().await.expect("trailers").expect("ok");
+    assert!(
+        matches!(r.response, Some(ProcResponse::RequestTrailers(_))),
+        "{:?}",
+        r.response
+    );
+    assert_eq!(h.metrics.allow_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_sqli_denied_when_trailers_mark_eos() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(b"q=1 UNION SELECT password FROM users", false))
+        .await;
+    s.push(req_trailers(&[("x-trailer", "1")])).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_eq!(immediate(&r).expect("deny at trailers").0, 403);
+    s.expect_closed().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_headers_then_trailers_without_body_answers_trailers_only() {
+    // Envoy sends no body message for headers → trailers and rejects a body
+    // reply it did not ask for (spurious → 500), e.g. a gRPC upstream that
+    // answers HEADERS + trailers with zero DATA frames.
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    let r = s.send(req_trailers(&[("x-trailer", "1")])).await.unwrap();
+    assert!(
+        matches!(r.response, Some(ProcResponse::RequestTrailers(_))),
+        "request trailers only, got {:?}",
+        r.response
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp",
+    );
+    let r = s.send(resp_trailers()).await.unwrap();
+    assert!(
+        matches!(r.response, Some(ProcResponse::ResponseTrailers(_))),
+        "response trailers only, got {:?}",
+        r.response
+    );
+    assert!(s.close_send().await.is_none(), "no extra replies queued");
+    assert_eq!(h.metrics.allow_total(), 1);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_response_body_marker_denied() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp",
+    );
+    s.push(resp_body(b"token=CONNEX-", false)).await;
+    s.push(resp_body(b"LEAK-MARKER\n", true)).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_eq!(immediate(&r).expect("deny, not echo").0, 403);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_local_reply_body_echoes_per_chunk() {
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s.send(resp_headers("400", &[], false)).await.unwrap();
+    assert!(matches!(r.response, Some(ProcResponse::ResponseHeaders(_))));
+    let r = s.send(resp_body(b"Bad ", false)).await.unwrap();
+    assert_eq!(streamed_echo(&r, "response"), (b"Bad ".to_vec(), false));
+    let r = s.send(resp_body(b"Request", true)).await.unwrap();
+    assert_eq!(streamed_echo(&r, "response"), (b"Request".to_vec(), true));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_held_body_cap_fails_closed() {
+    let limits = Limits {
+        max_grpc_message_bytes: 4 * 1024 * 1024,
+        max_held_body_bytes: 1024,
+    };
+    let h = start_with(BodyReply::Streamed, limits).await;
+
+    // Exactly at the cap: held, then echoed.
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(&[b'a'; 512], false)).await;
+    s.push(req_body(&[b'b'; 512], true)).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_eq!(streamed_echo(&r, "request").0.len(), 1024);
+
+    // One byte over: 500 before anything is echoed.
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    s.push(req_body(&[b'a'; 512], false)).await;
+    s.push(req_body(&[b'b'; 513], false)).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_fail_closed(&r, "held body over cap");
+    s.expect_closed().await;
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+
+    // Response direction too.
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp",
+    );
+    s.push(resp_body(&[b'x'; 2048], false)).await;
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_fail_closed(&r, "held response body over cap");
+    assert_eq!(h.metrics.fail_closed_total(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_duplex_default_cap_bounds_held_body() {
+    // 5 × 1 MiB chunks: each message decodes (< 4 MiB) but the held total
+    // passes the default cap (= --max-grpc-message-bytes), so the connector
+    // fails closed instead of growing without bound.
+    let h = start_duplex().await;
+    let mut s = Stream::open(h.addr).await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    for _ in 0..5 {
+        s.push(req_body(&vec![b'a'; 1024 * 1024], false)).await;
+    }
+    let r = s.next().await.expect("answer").expect("ok");
+    assert_fail_closed(&r, "default held cap");
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+// --- Logging phase still runs after the reply ----------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit_log_written_after_deny_off_the_reply_path() {
+    // The session (and its logging phase) is dropped on the blocking pool
+    // after the terminal reply; the audit record must still be written.
+    let dir = std::env::temp_dir().join(format!("connex-audit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let audit = dir.join("audit.log");
+    let rules = dir.join("audit.conf");
+    std::fs::write(
+        &rules,
+        format!(
+            "SecRuleEngine On\nSecAuditEngine On\nSecAuditLogType Serial\n\
+             SecAuditLogParts ABZ\nSecAuditLog {}\n\
+             SecRule REQUEST_URI \"@contains /admin\" \"id:1,phase:1,deny,status:403\"\n",
+            audit.display()
+        ),
+    )
+    .expect("write rules");
+    let engine = Engine::load_files(&[&rules]).expect("rules");
+    let h = serve(ModSecProcessor::new(
+        engine,
+        Arc::new(ConnectorMetrics::default()),
+    ))
+    .await;
+    let mut s = Stream::open(h.addr).await;
+    let r = s
+        .send(req_headers(
+            "GET",
+            "/admin",
+            &[("x-request-id", "rid-audit-1")],
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(immediate(&r).expect("deny").0, 403);
+    s.expect_closed().await;
+    let mut found = false;
+    for _ in 0..50 {
+        if std::fs::read_to_string(&audit).is_ok_and(|t| t.contains("/admin")) {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(found, "logging phase must still write the audit record");
+}
+
+// --- /healthz probe logs at DEBUG ---------------------------------------------
+
+#[derive(Clone, Default)]
+struct Levels(Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+impl tracing::Subscriber for Levels {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let m = event.metadata();
+        self.0
+            .lock()
+            .unwrap()
+            .push((*m.level(), m.target().to_owned()));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+impl Levels {
+    fn info_or_above(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(l, _)| *l <= tracing::Level::INFO)
+            .count()
+    }
+}
+
+#[test]
+fn probe_exchange_logs_below_info_and_keeps_metrics_clean() {
+    let p = processor();
+    let run = |probe: bool| {
+        let levels = Levels::default();
+        let step = tracing::subscriber::with_default(levels.clone(), || {
+            let mut ex = if probe {
+                p.probe_exchange()
+            } else {
+                p.exchange()
+            };
+            ex.on_message(req_headers("GET", "/", &[], true))
+        });
+        assert!(
+            matches!(step, ext_proc_modsec::processor::Step::Reply(_)),
+            "{step:?}"
+        );
+        levels
+    };
+    // Negative control: real traffic logs its phases at INFO and counts.
+    assert!(run(false).info_or_above() >= 2);
+    assert_eq!(p.metrics().requests_total(), 1);
+    let probe = run(true);
+    assert_eq!(probe.info_or_above(), 0, "{:?}", probe.0.lock().unwrap());
+    assert_eq!(p.metrics().requests_total(), 1, "probe must not count");
+    assert_eq!(p.metrics().allow_total(), 1);
 }
