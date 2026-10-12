@@ -1,4 +1,4 @@
-# Demo Envoy for gRPC hop-trace (v1.39.1).
+# Demo Envoy for gRPC hop-trace.
 # Client (grpcurl) → Envoy :18080 (HTTP/2) → ext_proc → grpc-echo origin :18090.
 #
 # Honest bound (not full protobuf CRS):

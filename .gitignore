@@ -21,6 +21,3 @@ __pycache__/
 
 # ASH scan output. Config stays at .ash/.ash.yaml.
 /.ash/ash_output*/
-
-# GitHub Pages: never ignore .nojekyll.
-!**/.nojekyll

@@ -1,4 +1,4 @@
-# Demo Envoy (v1.39.1) STREAMED + trailers SEND (safety suite): client → Envoy :18080 → ext_proc side-call to the
+# Demo Envoy STREAMED + trailers SEND (safety suite): client → Envoy :18080 → ext_proc side-call to the
 # connector on :18081 → origin :18098 (only after Continue).
 #
 # Enforcement settings that must not be relaxed:

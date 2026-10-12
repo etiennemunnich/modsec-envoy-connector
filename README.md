@@ -2,76 +2,73 @@
 
 Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and the **OWASP Core Rule Set (CRS)**.
 
-Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS), and tells Envoy to allow or block traffic before it reaches your origin. The connector loads libmodsecurity in-process and calls its C API from Rust.
+Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS) in-process, and tells Envoy to allow or block. Envoy alone forwards traffic to your origin, and only after the connector allows it.
 
-**Status:** **0.1 alpha** (`v0.1.0-alpha.1`) for early testing / UAT — not a production release. Sign-off path: [UAT checklist](./docs/modes/uat.md). Notes: [`CHANGELOG.md`](./CHANGELOG.md).
+**Status:** `v0.1.0-alpha.1`, for early testing only; not a production release. Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). The repository, container image and release assets are private: early testers need read access.
 
-Pinned versions: Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0** ([`versions.lock.md`](./versions.lock.md)).
+## How it decides
 
-**Author:** Etienne Munnich  
-**License:** [Apache License 2.0](./LICENSE)
+- **Allow:** Envoy forwards the request to the origin.
+- **Rule deny:** **403** (or the rule's 4xx/5xx status); the origin is not contacted.
+- **Connector down, or an engine error:** **500**; the origin is not contacted.
+- **Connector hung:** **504** after Envoy's `message_timeout` (not under the FULL_DUPLEX_STREAMED body mode).
 
-**Repository:** [github.com/etiennemunnich/modsec-envoy-connector](https://github.com/etiennemunnich/modsec-envoy-connector)
+Details: [fail-closed](./docs/fail-closed.md).
 
-Formerly developed under the private name [`envoy-modsec-connex`](https://github.com/etiennemunnich/envoy-modsec-connex).
+## Try it locally
 
-## Getting started
-
-You need Rust (cargo), `pkg-config`, Python 3, `curl`, and `lsof` on `PATH`. On macOS, `brew install pkg-config`. Use the pin-safe scripts below; a naked `brew install envoy modsecurity` skips the pin check.
+Prerequisites: on **macOS**, Xcode Command Line Tools, [Homebrew](https://brew.sh) and [rustup](https://rustup.rs); on **Linux** (tested on Ubuntu 24.04, with `sudo`), rustup, `git`, `curl`, `python3` and `lsof`. The scripts install Envoy, libmodsecurity (a source build on Linux) and CRS at the pinned versions, and stop if what they find is something else.
 
 ```bash
-./demo/scripts/install-envoy.sh && export PATH=$HOME/.local/bin:$PATH
+git clone https://github.com/etiennemunnich/modsec-envoy-connector.git
+cd modsec-envoy-connector
+export PATH="$HOME/.local/bin:$PATH"
+./demo/scripts/install-envoy.sh
 ./demo/scripts/install-libmodsecurity.sh
 ./demo/scripts/install-crs.sh
-```
-
-From the repo root:
-
-```bash
-./demo/scripts/up.sh
-./demo/scripts/smoke.sh
-./demo/scripts/fail-closed.sh   # recommended for UAT
-```
-
-`up.sh` builds the connector and starts Envoy, the connector, and a tiny origin. Envoy listens on port 18080. By hand:
-
-```bash
-curl -i http://127.0.0.1:18080/                                         # 200 from origin
-curl -i "http://127.0.0.1:18080/search?q=1'%20UNION%20SELECT%201,2--"  # 403 (CRS SQLi)
-```
-
-```bash
+./demo/scripts/up.sh                # Envoy :18080, connector, a small origin; BUFFERED body mode
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/                                          # 200
+curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:18080/search?q=1'%20UNION%20SELECT%201,2--"   # 403
+./demo/scripts/smoke.sh             # allow and deny checks
+./demo/scripts/fail-closed.sh       # kill → 500, hang → 504, bad rules → 500
 ./demo/scripts/down.sh
 ```
 
-Default body mode is BUFFERED. Other modes are in [docs/modes](./docs/modes/README.md). Early-tester checklist: [UAT](./docs/modes/uat.md).
+Full walkthrough, other body modes and the early-tester checklist: [Getting started](./docs/getting-started.md).
 
-## Bring your own Envoy
+## Run it beside your own Envoy
 
-Already running Envoy? Point `ext_proc` at this connector (keep `failure_mode_allow: false`), load ModSecurity/CRS rules next to it, and leave origin routing to Envoy.
+1. Get the connector: a Linux release tarball, the image `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.1`, or `cargo build --release -p ext-proc-modsec`.
+2. Write one rules entry file, for example `/etc/modsecurity/main.conf`, that `Include`s the engine settings, `crs-setup.conf` and `rules/*.conf`.
+3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf`.
+4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`.
+5. Check: `/healthz` is 200, a SQLi gets 403, and with the connector stopped requests get 500.
 
-1. **Run the connector** — build `cargo build -p ext-proc-modsec --release`, or use the release tarball / GHCR image `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` (alpha tag: `v0.1.0-alpha.1`).
-2. **Start it** with your rules in load order, for example:
-   ```bash
-   ext-proc-modsec --listen 0.0.0.0:18081 --metrics-listen 127.0.0.1:18082 \
-     --modsec-rules /etc/modsecurity/engine.conf,/etc/crs/crs-setup.conf,/etc/crs/rules.conf
-   ```
-3. **Wire Envoy** — HTTP/2 cluster to `--listen`, `ext_proc` before the router, body mode matching your intent (product default **BUFFERED**). Sketch: [`demo/README.md`](./demo/README.md#wiring-your-own-envoy). Flags and pins: [Install / build](./docs/modes/install.md). Request path: [How it works](./docs/how-it-works.md).
+Complete Envoy config, body-mode settings, timeouts, health checks and security notes: [Deploy](./docs/deploy.md).
+
+## What is not inspected
+
+| Surface | Status |
+|---------|--------|
+| request and response bodies under the NONE body mode | not sent to the connector |
+| body bytes past the limit under BUFFERED_PARTIAL | not inspected |
+| HTTP/3 | not configured or tested |
+| WebSocket frames | not inspected (the upgrade handshake can be) |
+| gRPC message bodies | not inspected (headers and metadata are) |
+| trailer values | not inspected |
 
 ## Docs
 
-| Link | Topic |
-|------|--------|
-| [Getting started](./docs/modes/getting-started.md) | Same path, plus ports and health checks |
-| [Early testing / UAT](./docs/modes/uat.md) | Clone → install → smoke → sign-off for 0.1 alpha |
-| [Docs index](./docs/modes/README.md) | Install, body modes, fail-closed, testing, architecture |
-| [How it works](./docs/how-it-works.md) | Request path and what is inspected |
-| [Fail-closed](./docs/fail-closed.md) | When the connector or engine cannot decide |
-| [Testing](./docs/testing.md) | How the project is tested |
-| [Changelog](./CHANGELOG.md) | Release notes source |
-| [Security scan (ASH)](./docs/ash.md) | Report-only scan and how to run it |
-| [SECURITY.md](./SECURITY.md) | Vulnerability reporting (private) |
-| [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) | Contributor Covenant |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) | Build from source, PRs, releases |
+| Page | Topic |
+|------|-------|
+| [Getting started](./docs/getting-started.md) | local demo, step by step, and the early-tester checklist |
+| [Deploy](./docs/deploy.md) | running the connector beside your own Envoy |
+| [How it works](./docs/how-it-works.md) | request path and what the client sees |
+| [Body modes](./docs/body-modes.md) | what each Envoy body mode inspects, and when |
+| [Fail-closed](./docs/fail-closed.md) | what happens when the connector or engine cannot decide |
+| [Troubleshooting](./docs/troubleshooting.md) | status codes, install errors, logs |
+| [Testing](./docs/testing.md) | what is tested, where, and how to run it |
 
-Copyright © 2026 Etienne Munnich. Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE).
+Bugs and questions: [issue templates](https://github.com/etiennemunnich/modsec-envoy-connector/issues/new/choose). Vulnerabilities: [SECURITY.md](./SECURITY.md), privately. Contributing: [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+Copyright © 2026 Etienne Munnich. Licensed under the [Apache License 2.0](./LICENSE).
