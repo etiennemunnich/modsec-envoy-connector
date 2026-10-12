@@ -501,7 +501,7 @@ async fn response_body_rule_denies() {
         "resp headers",
     );
     let r = s
-        .send(resp_body(b"token=CONNEX-LEAK-MARKER\n", true))
+        .send(resp_body(b"token=TEST-LEAK-MARKER\n", true))
         .await
         .unwrap();
     assert_eq!(immediate(&r).expect("immediate").0, 403);
@@ -1346,7 +1346,7 @@ async fn response_body_denied_when_response_trailers_mark_eos() {
         "resp",
     );
     assert_continue(
-        &s.send(resp_body(b"token=CONNEX-LEAK-MARKER", false))
+        &s.send(resp_body(b"token=TEST-LEAK-MARKER", false))
             .await
             .unwrap(),
         "resp body eos=false",
@@ -1471,7 +1471,7 @@ async fn full_duplex_response_body_marker_denied() {
         &s.send(resp_headers("200", &[], false)).await.unwrap(),
         "resp",
     );
-    s.push(resp_body(b"token=CONNEX-", false)).await;
+    s.push(resp_body(b"token=TEST-", false)).await;
     s.push(resp_body(b"LEAK-MARKER\n", true)).await;
     let r = s.next().await.expect("answer").expect("ok");
     assert_eq!(immediate(&r).expect("deny, not echo").0, 403);
@@ -1740,7 +1740,7 @@ async fn single_message_modes_finish_the_body_phase_on_any_body() {
             "resp",
         );
         let r = s
-            .send(resp_body(b"token=CONNEX-LEAK-MARKER", false))
+            .send(resp_body(b"token=TEST-LEAK-MARKER", false))
             .await
             .unwrap();
         assert_deny(&r, &format!("{mode:?}: response body with eos=false"));
@@ -1952,7 +1952,7 @@ async fn response_streaming_body_ends_at_trailers() {
             &s.send(resp_headers("200", &[], false)).await.unwrap(),
             "resp",
         );
-        let chunk = resp_body(b"token=CONNEX-LEAK-MARKER", false);
+        let chunk = resp_body(b"token=TEST-LEAK-MARKER", false);
         if mode == BodySendMode::FullDuplexStreamed {
             s.push(chunk).await;
         } else {

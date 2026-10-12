@@ -84,7 +84,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml) / [`envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Same body modes with trailer modes **SEND**, used only by `trailers.sh` (trailer values still not CRS-inspected). |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
 | [`rules/engine-oversize-overlay.conf`](./rules/engine-oversize-overlay.conf) | Suite-only 1 KiB `SecRequestBodyLimit` + Reject (used by `buffered-oversize.sh`). |
-| [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `CONNEX-LEAK-MARKER`, to show the response path. |
+| [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `DEMO-LEAK-MARKER`, to show the response path. |
 | [`ftw/`](./ftw/) | go-ftw config, demo test cases, and `envoy-overrides.yaml` (measured Envoy platform differences, same pattern as CRS's own nginx overrides). |
 
 ## Ports

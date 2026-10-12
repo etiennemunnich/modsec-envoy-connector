@@ -187,10 +187,10 @@ fi
 line="$(grep -F "rid=${RID} " "${RUN}/envoy.log" | tail -1 || true)"
 [[ -n "${line}" ]] && pass "[benign] Envoy access log" || fail "[benign] no Envoy access log"
 
-echo "==> 2. deny metadata header x-connex-grpc-probe: deny (origin untouched)"
+echo "==> 2. deny metadata header x-demo-grpc-probe: deny (origin untouched)"
 RID="grpc-deny-hdr-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 before="$(grpc_hits)"
-summary="$(grpc_call "${RID}" -v -H 'x-connex-grpc-probe: deny')"
+summary="$(grpc_call "${RID}" -v -H 'x-demo-grpc-probe: deny')"
 echo "  client ${summary}"
 after="$(grpc_hits)"
 # Envoy local reply from ModSec is typically HTTP 403; grpcurl non-zero.
@@ -279,7 +279,7 @@ else
 fi
 if "${DEMO}/scripts/hop-trace.sh" --proto grpc --expect-grpc-ok no --expect-origin no \
     --grpc-method echo.Echo/Unary \
-    --grpc-header 'x-connex-grpc-probe: deny'; then
+    --grpc-header 'x-demo-grpc-probe: deny'; then
   pass "[hop-trace] deny-header grpc hop-trace OK"
 else
   fail "[hop-trace] deny-header grpc hop-trace FAILED"
