@@ -22,23 +22,26 @@ Pinned Envoy / libmodsecurity / CRS versions for a given release are listed in t
 
 For any route that claims protection:
 
-- ExtProc unreachable, connector crash/kill, hang/timeout, gRPC error, ModSec init or rules load failure → **deny** (typically 5xx / local reply).
+- ExtProc unreachable, connector crash/kill, gRPC error, ModSec init or rules load failure → **deny** (500 from Envoy or the connector).
+- A hung connector → **504** after `message_timeout`, except under `FULL_DUPLEX_STREAMED`, where Envoy applies no `message_timeout` and the request waits for another Envoy timeout ([fail-closed.md](./docs/fail-closed.md#full_duplex_streamed-and-a-hung-connector)).
 - Never redefine a failing mode as "out of scope."
-- Body delivery mode (BUFFERED vs STREAMED) does **not** relax this.
+- The body mode does **not** relax this. Open defects that break it in specific configurations are listed in [deploy.md](./docs/deploy.md#known-issues).
 
-Live drills: `demo/scripts/fail-closed.sh` (kill → 500, hang → 504, bad rules → 500, origin untouched).
+Live drills: `demo/scripts/fail-closed.sh` (kill → 500, hang → 504 outside FULL_DUPLEX_STREAMED, bad rules → 500, origin untouched).
 
 ### Why `ext_proc` (not an in-process dynamic module)
 
 Built on Envoy [security considerations](https://builtonenvoy.io/docs/security-considerations/) stress that Rust/Go **dynamic modules** share Envoy's process, memory, and worker threads. A WAF that links libmodsecurity is a poor fit for that model.
 
-`ext_proc` runs **out of process**: Envoy stays up if the connector dies (and with `failureModeAllow: false`, traffic fails closed).
+`ext_proc` runs **out of process**: Envoy stays up if the connector dies (and with `failure_mode_allow: false`, traffic fails closed).
 
 ### Bounds
 
-- Cap BUFFERED body sizes; over-limit must **reject**, not hang or pass.
-- Set ExtProc `message_timeout` appropriate to max body size.
+- Keep Envoy's body buffer limit under 4 MiB; over the limit, BUFFERED must **reject** (Envoy answers 413), not hang or pass.
+- Set ExtProc `message_timeout` for your largest body, and set route / stream timeouts on FULL_DUPLEX_STREAMED routes.
 - Do not enable BUFFERED body modes on WebSocket upgrade routes.
+
+The full configuration, with what breaks when a field is left out: [deploy.md](./docs/deploy.md).
 
 ## Reporting a Vulnerability
 
