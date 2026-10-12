@@ -26,20 +26,29 @@
 
 mod ffi;
 
+use std::collections::hash_map::RandomState;
 use std::ffi::{CStr, CString};
 use std::fmt;
+use std::hash::{BuildHasher, Hasher};
 use std::os::raw::{c_char, c_int, c_uchar, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{self, NonNull};
-use std::sync::{Arc, Mutex, MutexGuard};
-
-#[cfg(feature = "fail-inject")]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::{debug, info, warn};
 
-const CONNECTOR_INFO: &str = concat!("envoy-modsec-connex/", env!("CARGO_PKG_VERSION"));
+const CONNECTOR_INFO: &str = concat!("modsec-envoy-connector/", env!("CARGO_PKG_VERSION"));
+
+/// First of the two engine-mode probe rule ids. They are only ever loaded
+/// into the throwaway probe ruleset, never into the one serving traffic.
+const PROBE_RULE_ID: u64 = 4_200_000_001;
+
+/// Longest rule `msg` the WARN intervention log carries; CRS messages can
+/// expand request data through macros.
+const MAX_LOGGED_MSG: usize = 200;
 
 /// libmodsecurity's SecLang parser and its engine/rules teardown are not
 /// re-entrant (owasp-modsecurity/ModSecurity#3138); every call into them
@@ -127,6 +136,78 @@ impl fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+/// How the loaded ruleset's `SecRuleEngine` resolves for a transaction,
+/// measured once at load by [`Engine::load_files`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineMode {
+    /// Disruptive actions run: traffic is enforced.
+    On,
+    /// Rules run and log, nothing is blocked. Also what an unset
+    /// `SecRuleEngine` means in libmodsecurity v3.
+    DetectionOnly,
+    /// Rules do not run.
+    Off,
+    /// The probe could not run (see the load log).
+    Unknown,
+}
+
+impl EngineMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "On",
+            Self::DetectionOnly => "DetectionOnly",
+            Self::Off => "Off",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// ModSecurity transaction id (`UNIQUE_ID`, audit-log key): generated here
+/// so a client-chosen `x-request-id` cannot set or collide with it.
+fn next_tx_id() -> String {
+    static PREFIX: OnceLock<u64> = OnceLock::new();
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let prefix = *PREFIX.get_or_init(|| {
+        let mut h = RandomState::new().build_hasher();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        h.write_u128(now);
+        h.write_u32(std::process::id());
+        h.finish()
+    });
+    format!("{prefix:016x}-{:x}", SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The value of a `[name "value"]` tag in a libmodsecurity log line.
+fn log_tag<'a>(log: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("[{name} \"");
+    let start = log.find(&open)? + open.len();
+    let len = log[start..].find("\"]")?;
+    Some(&log[start..start + len])
+}
+
+/// The `msg` of a rule's log line, or the text of an engine-raised
+/// intervention (a log with no rule `id`, e.g. a body limit reject), which
+/// quotes no request data. A rule log without `msg` gives `-`.
+fn log_msg(log: &str) -> &str {
+    if let Some(msg) = log_tag(log, "msg") {
+        return msg;
+    }
+    if log.is_empty() || log_tag(log, "id").is_some() {
+        return "-";
+    }
+    log.split(" [").next().unwrap_or(log)
+}
+
+fn truncated(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
 fn tx_err(e: impl fmt::Display) -> EngineError {
     EngineError::Transaction(e.to_string())
 }
@@ -152,6 +233,7 @@ pub struct Engine {
     rules: NonNull<ffi::RulesSet>,
     rules_paths: Vec<PathBuf>,
     rule_count: usize,
+    mode: EngineMode,
     /// Test-only (`fail-inject` feature): next Transaction step on a session
     /// from this engine returns [`EngineError`]. Per-engine so parallel tests
     /// do not race. Compiled out of product builds.
@@ -183,8 +265,68 @@ impl Drop for Engine {
 
 impl Engine {
     /// Build an engine, loading each rules file in order (e.g. engine
-    /// directives, then CRS setup, then `rules/*.conf` via `Include`).
+    /// directives, then CRS setup, then `rules/*.conf` via `Include`), and
+    /// measure its [`EngineMode`].
     pub fn load_files(paths: &[impl AsRef<Path>]) -> Result<Arc<Self>, EngineError> {
+        let mut engine = Self::build(paths, false)?;
+        engine.mode = Self::probe_mode(paths);
+        info!(
+            files = engine.rules_paths.len(),
+            rules = engine.rule_count,
+            mode = engine.mode.as_str(),
+            "ModSecurity ruleset loaded"
+        );
+        Ok(Arc::new(engine))
+    }
+
+    /// `SecRuleEngine` is not readable through the C API, so load the same
+    /// files plus two phase-1 rules for a random URI into a throwaway
+    /// ruleset and run one request through it: a logging `pass` rule (a
+    /// rule with a disruptive action never reaches the log callback) and a
+    /// `deny`. A disruptive intervention means On, only the logged match
+    /// means DetectionOnly, neither means Off. `noauditlog` would also
+    /// silence the log callback; the probe transaction skips the logging
+    /// phase instead, so it writes no audit log entry.
+    fn probe_mode(paths: &[impl AsRef<Path>]) -> EngineMode {
+        let token = next_tx_id();
+        let uri = format!("/__modsec_engine_probe/{token}");
+        let rule = format!(
+            "SecRule REQUEST_URI \"@streq {uri}\" \"id:{PROBE_RULE_ID},phase:1,pass,log,\
+             msg:'engine mode probe {token}'\"\n\
+             SecRule REQUEST_URI \"@streq {uri}\" \"id:{},phase:1,deny,status:403,nolog,\
+             noauditlog\"\n",
+            PROBE_RULE_ID + 1
+        );
+        let run = || -> Result<EngineMode, EngineError> {
+            let mut probe = Self::build(paths, true)?;
+            probe.add_rules_text(&rule)?;
+            let probe = Arc::new(probe);
+            let mut session = InspectionSession::begin(probe, None, Some(token.clone()))?;
+            let decision = session.process_request_headers(
+                "192.0.2.1",
+                40000,
+                "127.0.0.1",
+                80,
+                "GET",
+                &uri,
+                "1.1",
+                &[("host", "localhost")],
+            )?;
+            Ok(if decision.is_disruptive() {
+                EngineMode::On
+            } else if session._log_ctx.probe_matched.load(Ordering::Relaxed) {
+                EngineMode::DetectionOnly
+            } else {
+                EngineMode::Off
+            })
+        };
+        run().unwrap_or_else(|e| {
+            warn!(error = %e, "ModSecurity engine mode probe failed; mode unknown");
+            EngineMode::Unknown
+        })
+    }
+
+    fn build(paths: &[impl AsRef<Path>], quiet: bool) -> Result<Self, EngineError> {
         if paths.is_empty() {
             return Err(EngineError::NoRules);
         }
@@ -201,6 +343,7 @@ impl Engine {
                     rules,
                     rules_paths: Vec::with_capacity(paths.len()),
                     rule_count: 0,
+                    mode: EngineMode::Unknown,
                     #[cfg(feature = "fail-inject")]
                     fail_next: AtomicBool::new(false),
                     #[cfg(feature = "fail-inject")]
@@ -232,7 +375,9 @@ impl Engine {
             let path = path.as_ref().to_path_buf();
             let rules = engine.add_rules_file(&path)?;
             engine.rule_count += rules;
-            info!(path = %path.display(), rules, "loaded ModSecurity rules file");
+            if !quiet {
+                info!(path = %path.display(), rules, "loaded ModSecurity rules file");
+            }
             engine.rules_paths.push(path);
         }
         if engine.rule_count == 0 {
@@ -240,12 +385,22 @@ impl Engine {
                 paths: std::mem::take(&mut engine.rules_paths),
             });
         }
-        info!(
-            files = engine.rules_paths.len(),
-            rules = engine.rule_count,
-            "ModSecurity ruleset loaded"
-        );
-        Ok(Arc::new(engine))
+        Ok(engine)
+    }
+
+    fn add_rules_text(&mut self, text: &str) -> Result<usize, EngineError> {
+        let rules = c_string("rules text", text)?;
+        let mut error: *const c_char = ptr::null();
+        let _g = parse_lock();
+        // SAFETY: as in add_rules_file.
+        let rc = unsafe { ffi::msc_rules_add(self.rules.as_ptr(), rules.as_ptr(), &mut error) };
+        if let Ok(n) = usize::try_from(rc) {
+            return Ok(n);
+        }
+        Err(EngineError::Init(format!(
+            "probe rule rejected: {}",
+            take_rules_error(error)
+        )))
     }
 
     /// Returns the number of rules the file added (`msc_rules_add_file`'s
@@ -265,17 +420,7 @@ impl Engine {
         if let Ok(rules) = usize::try_from(rc) {
             return Ok(rules);
         }
-        let message = if error.is_null() {
-            "unknown error".to_owned()
-        } else {
-            // SAFETY: non-NULL `error` is a NUL-terminated string we now own.
-            unsafe {
-                let m = CStr::from_ptr(error).to_string_lossy().into_owned();
-                ffi::msc_rules_error_cleanup(error);
-                m
-            }
-        };
-        Err(load_err(message))
+        Err(load_err(take_rules_error(error)))
     }
 
     /// Paths that were successfully loaded at construction.
@@ -286,6 +431,11 @@ impl Engine {
     /// Total rules libmodsecurity reported across all files (never 0).
     pub fn rule_count(&self) -> usize {
         self.rule_count
+    }
+
+    /// `SecRuleEngine` as measured at load.
+    pub fn mode(&self) -> EngineMode {
+        self.mode
     }
 
     /// Arm a one-shot mid-exchange engine error on the next Transaction API
@@ -325,13 +475,30 @@ impl Engine {
         self: &Arc<Self>,
         request_id: Option<&str>,
     ) -> Result<InspectionSession, EngineError> {
-        InspectionSession::begin(Arc::clone(self), request_id)
+        InspectionSession::begin(Arc::clone(self), request_id, None)
+    }
+}
+
+/// Message of a failed `msc_rules_add*` call; frees it.
+fn take_rules_error(error: *const c_char) -> String {
+    if error.is_null() {
+        return "unknown error".to_owned();
+    }
+    // SAFETY: non-NULL `error` is a NUL-terminated string we now own.
+    unsafe {
+        let m = CStr::from_ptr(error).to_string_lossy().into_owned();
+        ffi::msc_rules_error_cleanup(error);
+        m
     }
 }
 
 /// Per-transaction data handed to libmodsecurity's log callback.
 struct LogContext {
+    tx_id: String,
     request_id: String,
+    /// Engine-mode probe only: token of the probe rule's `msg`.
+    probe_token: Option<String>,
+    probe_matched: AtomicBool,
 }
 
 unsafe extern "C" fn log_cb(data: *mut c_void, msg: *const c_void) {
@@ -347,8 +514,12 @@ unsafe extern "C" fn log_cb(data: *mut c_void, msg: *const c_void) {
             CStr::from_ptr(msg as *const c_char).to_string_lossy(),
         )
     };
+    if ctx.probe_token.as_deref().is_some_and(|t| msg.contains(t)) {
+        ctx.probe_matched.store(true, Ordering::Relaxed);
+    }
     debug!(
         target: "modsecurity",
+        tx_id = %ctx.tx_id,
         request_id = %ctx.request_id,
         message = %msg,
         "modsec engine log"
@@ -359,13 +530,14 @@ unsafe extern "C" fn log_cb(data: *mut c_void, msg: *const c_void) {
 /// HTTP exchange.
 pub struct InspectionSession {
     tx: NonNull<ffi::Transaction>,
+    tx_id: String,
     request_id: Option<String>,
     request_headers_done: bool,
     request_body_done: bool,
     response_headers_done: bool,
     response_body_done: bool,
     // Dropped after `tx` is cleaned up in `Drop::drop`.
-    _id: Option<CString>,
+    _id: CString,
     _log_ctx: Box<LogContext>,
     _engine: Arc<Engine>,
 }
@@ -377,13 +549,18 @@ unsafe impl Send for InspectionSession {}
 impl Drop for InspectionSession {
     fn drop(&mut self) {
         // Logging phase is best-effort: the stream is ending either way.
-        // SAFETY: `tx` is live until the cleanup call below.
-        let rc = unsafe { ffi::msc_process_logging(self.tx.as_ptr()) };
-        if rc != 1 {
-            debug!(
-                request_id = self.request_id.as_deref().unwrap_or("-"),
-                rc, "modsecurity process_logging failed"
-            );
+        // The engine-mode probe skips it so it never writes an audit entry.
+        if self._log_ctx.probe_token.is_none() {
+            // SAFETY: `tx` is live until the cleanup call below.
+            let rc = unsafe { ffi::msc_process_logging(self.tx.as_ptr()) };
+            if rc != 1 {
+                debug!(
+                    tx_id = %self.tx_id,
+                    request_id = self.request_id.as_deref().unwrap_or("-"),
+                    rc,
+                    "modsecurity process_logging failed"
+                );
+            }
         }
         // SAFETY: freed exactly once; the engine, id and log context it
         // references are dropped only after this.
@@ -392,30 +569,36 @@ impl Drop for InspectionSession {
 }
 
 impl InspectionSession {
-    fn begin(engine: Arc<Engine>, request_id: Option<&str>) -> Result<Self, EngineError> {
-        let id = request_id.map(|r| c_string("request id", r)).transpose()?;
+    /// `request_id` (Envoy `x-request-id`) is only a log field; the
+    /// ModSecurity transaction id is generated by [`next_tx_id`].
+    fn begin(
+        engine: Arc<Engine>,
+        request_id: Option<&str>,
+        probe_token: Option<String>,
+    ) -> Result<Self, EngineError> {
+        let tx_id = next_tx_id();
+        let id = c_string("transaction id", &tx_id)?;
         let log_ctx = Box::new(LogContext {
+            tx_id: tx_id.clone(),
             request_id: request_id.unwrap_or("-").to_owned(),
+            probe_token,
+            probe_matched: AtomicBool::new(false),
         });
         let log_data = &*log_ctx as *const LogContext as *mut c_void;
         // SAFETY: engine pointers are live (we hold the Arc); `id` and
         // `log_ctx` are kept in the session for the transaction's lifetime.
         let tx = unsafe {
-            match &id {
-                Some(id) => ffi::msc_new_transaction_with_id(
-                    engine.msc.as_ptr(),
-                    engine.rules.as_ptr(),
-                    id.as_ptr() as *mut c_char,
-                    log_data,
-                ),
-                None => {
-                    ffi::msc_new_transaction(engine.msc.as_ptr(), engine.rules.as_ptr(), log_data)
-                }
-            }
+            ffi::msc_new_transaction_with_id(
+                engine.msc.as_ptr(),
+                engine.rules.as_ptr(),
+                id.as_ptr() as *mut c_char,
+                log_data,
+            )
         };
         let tx = NonNull::new(tx).ok_or_else(|| tx_err("msc_new_transaction returned NULL"))?;
         Ok(Self {
             tx,
+            tx_id,
             request_id: request_id.map(str::to_owned),
             request_headers_done: false,
             request_body_done: false,
@@ -434,6 +617,11 @@ impl InspectionSession {
     /// Request id this transaction was opened with (Envoy `x-request-id`).
     pub fn request_id(&self) -> Option<&str> {
         self.request_id.as_deref()
+    }
+
+    /// ModSecurity transaction id (`UNIQUE_ID`, audit-log key).
+    pub fn tx_id(&self) -> &str {
+        &self.tx_id
     }
 
     /// Phase 1: connection + URI + request headers.
@@ -671,30 +859,48 @@ impl InspectionSession {
             return Ok(Decision::Allow);
         }
         let rid = self.request_id.as_deref().unwrap_or("-");
+        let tx_id = self.tx_id.as_str();
         if pause != 0 {
             warn!(
+                tx_id,
                 request_id = rid,
-                phase, pause, "modsecurity pause intervention unsupported; ignoring pause"
+                phase,
+                pause,
+                "modsecurity pause intervention unsupported; ignoring pause"
             );
         }
         let decision = map_intervention(disruptive, status, url.as_deref(), log);
         match &decision {
             Decision::Allow => {
                 debug!(
+                    tx_id,
                     request_id = rid,
-                    phase, status, "modsecurity non-disruptive intervention ignored"
+                    phase,
+                    status,
+                    "modsecurity non-disruptive intervention ignored"
                 );
             }
             Decision::Block { log, .. }
             | Decision::Redirect { log, .. }
             | Decision::Drop { log } => {
+                // The full log quotes matched request data; it stays at DEBUG.
+                let log = log.as_deref().unwrap_or("");
                 warn!(
+                    tx_id,
                     request_id = rid,
                     phase,
                     action = decision.action_label(),
                     status,
-                    log = log.as_deref().unwrap_or("-"),
+                    rule_id = log_tag(log, "id").unwrap_or("-"),
+                    msg = truncated(log_msg(log), MAX_LOGGED_MSG),
                     "modsecurity disruptive intervention"
+                );
+                debug!(
+                    tx_id,
+                    request_id = rid,
+                    phase,
+                    log,
+                    "modsecurity intervention log"
                 );
             }
         }
@@ -829,6 +1035,97 @@ mod tests {
         }
         let engine = with_rules.expect("directives + one rule file loads");
         assert!(engine.rule_count() >= 1, "{}", engine.rule_count());
+    }
+
+    fn mode_of(directives: &str) -> (EngineMode, usize) {
+        let dir = std::env::temp_dir().join(format!(
+            "modsec-engine-mode-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let engine_conf = dir.join("engine.conf");
+        let rule = dir.join("rule.conf");
+        std::fs::write(&engine_conf, directives).expect("write");
+        std::fs::write(
+            &rule,
+            "SecRule REQUEST_URI \"@contains /admin\" \"id:1,phase:1,deny,status:403\"\n",
+        )
+        .expect("write");
+        let engine = Engine::load_files(&[engine_conf, rule]).expect("load");
+        let _ = std::fs::remove_dir_all(&dir);
+        (engine.mode(), engine.rule_count())
+    }
+
+    #[test]
+    fn engine_mode_is_measured_at_load() {
+        let (on, on_rules) = mode_of("SecRuleEngine On\n");
+        let (detect, _) = mode_of("SecRuleEngine DetectionOnly\n");
+        let (off, _) = mode_of("SecRuleEngine Off\n");
+        let (unset, _) = mode_of("SecRequestBodyAccess On\n");
+        assert_eq!(on, EngineMode::On);
+        assert_eq!(detect, EngineMode::DetectionOnly);
+        assert_eq!(off, EngineMode::Off);
+        assert_eq!(
+            unset,
+            EngineMode::DetectionOnly,
+            "unset SecRuleEngine does not block"
+        );
+        assert_eq!(
+            on_rules, 1,
+            "the probe rules must not join the serving ruleset"
+        );
+    }
+
+    #[test]
+    fn detection_only_engine_does_not_block() {
+        let dir = std::env::temp_dir().join(format!("modsec-engine-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let conf = dir.join("detect.conf");
+        std::fs::write(&conf, "SecRuleEngine DetectionOnly\n").expect("write");
+        let engine = Engine::load_files(&[conf, testdata("phase1-deny-admin.conf")]).expect("load");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = engine.open_transaction(Some("detect")).expect("tx");
+        assert_eq!(get(&mut s, "/admin"), Decision::Allow);
+    }
+
+    #[test]
+    fn transaction_id_is_generated_not_the_request_id() {
+        let engine = Engine::load_files(&[testdata("phase1-deny-admin.conf")]).expect("load");
+        let a = engine.open_transaction(Some("same-client-id")).expect("tx");
+        let b = engine.open_transaction(Some("same-client-id")).expect("tx");
+        assert_eq!(a.request_id(), Some("same-client-id"));
+        assert_ne!(a.tx_id(), "same-client-id");
+        assert_ne!(a.tx_id(), b.tx_id(), "transaction ids are unique");
+        assert!(
+            a.tx_id().chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+            "{}",
+            a.tx_id()
+        );
+    }
+
+    #[test]
+    fn log_tags_are_extracted() {
+        let log = r#"ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Ge' with parameter `5' against variable `TX:BLOCKING_INBOUND_ANOMALY_SCORE' (Value: `5' ) [file "/crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf"] [line "222"] [id "949110"] [rev ""] [msg "Inbound Anomaly Score Exceeded (Total Score: 5)"] [data "secret=1' OR '1'='1"]"#;
+        assert_eq!(log_tag(log, "id"), Some("949110"));
+        assert_eq!(
+            log_tag(log, "msg"),
+            Some("Inbound Anomaly Score Exceeded (Total Score: 5)")
+        );
+        assert_eq!(log_tag(log, "missing"), None);
+        assert_eq!(
+            log_msg(log),
+            "Inbound Anomaly Score Exceeded (Total Score: 5)"
+        );
+        let no_msg = r#"ModSecurity: Access denied with code 403 (phase 1). Matched "Operator `Contains' with parameter `/admin' against variable `REQUEST_URI' (Value: `/admin?x=secret' ) [id "1"]"#;
+        assert_eq!(log_msg(no_msg), "-");
+        assert_eq!(
+            log_msg("Request body limit is marked to reject the request"),
+            "Request body limit is marked to reject the request"
+        );
+        assert_eq!(log_msg(""), "-");
+        assert_eq!(truncated("héllo", 2), "hé");
+        assert_eq!(truncated("ab", 5), "ab");
     }
 
     #[test]
@@ -1004,7 +1301,7 @@ mod tests {
             .expect("resp headers");
         assert_eq!(d, Decision::Allow);
         let mid = s
-            .append_response_body(b"secret: CONNEX-LEAK-MARKER\n")
+            .append_response_body(b"secret: TEST-LEAK-MARKER\n")
             .expect("append");
         let d = if mid.is_disruptive() {
             mid
@@ -1056,13 +1353,13 @@ mod tests {
         );
     }
 
-    /// Runs against a CRS checkout at `$CONNEX_CRS_DIR` (default `demo/.crs`,
+    /// Runs against a CRS checkout at `$MODSEC_CRS_DIR` (default `demo/.crs`,
     /// created by `demo/scripts/install-crs.sh`). Without CRS it skips, unless
-    /// `CONNEX_REQUIRE_CRS=1` (set in CI), where a missing CRS fails the test.
+    /// `MODSEC_REQUIRE_CRS=1` (set in CI), where a missing CRS fails the test.
     fn crs_engine() -> Option<Arc<Engine>> {
-        let required = std::env::var("CONNEX_REQUIRE_CRS").is_ok_and(|v| v == "1");
+        let required = std::env::var("MODSEC_REQUIRE_CRS").is_ok_and(|v| v == "1");
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let crs = std::env::var_os("CONNEX_CRS_DIR")
+        let crs = std::env::var_os("MODSEC_CRS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| root.join("demo/.crs"));
         let rules = crs.join("rules");
@@ -1075,7 +1372,7 @@ mod tests {
         let Some(setup) = setup.filter(|_| rules.is_dir()) else {
             assert!(
                 !required,
-                "CONNEX_REQUIRE_CRS=1 but no CRS rules/ + crs-setup.conf at {} \
+                "MODSEC_REQUIRE_CRS=1 but no CRS rules/ + crs-setup.conf at {} \
                  (run demo/scripts/install-crs.sh)",
                 crs.display()
             );

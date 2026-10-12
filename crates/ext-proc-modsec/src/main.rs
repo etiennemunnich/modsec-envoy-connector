@@ -13,11 +13,11 @@ use std::sync::Arc;
 use ext_proc_modsec::config::{Command, Config, USAGE};
 use ext_proc_modsec::metrics::ConnectorMetrics;
 use ext_proc_modsec::{logging, metrics_server, ModSecProcessor};
-use modsec_engine::Engine;
+use modsec_engine::{Engine, EngineMode};
 use tokio::net::TcpListener;
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -53,8 +53,17 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         rules = ?engine.rules_paths(),
         rule_count = engine.rule_count(),
+        engine_mode = engine.mode().as_str(),
         "ModSecurity engine ready"
     );
+    if engine.mode() != EngineMode::On {
+        warn!(
+            engine_mode = engine.mode().as_str(),
+            allow_detection_only = config.allow_detection_only,
+            "SecRuleEngine is not On: traffic is not blocked; /healthz stays 503 unless \
+             --allow-detection-only"
+        );
+    }
 
     let grpc_listener = TcpListener::bind(config.listen)
         .await
@@ -70,6 +79,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         metrics_listener,
         processor.clone(),
         grpc_addr,
+        config.allow_detection_only,
     ));
 
     info!(
@@ -78,12 +88,21 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         body_reply = config.body_reply.as_str(),
         max_grpc_message_bytes = config.limits.max_grpc_message_bytes,
         max_held_body_bytes = config.limits.max_held_body_bytes,
+        stream_idle_timeout_s = config.limits.stream_idle_timeout.as_secs_f64(),
+        duplex_idle_timeout_s = config.limits.duplex_idle_timeout.as_secs_f64(),
+        duplex_total_timeout_s = config.limits.duplex_total_timeout.as_secs_f64(),
+        max_concurrent_streams = config.server.max_concurrent_streams,
+        http2_keepalive_interval_s = config.server.http2_keepalive_interval.as_secs_f64(),
+        http2_keepalive_timeout_s = config.server.http2_keepalive_timeout.as_secs_f64(),
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"
     );
     // Single service, no router: the generated server answers UNIMPLEMENTED
     // for any other gRPC path. TcpIncoming::from leaves TCP_NODELAY unset
     // (tonic only applies its default in bind/serve(addr)).
     Server::builder()
+        .max_concurrent_streams(Some(config.server.max_concurrent_streams))
+        .http2_keepalive_interval(Some(config.server.http2_keepalive_interval))
+        .http2_keepalive_timeout(Some(config.server.http2_keepalive_timeout))
         .serve_with_incoming_shutdown(
             processor.into_server(),
             TcpIncoming::from(grpc_listener).with_nodelay(Some(true)),

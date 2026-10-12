@@ -20,7 +20,7 @@
 #   to demo/envoy/envoy-grpc.yaml and started demo/grpc-echo on :18090.
 #   ./demo/scripts/hop-trace.sh --proto grpc --expect-grpc-ok yes --expect-origin yes
 #   ./demo/scripts/hop-trace.sh --proto grpc --expect-grpc-ok no --expect-origin no \
-#       --grpc-header 'x-connex-grpc-probe: deny'
+#       --grpc-header 'x-demo-grpc-probe: deny'
 #
 # Report: demo/.run/hop-trace/<request-id>.txt
 set -euo pipefail

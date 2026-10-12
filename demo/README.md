@@ -51,7 +51,8 @@ curl -s http://127.0.0.1:18082/metrics | grep ext_proc_                      # c
 | [`partial-honesty.sh`](./scripts/partial-honesty.sh) | **BUFFERED_PARTIAL only.** 1 MiB prefix honesty under CRS: in-prefix SQLi **403**; trailing SQLi past 1 MiB **200** (miss); benign oversize **200**. Floor = 3. Not a full-CRS claim. |
 | [`buffered-oversize.sh`](./scripts/buffered-oversize.sh) | **BUFFERED only.** ModSec `SecRequestBodyLimitAction Reject` (1 KiB overlay) + Envoy 1 KiB listener buffer → **413**. Floor = 4. |
 | [`connect-assert.sh`](./scripts/connect-assert.sh) | CONNECT → **403** fast, origin untouched, ExtProcPerRoute `disabled: true` locked in YAML. |
-| [`trailers.sh`](./scripts/trailers.sh) | Trailer safety with temporary trailer `SEND` Envoy config (`enable_trailers` for HTTP/1): allow+trailers **200** (trailer attack uninspected), body SQLi+trailers **403** origin +0, benign+trailers **200** (no spurious 500), live trailers_continue log, plus gRPC trailers-alone **500**. Floor ≥ 5. Restores default `SKIP` Envoy. |
+| [`trailers.sh`](./scripts/trailers.sh) | Trailer safety with temporary trailer `SEND` Envoy config (`enable_trailers` for HTTP/1): allow+trailers **200** (trailer attack uninspected), body SQLi+trailers **403** origin +0, benign+trailers **200** (no spurious 500), live trailers_continue log, plus gRPC trailers-alone **500**. Floor ≥ 5. Restores the stock Envoy config. |
+| [`h2-trailers.sh`](./scripts/h2-trailers.sh) | HTTP/2 (h2c, `scripts/h2c.py`) requests whose body ends with trailers through the stock config: SQLi body + trailers and SQLi query with HEADERS → trailers (no DATA) **403**, origin +0; benign body + trailers and benign trailers-only **200**, origin +1. Floor ≥ 4 (3 under NONE). |
 | [`fail-closed.sh`](./scripts/fail-closed.sh) | Kills the connector (**500**), freezes it with SIGSTOP (**504** after 2s; **skipped** under `FULL_DUPLEX_STREAMED` — Envoy disables `message_timeout`), restarts it with broken rules (process exits, **500**), then restores (**200**). The origin must receive nothing during any failure. |
 | [`fail-modes.sh`](./scripts/fail-modes.sh) | The wider failure matrix over **HTTP/1.1 and HTTP/2**: connector kill, bad-rules boot, rule deny, hang, unwritable audit log, split `Cookie` headers, an attack only in the last chunk / DATA frames, and a negative control that temporarily sets `failure_mode_allow: true` to prove the checks can see fail-open. Every check asserts status and origin hits. `--proto h1\|h2`, `--class 1,4,5`. |
 | [`go-ftw.sh`](./scripts/go-ftw.sh) | Runs the OWASP CRS regression tests with [go-ftw](https://github.com/coreruleset/go-ftw) against the demo (HTTP/1.x, status codes only). `smoke` (demo tests + body-heavy CRS SQLi/XSS tests), `body`, or `full`. Results in `demo/.run/go-ftw/`. |
@@ -71,7 +72,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 
 | File | Role |
 |------|------|
-| [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, **BUFFERED** request and response bodies, trailers **SKIP**, `request_attributes` for real client IP / protocol, CONNECT answered locally. |
+| [`envoy/envoy.yaml`](./envoy/envoy.yaml) | Envoy listener :18080 with `ext_proc` → `modsec_ext_proc` cluster. `failure_mode_allow: false`, `message_timeout: 2s`, **BUFFERED** request and response bodies, trailers **SEND** (the connector ends a body that trailers follow at the trailers), `request_attributes` for real client IP / protocol, CONNECT answered locally. |
 | [`envoy/envoy-grpc.yaml`](./envoy/envoy-grpc.yaml) | HTTP/2 + headers-only (`NONE` bodies) → `grpc-echo` :18090. Used only by `hop-trace-grpc.sh`. Headers/path/metadata only; **not** protobuf CRS. |
 | [`envoy/envoy-ws-headers.yaml`](./envoy/envoy-ws-headers.yaml) | `upgrade_configs: websocket` + body `NONE` → `ws-echo` :18091. Handshake ModSec only. |
 | [`envoy/envoy-ws-buffered.yaml`](./envoy/envoy-ws-buffered.yaml) | Same upgrade + **BUFFERED** bodies (hang bound for `hop-trace-ws-frames.sh` only). |
@@ -84,7 +85,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 | [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml) / [`envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | Same body modes with trailer modes **SEND**, used only by `trailers.sh` (trailer values still not CRS-inspected). |
 | [`rules/engine.conf`](./rules/engine.conf) | ModSecurity engine directives (from v3.0.16 `modsecurity.conf-recommended`, engine On, response body inspection On). |
 | [`rules/engine-oversize-overlay.conf`](./rules/engine-oversize-overlay.conf) | Suite-only 1 KiB `SecRequestBodyLimit` + Reject (used by `buffered-oversize.sh`). |
-| [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `CONNEX-LEAK-MARKER`, to show the response path. |
+| [`rules/connex-demo.conf`](./rules/connex-demo.conf) | One demo rule that blocks responses containing `DEMO-LEAK-MARKER`, to show the response path. |
 | [`ftw/`](./ftw/) | go-ftw config, demo test cases, and `envoy-overrides.yaml` (measured Envoy platform differences, same pattern as CRS's own nginx overrides). |
 
 ## Ports
@@ -133,8 +134,10 @@ http_filters:
         response_header_mode: SEND
         request_body_mode: BUFFERED
         response_body_mode: BUFFERED
-        request_trailer_mode: SKIP
-        response_trailer_mode: SKIP
+        # SEND: Envoy ends a body that trailers follow only with the
+        # trailers; without them the connector fails closed.
+        request_trailer_mode: SEND
+        response_trailer_mode: SEND
       request_attributes: [source.address, source.port, destination.address, destination.port, request.protocol]
   - name: envoy.filters.http.router
     typed_config:
