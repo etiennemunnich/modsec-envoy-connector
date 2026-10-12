@@ -9,7 +9,8 @@ See the LICENSE file in the project root.
 
 proto/ vendors Protocol Buffers definitions, unmodified, and
 crates/ext-proc-modsec/src/pb/ is code generated from them:
-  - Envoy data-plane API (envoyproxy/envoy api/, v1.39.3) — Apache-2.0,
+  - Envoy data-plane API (envoyproxy/envoy api/, v1.39.1, commit
+    b579d07d3ad7ee11d32b105e91a5a39ad24718d7) — Apache-2.0,
     Copyright Envoy Project Authors
   - cncf/xds (xds/, udpa/) — Apache-2.0, Copyright CNCF xDS API Working Group
   - protoc-gen-validate (validate/) — Apache-2.0, Copyright Buf Technologies
