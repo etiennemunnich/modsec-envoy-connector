@@ -4,7 +4,9 @@ name: ci
 # tested by its pull request (or gh workflow run ci.yml --ref <branch>): branch
 # pushes do not run this workflow (no cursor/** push trigger).
 #   pin-check                          every run (pins, workflow rules, skip signal)
-#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked)
+#   rust-quality × {x86_64, aarch64}   fmt, clippy, test, build (--locked); CRS pin
+#                                      installed and CONNEX_REQUIRE_CRS=1, so the
+#                                      engine CRS test fails rather than skips
 #   msrv                               cargo check at the crates' rust-version
 #   supply-chain                       cargo-deny: RustSec advisories, licenses, bans, sources
 #   protos                             committed pb/ matches proto/ (protoc 25.3)
@@ -137,7 +139,14 @@ jobs:
       - name: cargo clippy -D warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: CRS pin for the engine CRS test (versions.lock.md CRS_TAG)
+        run: ./demo/scripts/install-crs.sh
+
       - name: cargo test
+        env:
+          # crs_allows_root_and_blocks_sqli_when_present fails instead of
+          # skipping when demo/.crs is missing (no vacuous pass).
+          CONNEX_REQUIRE_CRS: "1"
         run: cargo test --workspace --locked
 
       - name: cargo build -p ext-proc-modsec
