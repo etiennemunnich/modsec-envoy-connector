@@ -2,7 +2,7 @@
 
 Run the connector locally behind Envoy with libmodsecurity and the OWASP Core Rule Set, then watch it allow, block, and fail closed.
 
-Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
+Versions come from [`versions.lock.md`](../versions.lock.md): Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. How the pieces fit: [`docs/how-it-works.md`](../docs/how-it-works.md).
 
 ```text
 curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 ──C API──► libmodsecurity + CRS
@@ -103,7 +103,7 @@ Runtime files (logs, pid files, generated rules, ModSecurity audit log) go to `d
 
 ## Linux
 
-Envoy's apt repo is unmaintained; `install-envoy.sh` fetches the [release binary](https://github.com/envoyproxy/envoy/releases/tag/v1.39.3) instead:
+Envoy's apt repo is unmaintained; `install-envoy.sh` fetches the [release binary](https://github.com/envoyproxy/envoy/releases/tag/v1.39.4) instead:
 
 ```bash
 ./demo/scripts/install-envoy.sh && export PATH=$HOME/.local/bin:$PATH

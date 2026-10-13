@@ -1,6 +1,6 @@
 # Install / build
 
-How to get dependencies, build the connector, and run the Envoy demo. Pins live in [`versions.lock.md`](../../versions.lock.md): Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
+How to get dependencies, build the connector, and run the Envoy demo. Pins live in [`versions.lock.md`](../../versions.lock.md): Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 
 Quick path: [Getting started](./getting-started.md). Contributor gates: [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 

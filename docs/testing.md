@@ -54,7 +54,7 @@ go-ftw: `./demo/scripts/install-go-ftw.sh`. Results and transcripts land in `dem
 
 ## Measured results (2026-09-27)
 
-Current pins are Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. The table below is a local macOS (arm64) run from 2026-09-27 on Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, and go-ftw v2.6.0. Those counts are not a result for the current pins.
+Current pins are Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**. The table below is a local macOS (arm64) run from 2026-09-27 on Envoy v1.39.1, libmodsecurity v3.0.16, CRS v4.29.0, and go-ftw v2.6.0. Those counts are not a result for the current pins.
 
 Hosted Linux on both architectures from the same date: [Hosted CI](#measured-2026-09-27-private-repo-2-vcpu-runners).
 
@@ -128,7 +128,7 @@ Every live suite must also reach a floor of passing checks, not just exit 0: smo
 - **NONE** is Envoy's default BodySendMode: stock `BODY_MODE=NONE` / `envoy-none.yaml` + weekly `e2e-lab` `e2e-none` (headers smoke + fail-closed). Body CRS / go-ftw body suites are **n/a**; body attacks must reach origin.
 - **BUFFERED_PARTIAL** stays honesty-only (under-limit CRS + soft-limit miss). Never claim full CRS.
 - **FULL_DUPLEX_STREAMED** product suites match STREAMED; hang→504 is **N/A** (Envoy disables `message_timeout`). Do not fake hang tests. Full CRS via `crs-full` matrix.
-- **`BodySendMode.GRPC`** is `[#not-implemented-hide:]` on pinned Envoy v1.39.3 (committed proto generated from the v1.39.1 API closure) — out of scope (no YAML / CI / fake CRS).
+- **`BodySendMode.GRPC`** is `[#not-implemented-hide:]` on pinned Envoy v1.39.4 (committed proto generated from the v1.39.1 API closure) — out of scope (no YAML / CI / fake CRS).
 - **Trailers** values are not CRS-inspected. Product demo keeps trailer mode `SKIP`. With `SEND`, unfinished body is finalized when trailers mark EOS; trailers alone / no session → **500** (gRPC). Live: `demo/scripts/trailers.sh` (floor ≥ 5); gated in `e2e-pin` + `e2e-streamed` + `e2e-full-duplex`.
 - **Class 6:** with `SecAuditLog` pointing at an unwritable path, libmodsecurity v3.0.16 still loads the rules; the suite proves decisions are unchanged (attack **403**, origin untouched; benign **200**).
 - **HTTP/3 and WebSocket frames** are not CRS-inspected and not claimed as a WAF surface. Handshake hop-trace: `demo/scripts/hop-trace-ws.sh`. Frame bound suite: `demo/scripts/hop-trace-ws-frames.sh` (floor ≥ 6) — stock `upgrade_failed`; headers-only 101 + handshake ModSec; frames echo without CRS; fail-closed on handshake; BUFFERED+upgrade hang.

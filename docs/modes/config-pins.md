@@ -8,7 +8,7 @@ Source of truth: [`versions.lock.md`](../../versions.lock.md).
 
 | Axis | Pin (tip) | How it gets installed |
 |------|-----------|------------------------|
-| Envoy | **v1.39.3** | `./demo/scripts/install-envoy.sh` |
+| Envoy | **v1.39.4** | `./demo/scripts/install-envoy.sh` |
 | libmodsecurity | **v3.0.17** | `./demo/scripts/install-libmodsecurity.sh` |
 | OWASP CRS | **v4.30.0** | `./demo/scripts/install-crs.sh` → `demo/.crs` |
 
