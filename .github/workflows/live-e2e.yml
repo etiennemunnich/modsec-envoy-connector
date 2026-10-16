@@ -31,9 +31,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GO_FTW_VERSION: "2.6.0"
-
 jobs:
   e2e:
     name: e2e (${{ matrix.arch }}, ${{ inputs.body_mode }})
@@ -43,8 +40,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, runner: ubuntu-24.04, ftw_arch: amd64 }
-          - { arch: aarch64, runner: ubuntu-24.04-arm, ftw_arch: arm64 }
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -101,7 +98,6 @@ jobs:
         env:
           ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
           ENVOY_BIN_DIR: ${{ runner.temp }}/envoy-bin
-          FTW_ARCH: ${{ matrix.ftw_arch }}
           SUITES: ${{ inputs.suites }}
         run: |
           set -euo pipefail
@@ -109,15 +105,9 @@ jobs:
           PATH="${ENVOY_BIN_DIR}:${PATH}" ./demo/scripts/install-envoy.sh
           echo "${ENVOY_BIN_DIR}" >> "$GITHUB_PATH"
           if [[ "${SUITES}" == *go-ftw* ]]; then
-            dir="${RUNNER_TEMP}/go-ftw" base="https://github.com/coreruleset/go-ftw/releases/download/v${GO_FTW_VERSION}"
-            asset="ftw_${GO_FTW_VERSION}_linux_${FTW_ARCH}.tar.gz"
-            mkdir -p "$dir" && cd "$dir"
-            curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-delay 2 \
-              -O "${base}/${asset}" -O "${base}/ftw-checksums.txt"
-            grep " ${asset}\$" ftw-checksums.txt | sha256sum -c -
-            tar xzf "${asset}" ftw
-            ./ftw -v
-            echo "$dir" >> "$GITHUB_PATH"
+            # GO_FTW_PIN from versions.lock.md; checksum-verified release tarball.
+            PREFIX="${RUNNER_TEMP}/go-ftw" ./demo/scripts/install-go-ftw.sh
+            echo "${RUNNER_TEMP}/go-ftw/bin" >> "$GITHUB_PATH"
           fi
 
       - name: Live suites (${{ inputs.suites }}, ${{ inputs.body_mode }})

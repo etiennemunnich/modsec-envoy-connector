@@ -9,8 +9,10 @@ name: ash
 # the existing tree already exits 2. Set that field to true to enforce.
 #
 # Triggers: PRs that touch security-relevant paths (workflows, ASH config, Rust,
-# scripts, deps, demo/compose), weekly on main tip (full tree, including docs for
-# detect-secrets), and dispatch. Not every main push and not docs-only PRs.
+# scripts, demo, tools, packaging, deps), weekly on main tip (full tree,
+# including docs for detect-secrets), and dispatch. Not every main push and not
+# docs-only PRs. On main, a failed scan files the issue "ash: failing" (closed
+# when green); PR runs report on the PR only.
 
 on:
   pull_request:
@@ -20,9 +22,9 @@ on:
       - "crates/**"
       - "scripts/**"
       - "demo/**"
-      - "compose/**"
       - "proto/**"
-      - "boe/**"
+      - "tools/**"
+      - "packaging/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -71,3 +73,23 @@ jobs:
           path: .ash/ash_output
           include-hidden-files: true
           if-no-files-found: error
+
+  report:
+    name: report
+    needs: scan
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: File or close the failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/ci-report.sh --mode on-failure --title "ash: failing"

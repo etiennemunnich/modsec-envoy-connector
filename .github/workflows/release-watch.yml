@@ -3,7 +3,9 @@ name: release-watch
 # Daily: look for stable Envoy v1.x / libmodsecurity v3.0.x / CRS v4.x
 # releases newer than versions.lock.md (filtered from the releases list, not
 # releases/latest). Each new tag gets a tracking issue and a stable-candidate
-# run on both architectures. Idempotent: the issue title is the dedupe key.
+# run on both architectures. A tag is skipped once its issue records a
+# result (a pass, or three failures); tracking state is created only after
+# the dispatch succeeded (scripts/release-watch.sh).
 # A failing watch files the issue "release-watch: failing" (closed when green).
 
 on:
@@ -32,7 +34,7 @@ permissions:
 jobs:
   watch:
     name: watch
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -61,12 +63,11 @@ jobs:
         run: ./scripts/release-watch.sh
 
   # A failed scheduled run would otherwise only email the cron's last editor.
-  # ubuntu-slim: short script; avoid a full ubuntu-24.04 minute for report-only.
   report:
     name: report
     needs: watch
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

@@ -8,10 +8,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
+# Throwaway repos below must not pick up the user's signing, hooks or fsmonitor.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 fails=0
+passes=0
+# Deleting a block of tests must fail too, not only a failing test.
+MIN_CHECKS=180
 check() { # check <name> <want> <got>
-  if [[ "$2" == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: want '$2', got '$3'"; fails=$((fails + 1)); fi
+  if [[ "$2" == "$3" ]]; then echo "ok   $1"; passes=$((passes + 1)); else echo "FAIL $1: want '$2', got '$3'"; fails=$((fails + 1)); fi
 }
 
 # --- ci-report.sh verdicts -------------------------------------------------
@@ -47,18 +52,62 @@ cp "${ROOT}/scripts/ci-changes.sh" "${repo}/scripts/"
   echo a >README.md && echo a >docs/x.md && echo a >src/lib.rs && echo a >versions.lock.md
   git add -A && git commit -qm base
 )
-docs_only() { # docs_only <files to touch...>
-  local base f
+# base_runs <sha> <conclusion> [repo] [path] -> fixture of ci runs for the base commit
+base_runs() {
+  local f="${TMP}/base-runs-${RANDOM}.json"
+  printf '{"workflow_runs":[{"html_url":"https://x/base","head_sha":"%s","conclusion":"%s","path":"%s","head_repository":{"full_name":"%s"}}]}' \
+    "$1" "$2" "${4:-.github/workflows/ci.yml}" "${3:-o/r}" >"${f}"
+  echo "${f}"
+}
+docs_only() { # docs_only <base runs: proven|unproven|fork|other-workflow|none> <files to touch...>
+  local base f proof="$1" runs
+  shift
   base="$(git -C "${repo}" rev-parse HEAD)"
   for f in "$@"; do echo "$RANDOM" >>"${repo}/${f}"; done
   git -C "${repo}" commit -qam change
-  BASE="${base}" HEAD="$(git -C "${repo}" rev-parse HEAD)" "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1
+  case "${proof}" in
+    proven) runs="$(base_runs "${base}" success)" ;;
+    unproven) runs="$(base_runs "${base}" failure)" ;;
+    fork) runs="$(base_runs "${base}" success someone/fork)" ;;
+    other-workflow) runs="$(base_runs "${base}" success o/r .github/workflows/other.yml)" ;;
+    none) printf '{"workflow_runs":[]}' >"${TMP}/none.json"; runs="${TMP}/none.json" ;;
+  esac
+  GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r CI_BASE_RUNS_JSON="${runs}" BASE="${base}" HEAD="$(git -C "${repo}" rev-parse HEAD)" \
+    "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1
 }
-check "ci-changes: docs/ + README"        docs_only=true "$(docs_only docs/x.md README.md)"
-check "ci-changes: code"                  docs_only=false "$(docs_only src/lib.rs)"
-check "ci-changes: versions.lock.md"      docs_only=false "$(docs_only versions.lock.md docs/x.md)"
-check "ci-changes: no base"               docs_only=false "$(BASE='' "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
-check "ci-changes: all-zero base"         docs_only=false "$(BASE=0000000000000000000000000000000000000000 "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
+check "ci-changes: docs/ + README, proven base"   docs_only=true "$(docs_only proven docs/x.md README.md)"
+check "ci-changes: docs, base failed ci"          docs_only=false "$(docs_only unproven docs/x.md)"
+check "ci-changes: docs, base never ran ci"       docs_only=false "$(docs_only none docs/x.md)"
+check "ci-changes: docs, base proven by a fork"   docs_only=false "$(docs_only fork docs/x.md)"
+check "ci-changes: docs, base proven elsewhere"   docs_only=false "$(docs_only other-workflow docs/x.md)"
+check "ci-changes: code"                          docs_only=false "$(docs_only proven src/lib.rs)"
+check "ci-changes: versions.lock.md"              docs_only=false "$(docs_only proven versions.lock.md docs/x.md)"
+check "ci-changes: no base"                       docs_only=false "$(GITHUB_OUTPUT='' BASE='' "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
+check "ci-changes: all-zero base"                 docs_only=false "$(GITHUB_OUTPUT='' BASE=0000000000000000000000000000000000000000 "${repo}/scripts/ci-changes.sh" | tail -1 | cut -d' ' -f1)"
+
+# --- ci-skip-tokens.sh: the PR title, body and every commit message ----------
+skip_repo="${TMP}/skip-repo"
+git init -q "${skip_repo}" && git -C "${skip_repo}" config user.email t@t && git -C "${skip_repo}" config user.name t
+git -C "${skip_repo}" commit -q --allow-empty -m base
+skip_base="$(git -C "${skip_repo}" rev-parse HEAD)"
+skip_tokens() { # skip_tokens <title> <body> <commit message...> -> exit code
+  local m
+  git -C "${skip_repo}" reset -q --hard "${skip_base}"
+  for m in "${@:3}"; do git -C "${skip_repo}" commit -q --allow-empty -m "${m}"; done
+  (cd "${skip_repo}" && PR_TITLE="$1" PR_BODY="$2" BASE="${skip_base}" HEAD="$(git rev-parse HEAD)" \
+    "${ROOT}/scripts/ci-skip-tokens.sh" >/dev/null 2>&1) && echo 0 || echo 1
+}
+check "skip-tokens: clean PR"                      0 "$(skip_tokens 'fix: x' 'body' 'fix: x' 'docs: y')"
+check "skip-tokens: no commits (neg)"              1 "$(skip_tokens 'fix: x' 'body')"
+check "skip-tokens: token in an older commit body" 1 "$(skip_tokens 'fix: x' 'body' $'docs: y\n\nnotes [skip ci]' 'fix: x')"
+check "skip-tokens: [ci skip] in the head subject" 1 "$(skip_tokens 'fix: x' 'body' 'fix: x [ci skip]')"
+check "skip-tokens: [no ci]"                       1 "$(skip_tokens 'fix: x' 'body' 'fix: x [no ci]')"
+check "skip-tokens: [skip actions] in the title"   1 "$(skip_tokens 'docs [skip actions]' 'body' 'docs: x')"
+check "skip-tokens: [actions skip] in the body"    1 "$(skip_tokens 'docs' $'line\n[actions skip]' 'docs: x')"
+check "skip-tokens: ***NO_CI***"                   1 "$(skip_tokens 'docs' 'body' 'docs: x ***NO_CI***')"
+check "skip-tokens: skip-checks trailer"           1 "$(skip_tokens 'docs' 'body' $'docs: x\n\nskip-checks: true')"
+check "skip-tokens: upper case"                    1 "$(skip_tokens 'docs [SKIP CI]' 'body' 'docs: x')"
+check "skip-tokens: prose about skipping is fine"  0 "$(skip_tokens 'docs: never skip ci' 'skip-checks are banned' 'docs: x')"
 
 # --- check-workflows.sh rejects each rule ---------------------------------
 wf() { # wf <yaml line> -> exit code of check-workflows.sh on a one-job workflow
@@ -66,7 +115,7 @@ wf() { # wf <yaml line> -> exit code of check-workflows.sh on a one-job workflow
   mkdir -p "${d}/.github/workflows" "${d}/.github/actions/x" "${d}/scripts"
   cp "${ROOT}/scripts/check-workflows.sh" "${d}/scripts/"
   echo 'runs: { using: composite, steps: [] }' >"${d}/.github/actions/x/action.yml"
-  printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n%s\n' "$1" >"${d}/.github/workflows/w.yml"
+  printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n%s\n' "$1" >"${d}/.github/workflows/w.yml"
   "${d}/scripts/check-workflows.sh" >/dev/null 2>&1 && echo 0 || echo 1
 }
 good='      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,6 +135,80 @@ check "check-workflows: checkout, last step"  1 "$(wf '      - uses: actions/che
         with:
           fetch-depth: 0')"
 
+# wf_file <file name> <workflow text> -> exit code of check-workflows.sh on that one workflow
+wf_file() {
+  local d="${TMP}/wff-${RANDOM}"
+  mkdir -p "${d}/.github/workflows" "${d}/.github/actions/x" "${d}/scripts"
+  cp "${ROOT}/scripts/check-workflows.sh" "${d}/scripts/"
+  echo 'runs: { using: composite, steps: [] }' >"${d}/.github/actions/x/action.yml"
+  printf '%s\n' "$2" >"${d}/.github/workflows/$1"
+  "${d}/scripts/check-workflows.sh" >/dev/null 2>&1 && echo 0 || echo 1
+}
+job() { # job <name> <runs-on> [extra job lines] -> one job with a timeout
+  printf '  %s:\n    runs-on: %s\n    timeout-minutes: 5\n%s    steps:\n      - run: true\n' "$1" "$2" "${3:-}"
+}
+check "check-workflows: plain job passes"               0 "$(wf_file w.yml "on: push
+jobs:
+$(job a ubuntu-24.04)")"
+check "check-workflows: no timeout-minutes"             1 "$(wf_file w.yml 'on: push
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: true')"
+check "check-workflows: macos runner"                   1 "$(wf_file w.yml "on: push
+jobs:
+$(job a macos-15)")"
+check "check-workflows: self-hosted runner"             1 "$(wf_file w.yml "on: push
+jobs:
+$(job a '[self-hosted, linux]')")"
+check "check-workflows: ubuntu-slim runner"             1 "$(wf_file w.yml "on: push
+jobs:
+$(job a ubuntu-slim)")"
+check "check-workflows: matrix runner allowed"          0 "$(wf_file w.yml "on: push
+jobs:
+$(job a '${{ matrix.runner }}' '    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+')")"
+check "check-workflows: matrix runner ubuntu-22.04"     1 "$(wf_file w.yml "on: push
+jobs:
+$(job a '${{ matrix.runner }}' '    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04 }
+')")"
+check "check-workflows: cancel-in-progress true"        1 "$(wf_file w.yml "on: push
+concurrency:
+  group: g
+  cancel-in-progress: true
+jobs:
+$(job a ubuntu-24.04)")"
+check "check-workflows: cancel only off main"           0 "$(wf_file w.yml "on: push
+concurrency:
+  group: g
+  cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}
+jobs:
+$(job a ubuntu-24.04)")"
+check "check-workflows: ci-ok needs every job"          0 "$(wf_file ci.yml "on: push
+jobs:
+$(job a ubuntu-24.04)
+$(job b ubuntu-24.04)
+$(job ci-ok ubuntu-24.04 '    needs: [a, b]
+')")"
+check "check-workflows: ci-ok misses a job"             1 "$(wf_file ci.yml "on: push
+jobs:
+$(job a ubuntu-24.04)
+$(job b ubuntu-24.04)
+$(job ci-ok ubuntu-24.04 '    needs: [a]
+')")"
+check "check-workflows: ci-ok without needs"            1 "$(wf_file ci.yml "on: push
+jobs:
+$(job a ubuntu-24.04)
+$(job ci-ok ubuntu-24.04)")"
+
 # Cron presence for product schedule workflows (skip when files absent — covered above).
 cron_neg() {
   local d="${TMP}/cron-neg" rc
@@ -99,6 +222,7 @@ on:
 jobs:
   j:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,6 +236,7 @@ on:
 jobs:
   j:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,71 +247,90 @@ YAML
 }
 check "check-workflows: stable-window missing schedule cron (neg)" 1 "$(cron_neg)"
 
-# --- ci-live-e2e smoke summary + floor (body_mode suffix regression) --------
-# Keep SUMMARY_RE / smoke floor rules in sync with scripts/ci-live-e2e.sh.
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS'
-smoke_floor() { # smoke_floor <log> -> 0/1 (mirrors ci-live-e2e.sh floor smoke)
-  local n
-  grep -qE '\bSMOKE PASSED\b' "$1" || { echo "missing SMOKE PASSED"; return 1; }
-  n="$(grep -Eo 'body_checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 5 ]] || { echo "body_checks=${n:-0} < 5"; return 1; }
-  return 0
+# --- ci-live-e2e floors: the real floor() and SUMMARY_RE from ci-floors.sh ---
+# floor_ok <body_mode> <suite> <log line...> -> 0 when the floor holds, 1 when not.
+floor_ok() {
+  local mode="$1" suite="$2" log="${TMP}/floor-${RANDOM}.log"
+  shift 2
+  printf '%s\n' "$@" >"${log}"
+  (
+    unset "${!MIN_@}"
+    BODY_MODE="${mode}"
+    # shellcheck source=ci-floors.sh
+    source "${ROOT}/scripts/ci-floors.sh"
+    floor "${suite}" "${log}" >/dev/null
+  ) && echo 0 || echo 1
 }
-trailers_floor() { # mirrors ci-live-e2e.sh floor trailers
-  local n
-  grep -qE '\bTRAILERS PASSED\b' "$1" || { echo "missing TRAILERS PASSED"; return 1; }
-  n="$(grep -Eo 'trailer_checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 5 ]] || { echo "trailer_checks=${n:-0} < 5"; return 1; }
-  return 0
+summary_hits() { # summary_hits <line> -> how many SUMMARY_RE matches
+  (
+    # shellcheck source=ci-floors.sh
+    source "${ROOT}/scripts/ci-floors.sh"
+    printf '%s\n' "$1" | grep -cE "${SUMMARY_RE}" || true
+  )
 }
-printf '%s\n' 'SMOKE PASSED body_mode=BUFFERED body_checks=6' >"${TMP}/smoke-ok.log"
-printf '%s\n' 'SMOKE PASSED body_mode=STREAMED body_checks=7' >"${TMP}/smoke-streamed.log"
-printf '%s\n' 'SMOKE FAILED body_mode=BUFFERED' >"${TMP}/smoke-failed.log"
-printf '%s\n' 'body_checks=99' >"${TMP}/smoke-fake.log" # floor number without PASSED
-printf '%s\n' 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=5' >"${TMP}/trailers-ok.log"
-printf '%s\n' 'TRAILERS FAILED body_mode=BUFFERED PASS=0' >"${TMP}/trailers-failed.log"
-printf '%s\n' 'trailer_checks=99' >"${TMP}/trailers-fake.log"
-check "e2e summary: PASSED with body_mode (BUFFERED)" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/smoke-ok.log")"
-check "e2e summary: PASSED with body_mode (STREAMED)" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/smoke-streamed.log")"
-check "e2e summary: TRAILERS PASSED matches SUMMARY_RE" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/trailers-ok.log")"
-check "e2e summary: old PASSED\$ misses body_mode suffix" 0 \
-  "$(grep -cE 'PASSED$' "${TMP}/smoke-ok.log" || true)"
-smoke_floor "${TMP}/smoke-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real SMOKE PASSED + body_checks passes" 0 "${ok}"
-smoke_floor "${TMP}/smoke-streamed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: STREAMED SMOKE PASSED passes" 0 "${ok}"
-smoke_floor "${TMP}/smoke-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: SMOKE FAILED fails (negative)" 1 "${ok}"
-smoke_floor "${TMP}/smoke-fake.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: fake body_checks without PASSED fails (negative)" 1 "${ok}"
-trailers_floor "${TMP}/trailers-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real TRAILERS PASSED passes" 0 "${ok}"
-trailers_floor "${TMP}/trailers-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: TRAILERS FAILED fails (negative)" 1 "${ok}"
-trailers_floor "${TMP}/trailers-fake.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: fake trailer_checks without PASSED fails (negative)" 1 "${ok}"
-
-grpc_floor() { # mirrors ci-live-e2e.sh floor hop-trace-grpc
-  local n
-  grep -qE '\bHOP-TRACE-GRPC PASSED\b' "$1" || { echo "missing HOP-TRACE-GRPC PASSED"; return 1; }
-  n="$(grep -Eo 'checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 6 ]] || { echo "checks=${n:-0} < 6"; return 1; }
-  return 0
-}
-printf '%s\n' 'HOP-TRACE-GRPC PASSED checks=13 (headers/path only — not protobuf CRS)' >"${TMP}/grpc-ok.log"
-printf '%s\n' 'HOP-TRACE-GRPC FAILED (9 passed)' >"${TMP}/grpc-failed.log"
-printf '%s\n' 'checks=99' >"${TMP}/grpc-fake.log"
-check "e2e summary: HOP-TRACE-GRPC PASSED matches SUMMARY_RE" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/grpc-ok.log")"
-grpc_floor "${TMP}/grpc-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real HOP-TRACE-GRPC PASSED passes" 0 "${ok}"
-grpc_floor "${TMP}/grpc-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: HOP-TRACE-GRPC FAILED fails (negative)" 1 "${ok}"
-grpc_floor "${TMP}/grpc-fake.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: fake checks without PASSED fails (negative)" 1 "${ok}"
+check "floor: smoke BUFFERED body_checks=6"            0 "$(floor_ok BUFFERED smoke 'SMOKE PASSED body_mode=BUFFERED body_checks=6')"
+check "floor: smoke STREAMED body_checks=7"            0 "$(floor_ok STREAMED smoke 'SMOKE PASSED body_mode=STREAMED body_checks=7')"
+check "floor: smoke NONE header_checks=5"              0 "$(floor_ok NONE smoke 'SMOKE PASSED body_mode=NONE body_checks=0 header_checks=5')"
+check "floor: smoke NONE header_checks=4 (neg)"        1 "$(floor_ok NONE smoke 'SMOKE PASSED body_mode=NONE body_checks=0 header_checks=4')"
+check "floor: smoke body_checks=4 (neg)"               1 "$(floor_ok BUFFERED smoke 'SMOKE PASSED body_mode=BUFFERED body_checks=4')"
+check "floor: smoke FAILED (neg)"                      1 "$(floor_ok BUFFERED smoke 'SMOKE FAILED body_mode=BUFFERED')"
+check "floor: smoke count without PASSED (neg)"        1 "$(floor_ok BUFFERED smoke 'body_checks=99')"
+check "floor: fail-closed 13"                          0 "$(floor_ok BUFFERED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=13 skipped=0')"
+check "floor: fail-closed 12 (neg)"                    1 "$(floor_ok BUFFERED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=12 skipped=0')"
+check "floor: fail-closed FULL_DUPLEX 11"              0 "$(floor_ok FULL_DUPLEX_STREAMED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=11 skipped=1')"
+check "floor: fail-closed FULL_DUPLEX 10 (neg)"        1 "$(floor_ok FULL_DUPLEX_STREAMED fail-closed 'FAIL-CLOSED DRILLS PASSED checks=10 skipped=1')"
+check "floor: fail-closed old line, no count (neg)"    1 "$(floor_ok BUFFERED fail-closed 'FAIL-CLOSED DRILLS PASSED')"
+check "floor: fail-closed count on another line (neg)" 1 "$(floor_ok BUFFERED fail-closed 'checks=99' 'FAIL-CLOSED DRILLS PASSED')"
+check "floor: fail-modes 59"                           0 "$(floor_ok BUFFERED fail-modes 'summary: PASS=59 FAIL=0 SKIP=0' 'FAIL-MODES PASSED')"
+check "floor: fail-modes 56 (neg)"                     1 "$(floor_ok BUFFERED fail-modes 'summary: PASS=56 FAIL=0 SKIP=0' 'FAIL-MODES PASSED')"
+check "floor: fail-modes FULL_DUPLEX 53 + 6 SKIP"      0 "$(floor_ok FULL_DUPLEX_STREAMED fail-modes 'summary: PASS=53 FAIL=0 SKIP=6' 'FAIL-MODES PASSED')"
+check "floor: fail-modes FULL_DUPLEX 50 (neg)"         1 "$(floor_ok FULL_DUPLEX_STREAMED fail-modes 'summary: PASS=50 FAIL=0 SKIP=6' 'FAIL-MODES PASSED')"
+check "floor: fail-modes without PASSED (neg)"         1 "$(floor_ok BUFFERED fail-modes 'summary: PASS=59 FAIL=1 SKIP=0' 'FAIL-MODES FAILED')"
+check "floor: h2-trailers 4"                         0 "$(floor_ok BUFFERED h2-trailers 'H2 TRAILERS PASSED body_mode=BUFFERED checks=4')"
+check "floor: h2-trailers 3 (neg)"                   1 "$(floor_ok STREAMED h2-trailers 'H2 TRAILERS PASSED body_mode=STREAMED checks=3')"
+check "floor: h2-trailers NONE 3"                    0 "$(floor_ok NONE h2-trailers 'H2 TRAILERS PASSED body_mode=NONE checks=3')"
+check "floor: h2-trailers NONE 2 (neg)"              1 "$(floor_ok NONE h2-trailers 'H2 TRAILERS PASSED body_mode=NONE checks=2')"
+check "floor: h2-trailers FAILED (neg)"              1 "$(floor_ok BUFFERED h2-trailers 'H2 TRAILERS FAILED body_mode=BUFFERED PASS=2')"
+check "floor: h2-trailers from an H1 trailers line (neg)" 1 "$(floor_ok BUFFERED h2-trailers 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=5')"
+check "floor: hop-trace OK 4"                          0 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE OK checks=4')"
+check "floor: hop-trace OK 3 (neg)"                    1 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE OK checks=3')"
+check "floor: hop-trace OK, no count (neg)"            1 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE OK')"
+check "floor: hop-trace FAILED (neg)"                  1 "$(floor_ok BUFFERED hop-trace 'HOP-TRACE FAILED')"
+check "floor: trailers 6"                              0 "$(floor_ok BUFFERED trailers 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=6 skipped=0')"
+check "floor: trailers 4 (neg)"                        1 "$(floor_ok BUFFERED trailers 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=4 skipped=1')"
+check "floor: trailers FAILED (neg)"                   1 "$(floor_ok BUFFERED trailers 'TRAILERS FAILED body_mode=BUFFERED PASS=0')"
+check "floor: trailers count without PASSED (neg)"     1 "$(floor_ok BUFFERED trailers 'trailer_checks=99')"
+check "floor: hop-trace-grpc 13"                       0 "$(floor_ok BUFFERED hop-trace-grpc 'HOP-TRACE-GRPC PASSED checks=13 (headers/path only — not protobuf CRS)')"
+check "floor: hop-trace-grpc FAILED (neg)"             1 "$(floor_ok BUFFERED hop-trace-grpc 'HOP-TRACE-GRPC FAILED (9 passed)')"
+check "floor: hop-trace-ws-frames 9"                   0 "$(floor_ok BUFFERED hop-trace-ws-frames 'HOP-TRACE-WS-FRAMES PASSED checks=9 (handshake ModSec yes; frame CRS no)')"
+check "floor: hop-trace-ws-frames 5 (neg)"             1 "$(floor_ok BUFFERED hop-trace-ws-frames 'HOP-TRACE-WS-FRAMES PASSED checks=5')"
+check "floor: partial-honesty 3"                       0 "$(floor_ok BUFFERED_PARTIAL partial-honesty 'PARTIAL-HONESTY PASSED body_mode=BUFFERED_PARTIAL checks=3 soft_limit_bytes=1048576')"
+check "floor: partial-honesty 2 (neg)"                 1 "$(floor_ok BUFFERED_PARTIAL partial-honesty 'PARTIAL-HONESTY PASSED body_mode=BUFFERED_PARTIAL checks=2')"
+check "floor: buffered-oversize 4"                     0 "$(floor_ok BUFFERED buffered-oversize 'BUFFERED-OVERSIZE PASSED body_mode=BUFFERED checks=4')"
+check "floor: buffered-oversize 3 (neg)"               1 "$(floor_ok BUFFERED buffered-oversize 'BUFFERED-OVERSIZE PASSED body_mode=BUFFERED checks=3')"
+check "floor: connect-assert 1"                        0 "$(floor_ok BUFFERED connect-assert 'CONNECT-ASSERT PASSED body_mode=BUFFERED checks=1')"
+check "floor: connect-assert 0 (neg)"                  1 "$(floor_ok BUFFERED connect-assert 'CONNECT-ASSERT PASSED body_mode=BUFFERED checks=0')"
+check "floor: go-ftw-smoke 8 + 118"                    0 "$(floor_ok BUFFERED go-ftw-smoke 'demo tests: success=8 failed=0' 'CRS body ids: success=118 failed=0')"
+check "floor: go-ftw-smoke body 99 (neg)"              1 "$(floor_ok BUFFERED go-ftw-smoke 'demo tests: success=8 failed=0' 'CRS body ids: success=99 failed=0')"
+check "floor: go-ftw-smoke no demo line (neg)"         1 "$(floor_ok BUFFERED go-ftw-smoke 'CRS body ids: success=118 failed=0')"
+check "floor: go-ftw-full 5231"                        0 "$(floor_ok BUFFERED go-ftw-full 'CRS full: success=5231 failed=0')"
+check "floor: go-ftw-full 4999 (neg)"                  1 "$(floor_ok BUFFERED go-ftw-full 'CRS full: success=4999 failed=0')"
+check "floor: unknown suite has no floor (neg)"        1 "$(floor_ok BUFFERED no-such-suite 'NO-SUCH PASSED checks=99')"
+check "summary: SMOKE PASSED with body_mode suffix"    1 "$(summary_hits 'SMOKE PASSED body_mode=BUFFERED body_checks=6')"
+check "summary: TRAILERS PASSED"                       1 "$(summary_hits 'TRAILERS PASSED body_mode=BUFFERED trailer_checks=6 skipped=0')"
+check "summary: H2 TRAILERS PASSED"                    1 "$(summary_hits 'H2 TRAILERS PASSED body_mode=STREAMED checks=4')"
+check "summary: HOP-TRACE-GRPC PASSED"                 1 "$(summary_hits 'HOP-TRACE-GRPC PASSED checks=13')"
+check "summary: PARTIAL-HONESTY PASSED"                1 "$(summary_hits 'PARTIAL-HONESTY PASSED checks=3')"
+check "summary: fail-modes summary line"               1 "$(summary_hits 'summary: PASS=59 FAIL=0 SKIP=0')"
+check "summary: plain PASS line is not a summary"      0 "$(summary_hits '  PASS [baseline] 200')"
+# ci-live-e2e.sh must use these floors, and refuse an empty suite list.
+grep -q 'source "${ROOT}/scripts/ci-floors.sh"' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
+check "e2e: ci-live-e2e.sh sources ci-floors.sh" 0 "${ok}"
+grep -qE '^floor\(\)' "${ROOT}/scripts/ci-live-e2e.sh" && ok=1 || ok=0
+check "e2e: no private floor() copy in ci-live-e2e.sh" 0 "${ok}"
+out="$(SUITES=' ' "${ROOT}/scripts/ci-live-e2e.sh" 2>&1 || true)"
+[[ "${out}" == *"SUITES is empty"* ]] && ok=0 || ok=1
+check "e2e: empty SUITES refused before anything starts" 0 "${ok}"
 
 # Thin presence hook for gRPC hop-trace artifacts (no live Envoy).
 [[ -x "${ROOT}/demo/scripts/hop-trace-grpc.sh" ]] && ok=0 || ok=1
@@ -195,8 +339,8 @@ check "demo: hop-trace-grpc.sh executable" 0 "${ok}"
 check "demo: envoy-grpc.yaml present" 0 "${ok}"
 [[ -f "${ROOT}/demo/grpc-echo/echo.proto" ]] && ok=0 || ok=1
 check "demo: grpc-echo proto present" 0 "${ok}"
-[[ -f "${ROOT}/demo/rules/connex-grpc-demo.conf" ]] && ok=0 || ok=1
-check "demo: connex-grpc-demo.conf present" 0 "${ok}"
+[[ -f "${ROOT}/demo/rules/demo-grpc.conf" ]] && ok=0 || ok=1
+check "demo: demo-grpc.conf present" 0 "${ok}"
 grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
 check "demo: envoy-grpc fail-closed" 0 "${ok}"
 grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-grpc.yaml" && ok=0 || ok=1
@@ -249,24 +393,8 @@ grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-ws-headers.yaml" && 
 check "demo: envoy-ws-headers bodies NONE" 0 "${ok}"
 grep -q 'request_body_mode: BUFFERED' "${ROOT}/demo/envoy/envoy-ws-buffered.yaml" && ok=0 || ok=1
 check "demo: envoy-ws-buffered hang config" 0 "${ok}"
-[[ -f "${ROOT}/demo/rules/connex-ws-demo.conf" ]] && ok=0 || ok=1
-check "demo: connex-ws-demo.conf present" 0 "${ok}"
-
-ws_floor() {
-  local n
-  grep -qE '\bHOP-TRACE-WS-FRAMES PASSED\b' "$1" || { echo "missing HOP-TRACE-WS-FRAMES PASSED"; return 1; }
-  n="$(grep -Eo 'checks=[0-9]+' "$1" | tail -1 | cut -d= -f2 || true)"
-  [[ "${n:-0}" -ge 6 ]] || { echo "checks=${n:-0} < 6"; return 1; }
-  return 0
-}
-printf '%s\n' 'HOP-TRACE-WS-FRAMES PASSED checks=9 (handshake ModSec yes; frame CRS no)' >"${TMP}/wsf-ok.log"
-printf '%s\n' 'HOP-TRACE-WS-FRAMES FAILED (8 passed)' >"${TMP}/wsf-failed.log"
-check "e2e summary: HOP-TRACE-WS-FRAMES PASSED matches SUMMARY_RE" 1 \
-  "$(grep -cE "${SUMMARY_RE}" "${TMP}/wsf-ok.log")"
-ws_floor "${TMP}/wsf-ok.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: real HOP-TRACE-WS-FRAMES PASSED passes" 0 "${ok}"
-ws_floor "${TMP}/wsf-failed.log" >/dev/null && ok=0 || ok=1
-check "e2e floor: HOP-TRACE-WS-FRAMES FAILED fails (negative)" 1 "${ok}"
+[[ -f "${ROOT}/demo/rules/demo-ws.conf" ]] && ok=0 || ok=1
+check "demo: demo-ws.conf present" 0 "${ok}"
 
 # --- one-year matrix policy + cartesian guard (offline) --------------------
 [[ -x "${ROOT}/scripts/one-year-matrix.sh" ]] && ok=0 || ok=1
@@ -291,8 +419,11 @@ check "one-year: unknown profile refused" 0 "${ok}"
 # --- go-ftw body staging + version-aware CRS body floor (offline) ----------
 grep -q 'stage_body_tests' "${ROOT}/demo/scripts/go-ftw.sh" && ok=0 || ok=1
 check "go-ftw: stages BODY_INCLUDE rule YAML for smoke/body" 0 "${ok}"
-grep -q 'MIN_FTW_BODY_PIN' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
+grep -q 'MIN_FTW_BODY_PIN' "${ROOT}/scripts/ci-floors.sh" && ok=0 || ok=1
 check "e2e: version-aware CRS body floor (MIN_FTW_BODY_PIN)" 0 "${ok}"
+if grep -q 'install-go-ftw.sh' "${ROOT}/.github/workflows/live-e2e.yml" \
+  && ! grep -qE 'GO_FTW_VERSION: *"' "${ROOT}/.github/workflows/live-e2e.yml"; then ok=0; else ok=1; fi
+check "go-ftw: CI installs with install-go-ftw.sh (GO_FTW_PIN), no second pin" 0 "${ok}"
 grep -q 'count_ftw_body_tests' "${ROOT}/scripts/ci-live-e2e.sh" && ok=0 || ok=1
 check "e2e: counts BODY_INCLUDE tests for older CRS floors" 0 "${ok}"
 grep -q 'ftw_body_floor_pin' "${ROOT}/versions.one-year.yaml" && ok=0 || ok=1
@@ -344,23 +475,107 @@ check "envoy checksum: old slash matcher still hits /tmp paths" \
   002c6e1c69ed0fa0ea381887247cadadfaec9481375fa8d8d2b1731eeabf40b8 \
   "$(old_envoy_checksum "${TMP}/sums-path.asc" envoy-1.39.1-linux-x86_64)"
 
-# --- ci-tested-tree.sh: a main push may skip only a tree a same-repo PR passed
+# --- ci-tested-tree.sh: a main push may skip only a merge tree a same-repo PR run passed
 T1=1111111111111111111111111111111111111111
 T2=2222222222222222222222222222222222222222
-cat >"${TMP}/runs.json" <<JSON
-{"workflow_runs":[
- {"html_url":"https://x/fork","head_repository":{"full_name":"someone/fork"},"head_commit":{"tree_id":"${T2}"}},
- {"html_url":"https://x/ours","head_repository":{"full_name":"o/r"},"head_commit":{"tree_id":"${T1}"}}]}
-JSON
-tested() { GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/runs.json" "$@" "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1; }
-check "tested-tree: same tree, same repo" tested=true "$(tested env TREE=${T1})"
-check "tested-tree: a fork's run does not count" tested=false "$(tested env TREE=${T2})"
-check "tested-tree: unknown tree" tested=false "$(tested env TREE=3333333333333333333333333333333333333333)"
-check "tested-tree: no tree id" tested=false "$(tested env TREE=)"
-check "tested-tree: not a tree id" tested=false "$(tested env TREE='x\" or 1')"
-check "tested-tree: a re-run runs everything" tested=false "$(tested env TREE=${T1} GITHUB_RUN_ATTEMPT=2)"
+runs_dir="${TMP}/runs"
+mkdir -p "${runs_dir}"
+run_json() { # run_json <id> <event> <conclusion> <repo> [path]
+  printf '{"html_url":"https://x/%s","event":"%s","conclusion":"%s","path":"%s","head_repository":{"full_name":"%s"}}' \
+    "$1" "$2" "$3" "${5:-.github/workflows/ci.yml}" "$4" >"${runs_dir}/$1.json"
+}
+run_json 11 pull_request success o/r
+run_json 12 pull_request success someone/fork
+run_json 13 pull_request failure o/r
+run_json 14 push success o/r
+run_json 15 pull_request success o/r .github/workflows/other.yml
+arts() { # arts <tree> <run id> [expired] -> artifact list fixture
+  local f="${TMP}/arts-${RANDOM}.json"
+  printf '{"artifacts":[{"name":"tested-tree-%s","expired":%s,"workflow_run":{"id":%s}}]}' "$1" "${3:-false}" "$2" >"${f}"
+  echo "${f}"
+}
+tested() { # tested <tree> <artifact fixture> [env...]
+  env GITHUB_OUTPUT='' GITHUB_REPOSITORY=o/r TREE="$1" CI_TESTED_ARTIFACTS_JSON="$2" CI_TESTED_RUNS_DIR="${runs_dir}" "${@:3}" \
+    "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1
+}
+check "tested-tree: merge tree passed on a same-repo PR"   tested=true "$(tested "${T1}" "$(arts "${T1}" 11)")"
+check "tested-tree: a fork's run does not count"            tested=false "$(tested "${T1}" "$(arts "${T1}" 12)")"
+check "tested-tree: a failed run does not count"            tested=false "$(tested "${T1}" "$(arts "${T1}" 13)")"
+check "tested-tree: a push run does not count"              tested=false "$(tested "${T1}" "$(arts "${T1}" 14)")"
+check "tested-tree: another workflow does not count"        tested=false "$(tested "${T1}" "$(arts "${T1}" 15)")"
+check "tested-tree: artifact for another tree"              tested=false "$(tested "${T1}" "$(arts "${T2}" 11)")"
+check "tested-tree: expired artifact"                       tested=false "$(tested "${T1}" "$(arts "${T1}" 11 true)")"
+check "tested-tree: run not readable"                       tested=false "$(tested "${T1}" "$(arts "${T1}" 99)")"
+check "tested-tree: no tree id"                             tested=false "$(tested '' "$(arts "${T1}" 11)")"
+check "tested-tree: not a tree id"                          tested=false "$(tested 'x\" or 1' "$(arts "${T1}" 11)")"
+check "tested-tree: a re-run runs everything"               tested=false "$(tested "${T1}" "$(arts "${T1}" 11)" GITHUB_RUN_ATTEMPT=2)"
 printf "not json" >"${TMP}/bad.json"
-check "tested-tree: unreadable list" tested=false "$(GITHUB_OUTPUT= GITHUB_REPOSITORY=o/r CI_TESTED_RUNS_JSON="${TMP}/bad.json" TREE=${T1} "${ROOT}/scripts/ci-tested-tree.sh" | cut -d" " -f1)"
+check "tested-tree: unreadable list"                        tested=false "$(tested "${T1}" "${TMP}/bad.json")"
+
+# --- release-gate.sh: the tag commit is on main and ci.yml is green for it ---
+GSHA=abcdefabcdefabcdefabcdefabcdefabcdefabcd
+mapfile -t gate_required < <(sed -n '/^REQUIRED=(/,/^)/p' "${ROOT}/scripts/release-gate.sh" | grep -o '"[^"]*"' | tr -d '"')
+gate_runs() { # gate_runs <suite id> <conclusion> [repo] [path]
+  local f="${TMP}/gate-runs-${RANDOM}.json"
+  printf '{"workflow_runs":[{"head_sha":"%s","conclusion":"%s","path":"%s","head_repository":{"full_name":"%s"},"check_suite_id":%s,"html_url":"https://x/run"}]}' \
+    "${GSHA}" "$2" "${4:-.github/workflows/ci.yml}" "${3:-o/r}" "$1" >"${f}"
+  echo "${f}"
+}
+gate_checks() { # gate_checks <suite id> <app slug> [name to drop] -> every required check green
+  local f="${TMP}/gate-checks-${RANDOM}.json" n first=1
+  { echo '{"check_runs":['
+    for n in "${gate_required[@]}"; do
+      [[ "${n}" != "${3:-}" ]] || continue
+      [[ "${first}" -eq 1 ]] || echo ','
+      first=0
+      printf '{"name":"%s","conclusion":"success","app":{"slug":"%s"},"check_suite":{"id":%s}}' "${n}" "$2" "$1"
+    done
+    echo ']}'
+  } >"${f}"
+  echo "${f}"
+}
+gate() { # gate <compare status> <runs fixture> <checks fixture> -> exit code
+  SHA="${GSHA}" GITHUB_REPOSITORY=o/r GATE_COMPARE_STATUS="$1" GATE_RUNS_JSON="$2" GATE_CHECKS_JSON="$3" \
+    "${ROOT}/scripts/release-gate.sh" >/dev/null 2>&1 && echo 0 || echo 1
+}
+check "release-gate: requires at least 13 checks" yes "$([[ ${#gate_required[@]} -ge 13 ]] && echo yes || echo no)"
+check "release-gate: on main, ci green"               0 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
+check "release-gate: ancestor of main"                0 "$(gate behind "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
+check "release-gate: not on main (neg)"               1 "$(gate ahead "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
+check "release-gate: ci run failed (neg)"             1 "$(gate identical "$(gate_runs 7 failure)" "$(gate_checks 7 github-actions)")"
+check "release-gate: ci run from a fork (neg)"        1 "$(gate identical "$(gate_runs 7 success someone/fork)" "$(gate_checks 7 github-actions)")"
+check "release-gate: another workflow (neg)"          1 "$(gate identical "$(gate_runs 7 success o/r .github/workflows/x.yml)" "$(gate_checks 7 github-actions)")"
+check "release-gate: checks from another app (neg)"   1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 some-app)")"
+check "release-gate: checks from another suite (neg)" 1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 8 github-actions)")"
+check "release-gate: one e2e check missing (neg)"     1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions 'e2e-full-duplex / e2e (aarch64, FULL_DUPLEX_STREAMED)')")"
+check "release-gate: ci-ok missing (neg)"             1 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions ci-ok)")"
+
+# --- release-version.sh: the tag equals v + every crate version -------------
+# relver <engine version> <connector version> <tag> -> 0 accepted, 1 refused
+relver() {
+  local root="${TMP}/relver-${RANDOM}"
+  mkdir -p "${root}/crates/modsec-engine" "${root}/crates/ext-proc-modsec"
+  printf '[package]\nname = "modsec-engine"\nversion = "%s"\n' "$1" >"${root}/crates/modsec-engine/Cargo.toml"
+  printf '[package]\nname = "ext-proc-modsec"\nversion = "%s"\n\n[dependencies]\nmodsec-engine = { version = "9.9.9" }\n' "$2" \
+    >"${root}/crates/ext-proc-modsec/Cargo.toml"
+  RELEASE_VERSION_ROOT="${root}" "${ROOT}/scripts/release-version.sh" "$3" >/dev/null 2>&1 && echo 0 || echo 1
+}
+check "release-version: pre-release tag = crate version"  0 "$(relver 0.1.0-alpha.2 0.1.0-alpha.2 v0.1.0-alpha.2)"
+check "release-version: final tag = crate version"        0 "$(relver 0.1.0 0.1.0 v0.1.0)"
+check "release-version: pre-release tag, crate X.Y.Z (neg)" 1 "$(relver 0.1.0 0.1.0 v0.1.0-alpha.2)"
+check "release-version: final tag, pre-release crate (neg)" 1 "$(relver 0.1.0-alpha.2 0.1.0-alpha.2 v0.1.0)"
+check "release-version: other pre-release (neg)"          1 "$(relver 0.1.0-alpha.1 0.1.0-alpha.1 v0.1.0-alpha.2)"
+check "release-version: one crate behind (neg)"           1 "$(relver 0.1.0-alpha.1 0.1.0-alpha.2 v0.1.0-alpha.2)"
+check "release-version: tag without v (neg)"              1 "$(relver 0.1.0 0.1.0 0.1.0)"
+check "release-version: not semver (neg)"                 1 "$(relver 0.1.0 0.1.0 v0.1)"
+empty_root="${TMP}/relver-empty"
+mkdir -p "${empty_root}/crates"
+RELEASE_VERSION_ROOT="${empty_root}" "${ROOT}/scripts/release-version.sh" v0.1.0 >/dev/null 2>&1 && ok=0 || ok=1
+check "release-version: no crates (neg)" 1 "${ok}"
+"${ROOT}/scripts/release-version.sh" >/dev/null 2>&1 && ok=0 || ok=1
+check "release-version: no tag (neg)" 1 "${ok}"
+grep -q 'release-version.sh "${GITHUB_REF_NAME}"' "${ROOT}/.github/workflows/release.yml" && ok=0 || ok=1
+check "release-version: gate job calls it" 0 "${ok}"
 
 # --- demo port remap (placeholders, not chained sed) -----------------------
 # shellcheck source=remap-demo-ports.sh
@@ -410,11 +625,12 @@ check "port remap: lib.sh DEMO_PORT_BASE=18081 admin 18090" \
 check "port remap: lib.sh DEMO_PORT_BASE=18081 origin 18099" \
   1 "$(port_count 18099 "${lib_cfg}")"
 rm -f "${lib_cfg}"
-for f in demo/scripts/lib.sh demo/scripts/trailers.sh scripts/body-modes-other-lab.sh; do
+for f in demo/scripts/lib.sh demo/scripts/trailers.sh; do
   grep -q 'remap_stock_ports' "${ROOT}/${f}" && ok=0 || ok=1
   check "port remap: ${f} calls remap_stock_ports" 0 "${ok}"
 done
 
 
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
-echo "test-ci-scripts OK"
+[[ "${passes}" -ge "${MIN_CHECKS}" ]] || { echo "test-ci-scripts: only ${passes} checks ran (floor ${MIN_CHECKS})" >&2; exit 1; }
+echo "test-ci-scripts OK: ${passes} checks"

@@ -10,16 +10,16 @@ Cross-links: [how-it-works.md](./how-it-works.md) · [testing.md](./testing.md) 
 
 | # | Class | Who enforces | Default | Client |
 |---|-------|--------------|---------|--------|
-| **1** | Connector process / gRPC stream fail | **Envoy** (`failure_mode_allow: false`) | Fail closed | **500** |
-| **2** | Rules / engine init at boot | **Connector**: refuse listen / exit; healthz not 200 | Refuse service | Envoy **500** |
+| **1** | Connector process / gRPC stream fail (incl. the connector aborting a stream it cannot read) | **Envoy** (`failure_mode_allow: false`) | Fail closed | **500** |
+| **2** | Rules / engine init at boot (incl. a ruleset with 0 rules) | **Connector**: refuse listen / exit; healthz not 200 | Refuse service | Envoy **500** |
 | **3** | Per-request ModSec / FFI `Err` | **Connector**: `ImmediateResponse` **500** | Fail closed | **500** |
 | **4** | Rule intervention (deny) | Connector maps intervention | Policy deny (not “failure”) | **403** typical |
-| **5** | Stall past `message_timeout` | **Envoy** `message_timeout` (lab **2s**) | Fail closed | **504** |
+| **5** | Stall past `message_timeout`; Envoy silent past the connector's stream deadlines | **Envoy** `message_timeout` (demo **2s**); **Connector** `--stream-idle-timeout`, FULL_DUPLEX `--duplex-idle-timeout` / `--duplex-total-timeout` | Fail closed | **504** (a hung connector under FULL_DUPLEX_STREAMED: no 504, [below](#full_duplex_streamed-and-a-hung-connector)) |
 | **6** | Audit / partial CRS write | Connector telemetry | Best-effort; do **not** open traffic | Unchanged from 1–5 |
 
 **Deny ≠ fail:** **403** means the WAF decided; **500** / **504** means the WAF could not decide.
 
-**Never:** `failure_mode_allow: true` on enforcement; Continue after engine error (“connector-lie fail-open”).
+**Never:** `failure_mode_allow: true` on enforcement; Continue after engine error (“connector-lie fail-open”); ending the gRPC stream with status **OK** while Envoy still waits for a verdict. Envoy v1.39 treats an OK close as "processing complete" and forwards what it holds, so an OK close is a Continue. v0.1.0-alpha.1 did exactly that when a message failed to decode (e.g. a body above tonic's 4 MiB limit), which let such a request reach origin uninspected. The connector now aborts with gRPC `INTERNAL` instead.
 
 ---
 
@@ -32,8 +32,11 @@ Envoy ext_proc (failure_mode_allow:false)
   Cannot see: “ModSec Err but connector said Continue”
 
 Rust connector
-  Owns: boot Rules, per-request msc_* Result→500, intervention→403
-  Must never: Continue after engine error
+  Owns: boot Rules, per-request msc_* Result→500, intervention→403,
+        unreadable / oversize message → INTERNAL (Envoy 500),
+        Envoy silent past the stream / duplex deadlines → 504,
+        /healthz 503 unless SecRuleEngine On
+  Must never: Continue after engine error, or end a stream OK before the verdict
 
 libmodsecurity (in-process FFI)
   Owns: SecLang eval + intervention
@@ -46,11 +49,17 @@ libmodsecurity (in-process FFI)
 | Class | Proven by | How |
 |-------|-----------|-----|
 | **1** connector killed | live drill, H1 + H2 | `fail-closed.sh`, `fail-modes.sh`: SIGKILL → Envoy **500** for GET, POST and attack requests; origin hit count unchanged; `failure_mode_allowed` stays 0 |
-| **2** bad rules at boot | live drill + unit test | invalid SecLang or a missing `Include` → connector exits non-zero, nothing listens, healthz down, Envoy **500**; `invalid_seclang_is_rejected`, `rules_are_required` |
+| **1** connector aborts the stream | gRPC tests | message above `--max-grpc-message-bytes` → gRPC `INTERNAL`, never OK (`oversize_message_aborts_stream_never_ok`, `oversize_message_never_ok_in_full_duplex`; negative control `raised_message_limit_inspects_large_body` → 403); Envoy half-close with a FULL_DUPLEX body held, or with a body phase still open → `INTERNAL` (`half_close_with_held_body_aborts_stream`, `open_body_phase_at_half_close_aborts`); a read error after the final verdict ends the stream OK, before it `INTERNAL` (`read_error_after_the_verdict_is_not_a_stream_error`); panic → stream reset (`panic_resets_stream_never_ok`); status-0 drop → `ABORTED` (`drop_intervention_aborts_stream`) |
+| **2** bad rules at boot | live drill + unit test | invalid SecLang or a missing `Include` → connector exits non-zero, nothing listens, healthz down, Envoy **500**; `invalid_seclang_is_rejected`, `rules_are_required`; empty or directives-only rules files (0 rules) are refused the same way (`zero_rule_rulesets_are_rejected`); rules that leave `SecRuleEngine` DetectionOnly / Off load, but `/healthz` stays **503** unless `--allow-detection-only` (`healthz_is_503_unless_the_engine_enforces`) |
 | **3** per-request engine error / protocol violation | gRPC integration tests only (see below) | Mid-exchange `EngineError` after the session is open (test-only fail-inject; phase-order Err; NUL in header) and protocol violations → `ImmediateResponse` **500**, details `modsec_fail_closed`. Floor ≥ **8** tests matching `fails_closed` / `fail_closed` in `crates/ext-proc-modsec/tests/grpc.rs`. Negative control: same request without inject Continues. |
 | **4** rule deny | live, H1 + H2 + tests | `smoke.sh` (BUFFERED + STREAMED), `fail-modes.sh`: SQLi/XSS (URL + body) → **403**, response-body rule → **403**, attack only in the last chunk / DATA frames → **403** |
-| **5** connector hung | live drill, H1 + H2 | SIGSTOP → Envoy **504** after `message_timeout` 2s; origin unchanged |
-| **6** audit | live drill, H1 + H2 | `SecAuditLog` on an unwritable path: libmodsecurity v3.0.16 still loads; attack **403** with origin untouched, benign **200** |
+| **5** connector hung | live drill, H1 + H2 | SIGSTOP → Envoy **504** after `message_timeout` 2s; origin unchanged. Reported as `SKIP` under FULL_DUPLEX_STREAMED |
+| **5** Envoy silent mid-exchange | gRPC tests | no message past `--stream-idle-timeout`, FULL_DUPLEX held body past `--duplex-idle-timeout`, stream past `--duplex-total-timeout` → `ImmediateResponse` **504** (`idle_and_duplex_deadlines_answer_504`) |
+| **6** audit | live drill, H1 + H2 | `SecAuditLog` on an unwritable path: the pinned libmodsecurity still loads; attack **403** with origin untouched, benign **200** |
+
+### FULL_DUPLEX_STREAMED and a hung connector
+
+Envoy does not apply `message_timeout` under FULL_DUPLEX_STREAMED, so a stalled connector gets no 504 from Envoy. The connector's own `--duplex-idle-timeout` / `--duplex-total-timeout` cannot fire either while the connector itself is frozen; they cover the other direction, Envoy going silent. The request waits until another Envoy timeout fires: the route `timeout`, or the connection manager's `request_timeout` / `stream_idle_timeout`. Set those explicitly on duplex routes ([deploy.md](./deploy.md#full_duplex_streamed-timeouts)). This repository does not test what the client receives in that case. The origin is not contacted while the connector holds the body, because the connector releases a body only after ModSecurity allowed it.
 
 ### Why class 3 has no live Envoy drill
 
@@ -64,6 +73,9 @@ So class 3 is proven **only** by gRPC integration tests that drive the same `Exc
 | Same request, inject not armed | Negative control | Continue |
 | Append after body finished / response body before response headers / duplicate response headers / NUL in header | Real `EngineError` from the façade (phase-order / `CString`) | **500** |
 | Body before headers, empty oneof, invalid `:status`, trailers with no session, … | Connector protocol guards → same `fail_closed` | **500** |
+| No `protocol_config` on the first message, an unsupported body mode (`GRPC`), or modes that disagree with `--body-reply` (`protocol_config_is_required_and_checked`) | Connector protocol guard → same `fail_closed` | **500** |
+| Response headers (status below 400) before the request body phase ran, i.e. a body that ended in trailers Envoy did not send (`response_before_the_request_body_phase_fails_closed`); a body message after its phase ended | Connector protocol guard → same `fail_closed` | **500** |
+| FULL_DUPLEX body above `--max-held-body-bytes` (`full_duplex_held_body_cap_fails_closed`) | Connector bound on held memory → same `fail_closed` | **500** |
 
 `fail-modes.sh` runs those gRPC tests as its class-3 step and asserts the floor. Do not invent a fake live “engine Err” drill through Envoy.
 
@@ -83,4 +95,4 @@ Envoy can reject a request itself before the request phase reaches ext_proc. For
 
 This relies on `request_header_mode: SEND`: Envoy never sends a request to the origin without first sending its headers to ext_proc, so a 2xx/3xx on a stream with no request cannot be trusted and stays fail-closed. gRPC tests: `envoy_local_reply_without_request_passes_through`, `response_without_request_below_400_fails_closed`, `local_reply_does_not_open_the_request_path`. Metric: `ext_proc_local_reply_passthrough_total`.
 
-Drop interventions (status 0) are mapped to a gRPC stream abort, which Envoy fails closed as **500**; an `ImmediateResponse` with status 0 would be sent by Envoy v1.39 as **200**. See [how-it-works.md](./how-it-works.md#decisions--what-the-client-sees).
+Drop interventions (status 0) are mapped to a gRPC stream abort, which Envoy fails closed as **500**; an `ImmediateResponse` with status 0 would be sent by Envoy v1.39 as **200**. See [how-it-works.md](./how-it-works.md#what-the-client-sees).

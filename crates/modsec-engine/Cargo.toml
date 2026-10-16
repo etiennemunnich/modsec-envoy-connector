@@ -1,10 +1,12 @@
 [package]
 name = "modsec-engine"
-version = "0.1.0"
+version = "0.1.0-alpha.2"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
 authors = ["Etienne Munnich"]
+repository = "https://github.com/etiennemunnich/modsec-envoy-connector"
+readme = "../../README.md"
 description = "Safe façade over libmodsecurity (v3.0.x) for the Envoy ext_proc connector: one transaction per HTTP exchange, request + response headers and bodies."
 publish = false
 # build.rs links the system libmodsecurity (>= 3.0.13) via the pkg-config tool.

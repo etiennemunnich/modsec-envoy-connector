@@ -6,7 +6,7 @@
 #   SUITES="smoke fail-closed fail-modes go-ftw-smoke" ./scripts/ci-live-e2e.sh
 #
 # Env:
-#   SUITES           any of: smoke fail-closed fail-modes trailers hop-trace
+#   SUITES           any of: smoke fail-closed fail-modes trailers h2-trailers hop-trace
 #                    hop-trace-grpc hop-trace-ws-frames go-ftw-smoke go-ftw-body go-ftw-full
 #                    partial-honesty (BUFFERED_PARTIAL only)
 #                    buffered-oversize (BUFFERED only) connect-assert
@@ -21,18 +21,19 @@
 #   E2E_REPORT       markdown report path (default demo/.run/e2e-report.md);
 #                    also appended to $GITHUB_STEP_SUMMARY when set
 #   EXPECT_ARCH      fail unless `uname -m` is this (CI passes the matrix arch)
-#   MIN_*            per-suite floors, see floor() below
+#   MIN_*            per-suite floors, see scripts/ci-floors.sh
 #
 # failure_mode_allow stays false in all Envoy configs.
 # A suite passes only if it exits 0 AND its summary reports at least the
-# floor of passing checks, so a suite that silently runs fewer checks (or a
-# go-ftw include that selects nothing) is a failure, not a green.
+# floor of passing checks (scripts/ci-floors.sh), so a suite that silently
+# runs fewer checks (or a go-ftw include that selects nothing) is a failure,
+# not a green. An empty suite list is an error.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO="${ROOT}/demo/scripts"
 pin() { grep -E "^$1=" "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2; }
 
-SUITES="${SUITES:-smoke fail-closed fail-modes go-ftw-smoke}"
+SUITES="${SUITES-smoke fail-closed fail-modes go-ftw-smoke}"
 export BODY_MODE="${BODY_MODE:-BUFFERED}"
 ENVOY_VERSION="${ENVOY_VERSION:-$(pin ENVOY_PIN)}"
 MODSECURITY_PIN="${MODSECURITY_PIN:-$(pin MODSECURITY_PIN)}"
@@ -41,6 +42,7 @@ export CRS_DIR="${CRS_DIR:-${ROOT}/demo/.crs-${CRS_TAG}}"
 REPORT="${E2E_REPORT:-${ROOT}/demo/.run/e2e-report.md}"
 
 die() { echo "ci-live-e2e: $*" >&2; exit 1; }
+[[ -n "${SUITES//[[:space:]]/}" ]] || die "SUITES is empty: nothing would be tested"
 
 arch="$(uname -m)"
 [[ -z "${EXPECT_ARCH:-}" || "${arch}" == "${EXPECT_ARCH}" ]] || die "running on ${arch}, want EXPECT_ARCH=${EXPECT_ARCH}"
@@ -82,7 +84,6 @@ fi
 # go-ftw-full (ProcessPartial ≠ full CRS). NONE never gets body go-ftw
 # (headers-only). FULL_DUPLEX hang→504 remains N/A (Envoy disables
 # message_timeout). Asymmetric modes stay lab cells (no go-ftw-full).
-# GRPC BodySendMode is [#not-implemented-hide:] on Envoy v1.39.1 — out of scope.
 if [[ "${BODY_MODE}" == "BUFFERED_PARTIAL" && "${SUITES}" == *go-ftw-full* ]]; then
   die "go-ftw-full is not allowed under BODY_MODE=BUFFERED_PARTIAL (prefix CRS dishonest)"
 fi
@@ -116,29 +117,8 @@ mkdir -p "$(dirname "${REPORT}")"
   echo "|-------|--------|---------|---------|"
 } >"${REPORT}"
 
-# Floors (measured 2026-09-27 at the pins: go-ftw demo 8, body ids 118, full
-# 5091; fail-modes 59). fail-modes is 57 when the engine refuses to boot with
-# an unwritable audit log (class 6 then records 3 checks per protocol, not 4).
-#
-# CRS body-id floor is version-aware: the pin bar stays MIN_FTW_BODY_PIN (100).
-# When the installed CRS tag genuinely ships fewer BODY_INCLUDE tests (e.g.
-# v4.19.0 has exactly 92), the floor drops to that available count so the
-# year-axis cell can go green without weakening the pin CRS bar. An empty
-# selection still fails (available < MIN_FTW_BODY_ABS). Explicit MIN_FTW_BODY
-# in the environment always wins.
-MIN_FAIL_MODES="${MIN_FAIL_MODES:-57}"
-MIN_FTW_DEMO="${MIN_FTW_DEMO:-8}"
-MIN_FTW_BODY_PIN="${MIN_FTW_BODY_PIN:-100}"
-MIN_FTW_BODY_ABS="${MIN_FTW_BODY_ABS:-50}"
-MIN_FTW_FULL="${MIN_FTW_FULL:-5000}"
-MIN_SMOKE_BODY="${MIN_SMOKE_BODY:-5}"
-MIN_SMOKE_HEADER="${MIN_SMOKE_HEADER:-5}"
-MIN_TRAILERS="${MIN_TRAILERS:-5}"
-MIN_GRPC_HOP="${MIN_GRPC_HOP:-6}"
-MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
-MIN_PARTIAL_HONESTY="${MIN_PARTIAL_HONESTY:-3}"
-MIN_BUFFERED_OVERSIZE="${MIN_BUFFERED_OVERSIZE:-4}"
-MIN_CONNECT_ASSERT="${MIN_CONNECT_ASSERT:-1}"
+# shellcheck source=ci-floors.sh
+source "${ROOT}/scripts/ci-floors.sh"
 
 # count_ftw_body_tests — how many tests match the default BODY_INCLUDE rule set.
 count_ftw_body_tests() {
@@ -164,86 +144,6 @@ if [[ -z "${MIN_FTW_BODY:-}" ]]; then
   fi
 fi
 
-# Suite summary lines for the report table. Must match mid-line suffixes
-# (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6") — not only EOL PASSED.
-# Shared with scripts/test-ci-scripts.sh (keep in sync).
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS|PARTIAL-HONESTY|BUFFERED-OVERSIZE|CONNECT-ASSERT'
-
-# ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
-ftw_success() {
-  local n
-  n="$(grep -E "^$2: +success=[0-9]+" "$1" | tail -1 | sed -E 's/.*success=([0-9]+).*/\1/' || true)"
-  echo "${n:-0}"
-}
-
-# floor <suite> <log> — prints a reason and returns 1 when the suite ran fewer checks than its floor.
-floor() {
-  local n
-  case "$1" in
-    smoke)
-      # Require an explicit SMOKE PASSED line (not just body_checks=N from a fake log).
-      grep -qE '\bSMOKE PASSED\b' "$2" || { echo "missing SMOKE PASSED"; return 1; }
-      if grep -qE 'header_checks=[0-9]+' "$2"; then
-        # NONE (headers-only): floor on header denials; body_checks may be 0.
-        n="$(grep -Eo 'header_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-        [[ "${n:-0}" -ge "${MIN_SMOKE_HEADER}" ]] || { echo "header_checks=${n:-0} < ${MIN_SMOKE_HEADER}"; return 1; }
-      else
-        n="$(grep -Eo 'body_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-        [[ "${n:-0}" -ge "${MIN_SMOKE_BODY}" ]] || { echo "body_checks=${n:-0} < ${MIN_SMOKE_BODY}"; return 1; }
-      fi
-      ;;
-    fail-modes)
-      n="$(grep -Eo 'summary: PASS=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_FAIL_MODES}" ]] || { echo "PASS=${n:-0} < ${MIN_FAIL_MODES}"; return 1; }
-      ;;
-    trailers)
-      grep -qE '\bTRAILERS PASSED\b' "$2" || { echo "missing TRAILERS PASSED"; return 1; }
-      n="$(grep -Eo 'trailer_checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_TRAILERS}" ]] || { echo "trailer_checks=${n:-0} < ${MIN_TRAILERS}"; return 1; }
-      ;;
-    hop-trace-grpc)
-      grep -qE '\bHOP-TRACE-GRPC PASSED\b' "$2" || { echo "missing HOP-TRACE-GRPC PASSED"; return 1; }
-      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_GRPC_HOP}" ]] || { echo "checks=${n:-0} < ${MIN_GRPC_HOP}"; return 1; }
-      ;;
-    hop-trace-ws-frames)
-      grep -qE '\bHOP-TRACE-WS-FRAMES PASSED\b' "$2" || { echo "missing HOP-TRACE-WS-FRAMES PASSED"; return 1; }
-      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_WS_FRAMES}" ]] || { echo "checks=${n:-0} < ${MIN_WS_FRAMES}"; return 1; }
-      ;;
-    partial-honesty)
-      grep -qE '\bPARTIAL-HONESTY PASSED\b' "$2" || { echo "missing PARTIAL-HONESTY PASSED"; return 1; }
-      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_PARTIAL_HONESTY}" ]] || { echo "checks=${n:-0} < ${MIN_PARTIAL_HONESTY}"; return 1; }
-      ;;
-    buffered-oversize)
-      grep -qE '\bBUFFERED-OVERSIZE PASSED\b' "$2" || { echo "missing BUFFERED-OVERSIZE PASSED"; return 1; }
-      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_BUFFERED_OVERSIZE}" ]] || { echo "checks=${n:-0} < ${MIN_BUFFERED_OVERSIZE}"; return 1; }
-      ;;
-    connect-assert)
-      grep -qE '\bCONNECT-ASSERT PASSED\b' "$2" || { echo "missing CONNECT-ASSERT PASSED"; return 1; }
-      n="$(grep -Eo 'checks=[0-9]+' "$2" | tail -1 | cut -d= -f2 || true)"
-      [[ "${n:-0}" -ge "${MIN_CONNECT_ASSERT}" ]] || { echo "checks=${n:-0} < ${MIN_CONNECT_ASSERT}"; return 1; }
-      ;;
-    go-ftw-smoke)
-      n="$(ftw_success "$2" 'demo tests')"
-      [[ "${n}" -ge "${MIN_FTW_DEMO}" ]] || { echo "demo tests success=${n} < ${MIN_FTW_DEMO}"; return 1; }
-      n="$(ftw_success "$2" 'CRS body ids')"
-      [[ "${n}" -ge "${MIN_FTW_BODY}" ]] || { echo "CRS body ids success=${n} < ${MIN_FTW_BODY}"; return 1; }
-      ;;
-    go-ftw-body)
-      n="$(ftw_success "$2" 'CRS body ids')"
-      [[ "${n}" -ge "${MIN_FTW_BODY}" ]] || { echo "CRS body ids success=${n} < ${MIN_FTW_BODY}"; return 1; }
-      ;;
-    go-ftw-full)
-      n="$(ftw_success "$2" 'CRS full')"
-      [[ "${n}" -ge "${MIN_FTW_FULL}" ]] || { echo "CRS full success=${n} < ${MIN_FTW_FULL}"; return 1; }
-      ;;
-  esac
-  return 0
-}
-
 rc=0
 record() {
   local name="$1" result="$2" secs="$3" summary="$4"
@@ -265,7 +165,7 @@ for suite in ${SUITES}; do
   echo "==> ${suite}"
   log="${ROOT}/demo/.run/e2e-${suite}.log"
   case "${suite}" in
-    smoke | fail-closed | fail-modes | trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
+    smoke | fail-closed | fail-modes | trailers | h2-trailers | partial-honesty | buffered-oversize | connect-assert) cmd=("${DEMO}/${suite}.sh") ;;
     hop-trace) cmd=("${DEMO}/hop-trace.sh" --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--') ;;
     hop-trace-grpc) cmd=("${DEMO}/hop-trace-grpc.sh") ;;
     hop-trace-ws-frames) cmd=("${DEMO}/hop-trace-ws-frames.sh") ;;

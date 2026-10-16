@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "ext-proc-modsec"
-version = "0.1.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "modsec-engine",
  "prost",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "modsec-engine"
-version = "0.1.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "tracing",
 ]

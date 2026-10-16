@@ -11,9 +11,11 @@ on:
     - cron: "41 3 7 * *"
   workflow_dispatch:
 
+# Runs on main (every schedule) get their own group, so they are never
+# cancelled; other refs keep one run each.
 concurrency:
-  group: crs-full
-  cancel-in-progress: true
+  group: ${{ github.ref == 'refs/heads/main' && format('crs-full-main-{0}', github.run_id) || format('crs-full-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -35,7 +37,7 @@ jobs:
     name: report
     needs: full
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

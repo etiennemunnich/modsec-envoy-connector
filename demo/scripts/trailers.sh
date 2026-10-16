@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Live trailer safety cells through Envoy → connector → origin.
 #
-# Default demo configs keep trailer modes SKIP (product default). This suite
-# temporarily restarts Envoy with request/response trailer mode SEND so Envoy
-# actually delivers trailers to the connector.
+# Every stock config with a body mode sends trailers (trailer mode SEND), so
+# the connector can end a body that trailers follow. For BUFFERED / STREAMED
+# this suite restarts Envoy with its own trailer SEND config; FULL_DUPLEX
+# reuses the stock one. HTTP/2 trailer cells live in h2-trailers.sh.
 #
 # Honest bounds:
 #   - Trailer *values* are NOT CRS-inspected (attack only in a trailer → 200).
@@ -13,7 +14,8 @@
 #     is still finalized → body SQLi still 403, origin untouched.
 #
 # Floors (empty suite cannot go green):
-#   MIN_TRAILER_CHECKS (default 5) proven cells must PASS.
+#   MIN_TRAILER_CHECKS (default 5) proven cells must PASS; SKIP cells and the
+#   floor check itself are not counted.
 #
 # Usage:
 #   ./demo/scripts/up.sh && ./demo/scripts/trailers.sh
@@ -26,6 +28,7 @@ source "$(dirname "$0")/lib.sh"
 
 FAIL=0
 PASS=0
+SKIP=0
 MIN_TRAILER_CHECKS="${MIN_TRAILER_CHECKS:-5}"
 OUT_DIR="${RUN}/trailers"
 mkdir -p "${OUT_DIR}"
@@ -34,6 +37,13 @@ exec > >(tee "${TRANSCRIPT}") 2>&1
 
 pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=1; }
+skip() { echo "  SKIP $*"; SKIP=$((SKIP + 1)); }
+# Prints nothing when /metrics does not answer; the caller treats that as a FAIL.
+fail_closed_total() {
+  local m
+  m="$(curl -s --max-time 5 "${METRICS}/metrics")" || return 0
+  awk '/^ext_proc_fail_closed_total /{print $2; exit}' <<<"${m}"
+}
 
 wait_http "${BASE}/" 50 || { echo "demo not up at ${BASE} — run ./demo/scripts/up.sh" >&2; exit 2; }
 
@@ -77,6 +87,7 @@ if ! wait_http "http://127.0.0.1:${ENVOY_ADMIN_PORT}/ready" 100; then
   exit 1
 fi
 trap 'restore_envoy || true' EXIT
+fc_before="$(fail_closed_total)"
 
 # h1_chunked_post_trailers <path> <body> <trailer-name> <trailer-value> → status
 # HTTP/1.1 chunked + trailers. Host: localhost avoids CRS 920350 (numeric IP)
@@ -157,7 +168,7 @@ echo "==> live trailers delivered to connector"
 if grep -q 'action="trailers_continue"' "${RUN}/connector.log"; then
   pass "[envoy→connector] request_trailers delivered (trailers_continue logged)"
 elif [[ "${BODY_MODE}" == "FULL_DUPLEX_STREAMED" ]]; then
-  pass "[envoy→connector] FULL_DUPLEX: no separate RequestTrailers (Envoy folds trailers into body EOS; body-deny cell above still 403)"
+  skip "[envoy→connector] FULL_DUPLEX: no separate RequestTrailers (Envoy folds trailers into body EOS; the body-deny cell above covers EOS)"
 else
   fail "[envoy→connector] no trailers_continue in connector.log — Envoy may not have sent trailers"
 fi
@@ -173,16 +184,21 @@ else
 fi
 
 echo "==> connector metrics after trailer cells"
-m="$(curl -s "${METRICS}/metrics")"
-echo "${m}" | grep -E '^ext_proc_(deny|fail_closed|allow)_total ' | sed 's/^/  /'
-fc="$(echo "${m}" | awk '/^ext_proc_fail_closed_total /{print $2}')"
-# fail_closed from the gRPC harness runs in-process against a separate listener;
-# live Envoy path must not have grown fail_closed from these cells alone.
-# We only assert live cells did not 500: checked via HTTP codes above.
+curl -s --max-time 5 "${METRICS}/metrics" | grep -E '^ext_proc_(deny|fail_closed|allow)_total ' | sed 's/^/  /'
+# The gRPC cell runs its own in-process server, so the live connector's
+# fail_closed counter must not move during the live cells.
+fc_after="$(fail_closed_total)"
+if [[ -n "${fc_before}" && "${fc_after}" == "${fc_before}" ]]; then
+  pass "[live connector] ext_proc_fail_closed_total unchanged (${fc_after})"
+else
+  fail "[live connector] ext_proc_fail_closed_total '${fc_before}' → '${fc_after}'"
+fi
 
-[[ "${PASS}" -ge "${MIN_TRAILER_CHECKS}" ]] \
-  && pass "[floor] trailer checks PASS=${PASS} (≥ ${MIN_TRAILER_CHECKS})" \
-  || fail "[floor] trailer checks PASS=${PASS} < ${MIN_TRAILER_CHECKS}"
+if [[ "${PASS}" -ge "${MIN_TRAILER_CHECKS}" ]]; then
+  echo "  floor: trailer checks PASS=${PASS} (≥ ${MIN_TRAILER_CHECKS}), SKIP=${SKIP}"
+else
+  fail "[floor] trailer checks PASS=${PASS} < ${MIN_TRAILER_CHECKS}"
+fi
 
 echo "==> restore default Envoy (${ENVOY_CFG})"
 # trap also restores; call explicitly so the summary runs after restore is attempted
@@ -193,4 +209,4 @@ if [[ "${FAIL}" -ne 0 ]]; then
   echo "TRAILERS FAILED body_mode=${BODY_MODE} PASS=${PASS}"
   exit 1
 fi
-echo "TRAILERS PASSED body_mode=${BODY_MODE} trailer_checks=${PASS}"
+echo "TRAILERS PASSED body_mode=${BODY_MODE} trailer_checks=${PASS} skipped=${SKIP}"

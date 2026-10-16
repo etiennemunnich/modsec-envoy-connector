@@ -3,8 +3,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/docs/modes/README.md
-    about: Install, body modes, fail-closed, testing, and architecture.
+    url: https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/README.md#docs
+    about: Getting started, running beside your own Envoy, body modes, fail-closed, troubleshooting.
   - name: Security problem (bypass, crash, fail-open)
     url: https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/SECURITY.md#reporting-a-vulnerability
     about: Report privately via Security Advisories or the maintainer — never in a public issue.

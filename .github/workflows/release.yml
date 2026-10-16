@@ -1,13 +1,18 @@
 name: release
 
-# Tag vX.Y.Z on main → gate (the tag commit is on main and ci is green for
-# it) → per-arch native release build (x86_64, aarch64) →
-# ext-proc-modsec-<ver>-linux-<arch>.tar.gz + .sha256 → per-arch image pushed
-# by digest (untagged) → multi-arch manifest ghcr.io/<owner>/<repo>:<ver> from
-# both digests → GitHub Release (a pre-release for vX.Y.Z-suffix tags).
+# Tag vX.Y.Z on main → gate (scripts/release-version.sh: the tag equals v +
+# every crate version, pre-release included; scripts/release-gate.sh: the tag
+# commit is on main, and a successful ci.yml run for that exact commit has
+# every required check green from GitHub Actions) → per-arch native release
+# build (x86_64, aarch64) → ext-proc-modsec-<ver>-linux-<arch>.tar.gz +
+# .sha256 (bin/ finds lib/libmodsecurity.so via RUNPATH $ORIGIN/../lib) →
+# per-arch image pushed by digest (untagged) → multi-arch manifest
+# ghcr.io/<owner>/<repo>:<ver> from both digests → GitHub Release (a
+# pre-release for vX.Y.Z-suffix tags).
 # Build provenance is attested when the repo is public.
-# workflow_dispatch is NOT a dry run for GHCR: it pushes the same images and
-# tags the manifest sha-<short>; it only skips the gate and the Release.
+# workflow_dispatch is a build-only dry run from any ref: it builds and tests
+# the tarballs and images and uploads the tarballs as run artifacts. It pushes
+# nothing to GHCR, tags nothing and creates no Release.
 
 on:
   push:
@@ -27,30 +32,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       checks: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag equals v + the crate version
+        if: github.ref_type == 'tag'
+        run: ./scripts/release-version.sh "${GITHUB_REF_NAME}"
       - name: Tag commit is on main and ci is green for it
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: ./scripts/release-gate.sh
+      - name: Dispatch is build-only
+        if: github.ref_type != 'tag'
         run: |
-          set -euo pipefail
-          # identical = main's tip, behind = an ancestor of main; ahead/diverged = not on main.
-          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" -q .status)"
-          case "${status}" in
-            identical | behind) echo "${GITHUB_REF_NAME} (${GITHUB_SHA::7}) is on main (${status})" ;;
-            *) echo "::error::tag ${GITHUB_REF_NAME} (${GITHUB_SHA::7}) is not on main (compare: ${status})"; exit 1 ;;
-          esac
-          got="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100" \
-            -q '.check_runs[] | select(.conclusion == "success") | .name')"
-          for n in "ci-ok" "pin-check" "rust-quality (x86_64)" "rust-quality (aarch64)" "msrv (rust-version)" \
-                   "e2e-pin / e2e (x86_64, BUFFERED)" "e2e-pin / e2e (aarch64, BUFFERED)" \
-                   "e2e-streamed / e2e (x86_64, STREAMED)" "e2e-streamed / e2e (aarch64, STREAMED)" \
-                   "e2e-full-duplex / e2e (x86_64, FULL_DUPLEX_STREAMED)" "e2e-full-duplex / e2e (aarch64, FULL_DUPLEX_STREAMED)"; do
-            grep -qxF "${n}" <<<"${got}" || { echo "::error::no green '${n}' check on ${GITHUB_SHA::7} (dispatch ci on it first)"; exit 1; }
-            echo "green: ${n}"
-          done
+          echo "workflow_dispatch on ${GITHUB_REF}: build and test only; nothing is pushed or released"
 
   build:
     name: build (${{ matrix.arch }})
@@ -77,9 +78,7 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             ver="${GITHUB_REF_NAME}"
-            [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::tag $ver is not vX.Y.Z"; exit 1; }
-            want="v$(grep -m1 '^version' crates/ext-proc-modsec/Cargo.toml | cut -d'"' -f2)"
-            [[ "${ver%%-*}" == "$want" ]] || { echo "::error::tag $ver != crate version $want"; exit 1; }
+            ./scripts/release-version.sh "$ver"
           else
             ver="sha-${GITHUB_SHA::7}"
           fi
@@ -95,7 +94,11 @@ jobs:
         with:
           pin: ${{ steps.meta.outputs.pin }}
 
+      # RUNPATH $ORIGIN/../lib: the tarball's bin/ loads lib/libmodsecurity.so
+      # without LD_LIBRARY_PATH, and so does the image (/usr/local/{bin,lib}).
       - name: cargo build --release
+        env:
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN/../lib
         run: cargo build --release --locked -p ext-proc-modsec
 
       - name: Package tarball
@@ -112,8 +115,18 @@ jobs:
           cp -P "${MODSECURITY_PREFIX:-$GITHUB_WORKSPACE/.local/modsecurity}"/lib/libmodsecurity.so* "${out}/lib/"
           cp LICENSE NOTICE versions.lock.md "${out}/"
           file "${out}/bin/ext-proc-modsec"
-          LD_LIBRARY_PATH="${out}/lib" ldd "${out}/bin/ext-proc-modsec"
-          LD_LIBRARY_PATH="${out}/lib" "${out}/bin/ext-proc-modsec" --version
+          rpath="$(readelf -d "${out}/bin/ext-proc-modsec" | grep -E '\((RUNPATH|RPATH)\)')" \
+            || { echo "::error::binary has no RUNPATH"; exit 1; }
+          echo "${rpath}"
+          # shellcheck disable=SC2016 # a literal $ORIGIN, expanded by ld.so
+          [[ "${rpath}" == *'[$ORIGIN/../lib]'* ]] || { echo "::error::binary RUNPATH is not \$ORIGIN/../lib"; exit 1; }
+          # The libmodsecurity action exports LD_LIBRARY_PATH; prove the tarball works without it.
+          env -u LD_LIBRARY_PATH ldd "${out}/bin/ext-proc-modsec" | tee "$RUNNER_TEMP/ldd.txt"
+          lib="$(awk '/libmodsecurity\.so/ && $2 == "=>" { print $3; exit }' "$RUNNER_TEMP/ldd.txt")"
+          [[ -n "${lib}" && "$(dirname "$(realpath "${lib}")")" == "$(realpath "${out}/lib")" ]] \
+            || { echo "::error::libmodsecurity resolves to '${lib}', not ${out}/lib"; exit 1; }
+          ! grep -q 'not found' "$RUNNER_TEMP/ldd.txt" || { echo "::error::unresolved libraries"; exit 1; }
+          env -u LD_LIBRARY_PATH "${out}/bin/ext-proc-modsec" --version
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" && cat "${name}.tar.gz.sha256")
           echo "dir=${out}" >> "$GITHUB_OUTPUT"
@@ -127,8 +140,22 @@ jobs:
             dist/${{ steps.pkg.outputs.name }}.tar.gz.sha256
           retention-days: 7
 
-      # Pushed by digest only: nothing is tagged until both arches passed (manifest job).
-      - name: Build, test and push ${{ matrix.platform }} image by digest
+      - name: Build and test the ${{ matrix.platform }} image
+        env:
+          VER: ${{ steps.meta.outputs.version }}
+          DIR: ${{ steps.pkg.outputs.dir }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          docker buildx create --name release --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 --use
+          docker buildx build --platform "$PLATFORM" -f packaging/Dockerfile \
+            --label org.opencontainers.image.version="$VER" --load -t local/ext-proc-modsec:test "$DIR"
+          docker run --rm local/ext-proc-modsec:test --version
+
+      # Tags only. Pushed by digest: nothing is tagged until both arches passed (manifest job).
+      - name: Push the ${{ matrix.platform }} image by digest
+        if: github.ref_type == 'tag'
         id: img
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -139,16 +166,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx create --name release --driver docker-container \
-            --driver-opt image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3 --use
           labels=(
             --label org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
             --label org.opencontainers.image.revision="$GITHUB_SHA"
             --label org.opencontainers.image.version="$VER"
             --label org.opencontainers.image.licenses=Apache-2.0
           )
-          docker buildx build --platform "$PLATFORM" -f packaging/Dockerfile "${labels[@]}" --load -t local/ext-proc-modsec:test "$DIR"
-          docker run --rm local/ext-proc-modsec:test --version
           docker buildx build --platform "$PLATFORM" -f packaging/Dockerfile "${labels[@]}" \
             --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file "$RUNNER_TEMP/meta.json" "$DIR"
@@ -157,7 +180,8 @@ jobs:
           echo "${IMAGE}@${digest}"
           mkdir -p "$RUNNER_TEMP/digests" && echo "$digest" > "$RUNNER_TEMP/digests/${{ matrix.arch }}"
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/${{ matrix.arch }}
@@ -165,6 +189,7 @@ jobs:
 
   manifest:
     name: multi-arch manifest
+    if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -186,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then ver="$GITHUB_REF_NAME"; else ver="sha-${GITHUB_SHA::7}"; fi
+          ver="$GITHUB_REF_NAME"
           x86="$(cat "$RUNNER_TEMP/digests/x86_64")" arm="$(cat "$RUNNER_TEMP/digests/aarch64")"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker buildx imagetools create -t "${image}:${ver}" "${image}@${x86}" "${image}@${arm}"
@@ -243,7 +268,7 @@ jobs:
             echo "$fence"
             echo
             echo "- Image (linux/amd64, linux/arm64): \`${image}\`"
-            echo "- Tarballs bundle \`bin/ext-proc-modsec\` and \`lib/libmodsecurity.so*\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. Run with \`LD_LIBRARY_PATH=<dir>/lib\`."
+            echo "- Tarballs bundle \`bin/ext-proc-modsec\` and \`lib/libmodsecurity.so*\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. The binary finds \`lib/\` through its RUNPATH (\`\$ORIGIN/../lib\`): keep \`bin/\` and \`lib/\` side by side; no \`LD_LIBRARY_PATH\` needed."
           } > notes.md
           pre=()
           [[ "$GITHUB_REF_NAME" != *-* ]] || pre=(--prerelease)

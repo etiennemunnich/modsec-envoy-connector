@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal WebSocket echo origin for connex frame-bound demos.
+"""Minimal WebSocket echo origin for the frame-bound demo.
 
 Stdlib only. Accepts one RFC6455 upgrade, echoes text/binary frames, records
 every accepted handshake (and optional post-upgrade frame count) to a hits file.

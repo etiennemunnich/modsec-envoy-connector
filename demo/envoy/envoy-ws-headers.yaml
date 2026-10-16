@@ -1,4 +1,4 @@
-# Demo Envoy for WebSocket handshake + post-upgrade frame bound (v1.39.1).
+# Demo Envoy for WebSocket handshake + post-upgrade frame bound.
 # Client → Envoy :18080 (upgrade_configs: websocket) → ext_proc → ws-echo :18091.
 #
 # Honest bound:

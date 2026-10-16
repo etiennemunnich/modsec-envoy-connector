@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # Start the local demo: origin :18098, connector :18081 (metrics :18082),
-# Envoy :18080 (admin :18089). Loads engine.conf + CRS + connex-demo.conf.
+# Envoy :18080 (admin :18089). Loads engine.conf + CRS + demo-response.conf.
 #
-#   DEMO_CRS=0 ./demo/scripts/up.sh   # skip CRS (demo rules only)
+#   ./demo/scripts/up.sh                       # BUFFERED (default)
+#   BODY_MODE=STREAMED ./demo/scripts/up.sh    # see demo/scripts/lib.sh for modes
+#   DEMO_CRS=0 ./demo/scripts/up.sh            # skip CRS (demo rules only)
+#   DEMO_PORT_BASE=18380 ./demo/scripts/up.sh  # every port moves by the same offset
 set -euo pipefail
+# A previous run's saved body mode applies to the suites, not to a fresh start.
+BODY_MODE="${BODY_MODE:-BUFFERED}"
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
-command -v envoy >/dev/null || { echo "envoy not on PATH — run demo/scripts/install-envoy.sh" >&2; exit 2; }
-pkg-config --exists modsecurity 2>/dev/null || { echo "libmodsecurity not found — run demo/scripts/install-libmodsecurity.sh" >&2; exit 2; }
+command -v envoy >/dev/null || { echo "envoy not on PATH — run demo/scripts/install-envoy.sh (Linux: put ~/.local/bin first on PATH)" >&2; exit 2; }
+pkg-config --exists modsecurity 2>/dev/null || { echo "libmodsecurity not found by pkg-config (PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}) — run demo/scripts/install-libmodsecurity.sh" >&2; exit 2; }
 
 "${DEMO}/scripts/down.sh" >/dev/null 2>&1 || true
 ports_free_or_die
@@ -37,7 +42,7 @@ echo "${BODY_MODE}" >"${RUN}/body_mode"
     echo "Include ${CRS_DIR}/crs-setup.conf"
     echo "Include ${CRS_DIR}/rules/*.conf"
   fi
-  echo "Include ${DEMO}/rules/connex-demo.conf"
+  echo "Include ${DEMO}/rules/demo-response.conf"
 } >"${RULES_FILE}"
 
 echo "==> cargo build -p ext-proc-modsec"

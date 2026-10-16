@@ -1,23 +1,37 @@
 #!/usr/bin/env bash
 # Shared settings + helpers for the demo scripts. Source, do not execute.
+# Variables set here are read by the scripts that source this file.
+# shellcheck disable=SC2034
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
 
+# libmodsecurity built by install-libmodsecurity.sh on Linux lives under
+# ~/.local (or MODSECURITY_PREFIX); put it on the pkg-config and loader paths
+# so cargo and the connector find it without manual exports.
+_modsec_prefix="${MODSECURITY_PREFIX:-${HOME}/.local}"
+if [[ -f "${_modsec_prefix}/lib/pkgconfig/modsecurity.pc" ]]; then
+  case ":${PKG_CONFIG_PATH:-}:" in *":${_modsec_prefix}/lib/pkgconfig:"*) ;; *)
+    export PKG_CONFIG_PATH="${_modsec_prefix}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}" ;;
+  esac
+  case ":${LD_LIBRARY_PATH:-}:" in *":${_modsec_prefix}/lib:"*) ;; *)
+    export LD_LIBRARY_PATH="${_modsec_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+  esac
+fi
+unset _modsec_prefix
+
 # BODY_MODE selects Envoy request/response body modes (Envoy BodySendMode):
 #   BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | NONE | FULL_DUPLEX_STREAMED
 #   REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED  (asymmetric labs)
 # `up.sh` writes demo/.run/body_mode so later scripts (smoke, fail-closed) match
-# the running Envoy without re-exporting BODY_MODE.
-# BUFFERED_PARTIAL is ProcessPartial-class: under-limit CRS can pass; over-limit
-# trailing body attacks may miss. Not a full-CRS fidelity mode.
-# NONE is headers-only: body CRS / go-ftw body suites are n/a (bypass expected).
+# the running Envoy without re-exporting BODY_MODE; `up.sh` itself starts
+# BUFFERED unless BODY_MODE is set.
+# BUFFERED_PARTIAL inspects only a body prefix: not full CRS.
+# NONE sends no bodies: body rules and go-ftw body suites do not apply.
 # FULL_DUPLEX_STREAMED requires connector --body-reply streamed (StreamedBodyResponse)
 # and trailer modes SEND; Envoy disables message_timeout under this mode.
-# Asymmetric modes keep request/response axes independent (matrix gap close).
-# GRPC BodySendMode (enum 5) is [#not-implemented-hide:] on Envoy v1.39.1 — not a selector.
 if [[ -z "${BODY_MODE:-}" && -f "${RUN}/body_mode" ]]; then
   BODY_MODE="$(tr -d '[:space:]' <"${RUN}/body_mode")"
 fi
