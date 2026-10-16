@@ -2,7 +2,7 @@
 
 Local PoC, install/build, product path, testing map, and every Envoy `BodySendMode` this connector ships (plus GRPC unimplemented). Mermaid renders on GitHub and in the Docsify Pages shell.
 
-Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
+Pins: Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 
 ## Start here
 
@@ -28,7 +28,7 @@ Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 | [STREAMED](./streamed.md) | Chunks as they arrive |
 | [BUFFERED_PARTIAL](./buffered-partial.md) | Prefix / soft-limit class |
 | [FULL_DUPLEX_STREAMED](./full-duplex-streamed.md) | Duplex stream + `StreamedBodyResponse` |
-| [GRPC](./grpc.md) | Enum value **unimplemented** on pinned Envoy v1.39.3 |
+| [GRPC](./grpc.md) | Enum value **unimplemented** on pinned Envoy v1.39.4 |
 
 ## Mode comparison
 
@@ -39,7 +39,7 @@ Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**.
 | **STREAMED** | Chunks as seen; reply per chunk | Early chunks may move before EOS phase-2 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-streamed.yaml` | `ci` → `e2e-streamed`; `crs-full` wired |
 | **BUFFERED_PARTIAL** | Buffer up to soft limit; over-limit may skip body | Under-limit like BUFFERED; trailing over-limit can miss | **Yes** when body messages arrive | **Under-limit only** | `envoy-buffered-partial.yaml` | `e2e-lab` → `e2e-buffered-partial` (weekly) |
 | **FULL_DUPLEX_STREAMED** | Duplex stream; trailers **SEND**; `message_timeout` **off** | Connector holds until allow (`--body-reply streamed`); deny keeps origin +0 | **Yes** | Smoke hosted; full matrix **wired** | `envoy-full-duplex.yaml` | `ci` → `e2e-full-duplex`; `crs-full` wired |
-| **GRPC** | Not implemented on pinned Envoy v1.39.3 | n/a | n/a | Out of scope | n/a | n/a |
+| **GRPC** | Not implemented on pinned Envoy v1.39.4 | n/a | n/a | Out of scope | n/a | n/a |
 
 Sources: [How it works](./how-it-works.md), [Testing suite](./testing-suite.md). Full repo docs: [how-it-works](../how-it-works.md), [testing](../testing.md).
 

@@ -2,9 +2,9 @@
 
 Candidate versions to probe before bumping a pin. The pins themselves live in [`versions.lock.md`](./versions.lock.md); this file only lists what the probes cover.
 
-| Axis | Pin | Window (checked 2026-09-27 against upstream tags) |
+| Axis | Pin | Window (checked 2026-10-13 against upstream tags) |
 |------|-----|----------------------------------------------------|
-| Envoy | `v1.39.3` | `v1.39.3`, `v1.38.4`, `v1.37.6` |
+| Envoy | `v1.39.4` | `v1.40.0`, `v1.39.4`, `v1.38.7` |
 | libmodsecurity | `v3.0.17` | `v3.0.17`, `v3.0.16`, `v3.0.15` |
 | CRS | `v4.30.0` | `v4.30.0`, `v4.29.0`, `v4.28.0` |
 

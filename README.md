@@ -6,7 +6,7 @@ Envoy does not run ModSecurity by itself. This project is a small Rust **Externa
 
 **Status:** **0.1 alpha** (`v0.1.0-alpha.1`) for early testing / UAT — not a production release. Sign-off path: [UAT checklist](./docs/modes/uat.md). Notes: [`CHANGELOG.md`](./CHANGELOG.md).
 
-Pinned versions: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0** ([`versions.lock.md`](./versions.lock.md)).
+Pinned versions: Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0** ([`versions.lock.md`](./versions.lock.md)).
 
 **Author:** Etienne Munnich  
 **License:** [Apache License 2.0](./LICENSE)

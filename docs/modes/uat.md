@@ -3,7 +3,7 @@
 Short path for someone who clones the repo and needs to **install, exercise, and
 sign off** before a `v0.1.0-alpha.*` tag. Not a production hardening guide.
 
-Pins: Envoy **v1.39.3**, libmodsecurity **v3.0.17**, CRS **v4.30.0**
+Pins: Envoy **v1.39.4**, libmodsecurity **v3.0.17**, CRS **v4.30.0**
 ([`versions.lock.md`](../../versions.lock.md)). Status and release notes:
 [`CHANGELOG.md`](../../CHANGELOG.md).
 
