@@ -119,7 +119,7 @@ The deny body is always generic. Rule ids and matched data go only to the connec
 | gRPC message bodies | headers, path and metadata are inspected (`hop-trace-grpc.sh`); protobuf bodies are not. Fail-closed still holds |
 | WebSocket frames | the upgrade handshake can be inspected with a headers-only route; frames after the upgrade are not. BUFFERED on an upgrade route hangs |
 | HTTP/3 | no QUIC listener is configured or tested |
-| trailer values | never inspected; trailers only end a STREAMED / FULL_DUPLEX body phase. Configs with a body mode need trailer mode `SEND`, or a request whose body ends in trailers fails closed with **500** |
+| trailer values | never inspected; trailers only end a STREAMED / FULL_DUPLEX body phase. Configs with a body mode need trailer mode `SEND`; `SKIP` lets the request reach origin |
 | bodies under NONE, and past the limit under BUFFERED_PARTIAL | [body-modes.md](./body-modes.md) |
 | Envoy's own local replies before the request phase | passed through, not inspected; the origin was never contacted |
 | pause interventions | logged and ignored: ext_proc has no delay primitive |

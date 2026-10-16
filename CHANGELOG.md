@@ -6,7 +6,9 @@ release are quoted from [`versions.lock.md`](./versions.lock.md).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.1.0-alpha.2] — Unreleased
+
+Next early-test pre-release. Envoy pin is `v1.39.4` (was `v1.39.3` at `v0.1.0-alpha.1`); libmodsecurity and CRS pins are unchanged.
 
 ### Security
 
@@ -76,8 +78,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   blocking pool, so a deny reply does not wait for the audit log.
 - The gRPC listener sets `TCP_NODELAY`.
 - The encode limit is the message limit plus 64 KiB of envelope room.
-- `demo/scripts/down.sh` and the bad-rules drills in `fail-closed.sh` /
-  `fail-modes.sh` honour `DEMO_PORT_BASE` instead of the stock ports.
 - Both crates declare `repository` and `readme` metadata.
 - `--body-reply` is a consistency check against `protocol_config`; a stream
   that disagrees fails closed.
@@ -105,9 +105,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [fail-closed](./docs/fail-closed.md), [troubleshooting](./docs/troubleshooting.md)
   and [testing](./docs/testing.md). `docs/modes/` (the Docsify site) and
   `docs/ash.md` are removed; their content moved into those pages.
-- Corrected claims: STREAMED and NONE behaviour, the FULL_DUPLEX_STREAMED hang
-  (no `message_timeout`), full-CRS coverage (local go-ftw runs only), the
-  vendored Envoy API version in `NOTICE` (v1.39.1).
+- Corrected claims: STREAMED and NONE behaviour, FULL_DUPLEX_STREAMED timeouts
+  (Envoy has no `message_timeout` there; the connector's duplex deadlines
+  answer 504), full-CRS coverage (local go-ftw runs only), the vendored Envoy
+  API version in `NOTICE` (v1.39.1).
 - `versions.lock.md` records the connector commit and image digest of
   `v0.1.0-alpha.1`.
 
@@ -123,6 +124,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The `release` gate requires a successful `ci` run for the tag commit and
   reads each required check from that run only. A manual dispatch builds and
   tests artifacts but publishes nothing.
+- The `release` workflow requires the tag to equal `v` plus the crate version,
+  pre-release suffix included (`v0.1.0-alpha.2` needs crate `0.1.0-alpha.2`).
 - Release tarballs load their bundled `lib/libmodsecurity.so` without
   `LD_LIBRARY_PATH` (RUNPATH `$ORIGIN/../lib`).
 - Dependabot also watches `tools/protogen`, `.github/actions/*` and
@@ -134,7 +137,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   CRS, Envoy on macOS, go-ftw 2.6.0) and fail on any other.
 - Scripts find a `~/.local` libmodsecurity themselves; `up.sh` starts BUFFERED
   unless `BODY_MODE` is set; `hop-trace.sh` defaults to `/`; `DEMO_PORT_BASE`
-  moves every port.
+  moves every port, including `down.sh` and the bad-rules drills in
+  `fail-closed.sh` / `fail-modes.sh`.
 - Suites print SKIP for cells that do not apply to the body mode (never PASS)
   and must reach a minimum PASS count.
 - `demo/grpc-echo` uses `golang.org/x/net` v0.60.0.
@@ -142,21 +146,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Known issues
 
-Open on `main` and in `v0.1.0-alpha.1`; details in
+Still open after this release; details in
 [deploy.md](./docs/deploy.md#known-issues).
 
-- With trailer mode `SKIP`, a body followed by trailers is not inspected.
-  Use `SEND`.
-- A gRPC message over 4 MiB, or a stream read error, ends the stream without
-  failing closed.
-- BUFFERED_PARTIAL over the limit and NONE with a request body run the
-  request-body rules only after the origin answered.
-- FULL_DUPLEX_STREAMED buffers the whole body with no size limit.
-- No `TCP_NODELAY` on the gRPC listener (about 40 ms per request).
+- STREAMED response bodies: Envoy forwards the response headers as soon as
+  the connector answers them, so a phase-4 deny on a later body chunk resets
+  the client stream instead of answering 403. The origin's bytes already sent
+  are not recalled. Use BUFFERED for the response when phase-4 blocking must
+  answer 403.
+- Trailer values are never passed to ModSecurity; trailers only end the body
+  phase. Trailer mode `SKIP` is not fail-closed: Envoy forwards the request
+  to origin before the body phase finishes. Body-mode configs must set
+  trailer modes `SEND` (shipped configs already do). The `none`, `grpc` and
+  `ws-headers` configs keep `SKIP`.
+- BUFFERED_PARTIAL inspects only the body prefix up to Envoy's buffer limit;
+  it is not CRS-complete body inspection. NONE never sends bodies.
+- HTTP/3 and WebSocket frames are not inspected.
+- `v0.1.0-alpha.1` has both Security defects listed above. Do not use it.
 
 ## [v0.1.0-alpha.1] — 2026-10-12
 
 First **alpha** for early testing / UAT. Not a production release.
+
+**Do not use:** this release fails open on an unreadable ext_proc message
+(a body over 4 MiB reaches origin uninspected) and skips inspection of bodies
+that end in trailers. Both are fixed in `v0.1.0-alpha.2`; see its Security
+section.
 
 **Pins:** Envoy `v1.39.3`, libmodsecurity `v3.0.17`, CRS `v4.30.0`
 (see `versions.lock.md` at this tag).
@@ -184,11 +199,11 @@ First **alpha** for early testing / UAT. Not a production release.
 - HTTP/1.x CRS fidelity only (go-ftw); HTTP/2 is tested by the connector's
   own suites, HTTP/3 and WebSocket frames are not inspected.
 - The tarball binary needs `LD_LIBRARY_PATH` pointing at its `lib/`.
-- The defects listed under Known issues in [Unreleased] apply.
+- The Security defects fixed in `v0.1.0-alpha.2` apply.
 
 **Install / prove:** [Getting started](https://github.com/etiennemunnich/modsec-envoy-connector/blob/v0.1.0-alpha.1/docs/modes/getting-started.md) →
 [UAT checklist](https://github.com/etiennemunnich/modsec-envoy-connector/blob/v0.1.0-alpha.1/docs/modes/uat.md). Local: `up.sh` → `smoke.sh` →
 `fail-closed.sh`. Hosted: `ci-ok` on both arches for the tag commit on `main`.
 
-[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...HEAD
+[v0.1.0-alpha.2]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...HEAD
 [v0.1.0-alpha.1]: https://github.com/etiennemunnich/modsec-envoy-connector/releases/tag/v0.1.0-alpha.1

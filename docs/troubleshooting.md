@@ -5,7 +5,7 @@
 | Client sees | Usual cause | Origin contacted? | Check |
 |-------------|-------------|-------------------|-------|
 | **403** | a ModSecurity or CRS rule denied the request or response | no, for a request-side deny | rule id in the connector log and the ModSecurity audit log |
-| **500** | fail-closed: connector down, stream error, rules failed to load, engine or protocol error, body modes that disagree with `--body-reply`, a request whose body phase never ended (trailer mode `SKIP`), a FULL_DUPLEX body over `--max-held-body-bytes` | no | `curl -sf http://127.0.0.1:18082/healthz`; is the connector process running; connector log |
+| **500** | fail-closed: connector down, stream error, rules failed to load, engine or protocol error, body modes that disagree with `--body-reply`, a FULL_DUPLEX body over `--max-held-body-bytes` | no | `curl -sf http://127.0.0.1:18082/healthz`; is the connector process running; connector log |
 | **500** on large bodies only | a message from Envoy over `--max-grpc-message-bytes` (4 MiB): the connector logs `ext_proc stream read error` with `code=OutOfRange` and `hint="message larger than --max-grpc-message-bytes"` | no | raise `--max-grpc-message-bytes` above Envoy's `per_connection_buffer_limit_bytes` plus the headers, or lower that buffer limit |
 | **504** | connector did not answer within Envoy's `message_timeout` (demo: 2 s) | no | connector stuck or overloaded. Does not happen under FULL_DUPLEX_STREAMED, which has no `message_timeout` |
 | **504**, `details=modsec_stream_timeout` | the connector gave up waiting for Envoy: no message for `--stream-idle-timeout` (300 s) before the verdict, or under FULL_DUPLEX_STREAMED a held body idle for `--duplex-idle-timeout` (30 s) or a stream past `--duplex-total-timeout` (300 s) | no | a slow or stalled client body; raise the timeouts if such uploads are legitimate |
@@ -36,7 +36,7 @@
 | Symptom | Likely cause |
 |---------|--------------|
 | a body attack reaches the origin with **200** | `BODY_MODE=NONE`; BUFFERED_PARTIAL with the attack past the buffer limit; or the connector is `v0.1.0-alpha.1` ([deploy.md](./deploy.md#known-issues)) |
-| requests whose body ends in trailers get **500** | trailer mode `SKIP` with a body mode other than NONE; set both trailer modes to `SEND` ([body-modes.md](./body-modes.md#where-the-body-phase-ends)) |
+| requests whose body ends in trailers reach origin | trailer mode `SKIP` with a body mode other than NONE; set both trailer modes to `SEND` ([body-modes.md](./body-modes.md#where-the-body-phase-ends)) |
 | every request **500**, the connector logs `Envoy body modes request=… response=… need --body-reply …` | `--body-reply` does not match Envoy's body modes: `streamed` when a direction is FULL_DUPLEX_STREAMED, `common` otherwise |
 | a later script runs in the wrong body mode | the scripts use the mode `up.sh` saved in `demo/.run/body_mode`; run `up.sh` again with the `BODY_MODE` you want |
 | a response-body rule fires but the client got a reset stream, or part of the body, instead of a 403 | under STREAMED, Envoy sends the response headers and chunks before the response-body rules run ([body-modes.md](./body-modes.md#streamed)) |

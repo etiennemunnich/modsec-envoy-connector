@@ -22,7 +22,7 @@ The connector takes each direction's body mode from the `protocol_config` Envoy 
 | NONE | the headers |
 | STREAMED, FULL_DUPLEX_STREAMED | the chunk marked end of stream, or the trailers |
 
-So with any body mode but NONE, Envoy's trailer modes must be `SEND`. With `SKIP`, Envoy never tells the connector that a STREAMED or FULL_DUPLEX body which trailers follow has ended, and a request with trailers but no body sends no body message at all. Request phase 2 then has not run when the response headers arrive, and the connector answers **500**: fail closed, but those requests fail. Every shipped config with a body mode sets both trailer modes to `SEND`. Trailer *values* are never passed to ModSecurity. `demo/scripts/h2-trailers.sh` checks HTTP/2 bodies and queries that end in trailers.
+So with any body mode but NONE, Envoy's trailer modes must be `SEND`. With `SKIP`, Envoy never tells the connector that a STREAMED or FULL_DUPLEX body which trailers follow has ended, and a request with trailers but no body sends no body message at all. Envoy then forwards that request to origin: `SKIP` is not fail-closed. Every shipped config with a body mode sets both trailer modes to `SEND`. Trailer *values* are never passed to ModSecurity. `demo/scripts/h2-trailers.sh` checks HTTP/2 bodies and queries that end in trailers.
 
 A message on a phase that already ended, or Envoy closing the stream while a body phase is still open, also fails closed.
 

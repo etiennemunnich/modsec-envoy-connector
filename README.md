@@ -41,7 +41,7 @@ Full walkthrough, other body modes and the early-tester checklist: [Getting star
 1. Get the connector: a Linux release tarball or the image `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` from `v0.1.0-alpha.2` on, or `cargo build --release -p ext-proc-modsec`.
 2. Write one rules entry file, for example `/etc/modsecurity/main.conf`, that `Include`s the engine settings, `crs-setup.conf` and `rules/*.conf`.
 3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf`.
-4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`. With any body mode other than NONE, also set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; without them a request whose body ends in trailers fails closed (**500**).
+4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`. With any body mode other than NONE, also set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; `SKIP` lets the request reach origin before the body phase runs.
 5. Check: `/healthz` is 200, a SQLi gets 403, and with the connector stopped requests get 500.
 
 Complete Envoy config, body-mode settings, timeouts, health checks and security notes: [Deploy](./docs/deploy.md).

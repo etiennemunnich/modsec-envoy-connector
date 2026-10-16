@@ -192,7 +192,7 @@ What breaks if you leave something out:
 | `failure_mode_allow: false` | nothing: `false` is Envoy's default, written out so nobody flips it. With `true`, a dead or failing connector lets traffic through |
 | the CONNECT route | under BUFFERED a CONNECT request waits for a body end that never comes |
 | `request_attributes` | ModSecurity sees `127.0.0.1` as `REMOTE_ADDR` and `HTTP/1.1` as the protocol (the connector logs `conn_source=fallback`), so IP-based rules misjudge |
-| trailer modes `SEND` (with any body mode but NONE) | a body that trailers follow never ends under STREAMED / FULL_DUPLEX_STREAMED, and a request with trailers but no body never runs its body phase in any mode: the connector answers **500** when the response arrives. Fail closed, not a bypass, but those requests fail |
+| trailer modes `SEND` (with any body mode but NONE) | Envoy forwards the request to origin before the body phase finishes (`SKIP` is not fail-closed). Body-mode configs must use `SEND` |
 | `stat_prefix: modsec_ext_proc` | the stat names in [Health and metrics](#health-and-metrics) change |
 
 Do not use BUFFERED on WebSocket upgrade routes: the upgrade waits for a body end that never comes. WebSocket frames are not inspected in any mode.
@@ -246,6 +246,6 @@ Open on `main`; see [`CHANGELOG.md`](../CHANGELOG.md).
 
 - **Do not use `v0.1.0-alpha.1`.** It ends the gRPC stream with OK when it cannot read a message (for example a BUFFERED body over 4 MiB), and with trailer mode `SKIP` it never inspects a body that trailers follow. In both cases Envoy forwards the request to the origin uninspected. Both are fixed from `v0.1.0-alpha.2` on.
 - **STREAMED responses:** Envoy forwards the response headers as soon as the connector answers them, so a response-body deny on a later chunk resets the client stream instead of answering 403; bytes already sent are not recalled. Use BUFFERED for the response when phase-4 blocking must answer 403.
-- **Trailer values** are never passed to ModSecurity; trailers only end the body phase. With trailer mode `SKIP` and a body mode, some requests fail closed with **500** (see the table in [section 4](#4-add-the-filter-to-envoy)).
+- **Trailer values** are never passed to ModSecurity; trailers only end the body phase. Trailer mode `SKIP` with a body mode lets the request reach origin; set both trailer modes to `SEND` (see the table in [section 4](#4-add-the-filter-to-envoy)).
 - **BUFFERED_PARTIAL** inspects only the prefix up to Envoy's buffer limit. **NONE** never inspects bodies.
 - HTTP/3 and WebSocket frames are not inspected.
