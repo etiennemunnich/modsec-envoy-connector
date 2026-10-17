@@ -4,13 +4,25 @@ How to run `ext-proc-modsec` next to an Envoy you operate: get the connector, wr
 
 Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.39.4, libmodsecurity v3.0.17, CRS v4.30.0. Other versions are tested weekly ([testing.md](./testing.md#workflows)) but are not supported.
 
-Access: while the repository is private, the image and release assets need a GitHub account with read access. `gh auth login` covers the tarball. For the image, log in with a token that has `read:packages`: `echo "$TOKEN" | docker login ghcr.io -u <github-user> --password-stdin`.
-
 ## 1. Get the connector
+
+Primary paths for early testers: **build from source**, or download a **release tarball**. If you want a container, **build the image locally** from a tarball layout (`packaging/Dockerfile`). You do not need a registry pull.
+
+### From source
+
+On Linux or macOS. libmodsecurity **3.0.13 or newer** must be visible to `pkg-config modsecurity`; only v3.0.17 is tested on every pull request. `./demo/scripts/install-libmodsecurity.sh` installs the pinned version (macOS: Homebrew; Linux: source build into `~/.local`).
+
+```bash
+export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib   # Linux, after install-libmodsecurity.sh
+cargo build --release --locked -p ext-proc-modsec
+./target/release/ext-proc-modsec --version
+```
+
+`MODSECURITY_LIB_DIR=<dir>` skips `pkg-config` and its version check. At run time the library must be on the loader path. The local demo builds the same binary via [`./demo/scripts/up.sh`](../demo/scripts/up.sh).
 
 ### Release tarball
 
-Linux x86_64 and aarch64, from `v0.1.0-alpha.2` on (do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)). The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries.
+Linux x86_64 and aarch64, from `v0.1.0-alpha.2` on (do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)). The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries. While the repository is private, `gh auth login` is enough to download Release assets.
 
 ```bash
 VER=v0.1.0-alpha.2 ARCH=x86_64          # or aarch64
@@ -24,34 +36,28 @@ DIR="$PWD/ext-proc-modsec-$VER-linux-$ARCH"
 
 The binary finds the bundled `lib/libmodsecurity.so` through its RUNPATH `$ORIGIN/../lib`: keep `bin/` and `lib/` side by side, and no `LD_LIBRARY_PATH` is needed.
 
-### Container image
+### Container image (build locally)
 
-`ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` for `linux/amd64` and `linux/arm64`. The image:
+[`packaging/Dockerfile`](../packaging/Dockerfile) expects the **unpacked tarball directory** as the build context (`bin/`, `lib/`, `LICENSE`, `NOTICE`, `versions.lock.md`). Build and run on the same arch as the tarball:
+
+```bash
+VER=v0.1.0-alpha.2 ARCH=x86_64          # or aarch64 — match the host
+# … download and unpack the tarball as above …
+docker build -f packaging/Dockerfile -t modsec-envoy-connector:local \
+  "ext-proc-modsec-$VER-linux-$ARCH"
+docker run --rm -p 127.0.0.1:18081:18081 -p 127.0.0.1:18082:18082 \
+  -v /etc/modsecurity:/etc/modsecurity:ro -v /etc/crs:/etc/crs:ro \
+  modsec-envoy-connector:local \
+  --modsec-rules /etc/modsecurity/main.conf
+```
+
+The image:
 
 - runs as UID 65532, so `SecTmpDir`, `SecDataDir` and `SecAuditLog` must point at writable paths (for example `/tmp`);
 - ships **no rules and no CRS**: mount them;
 - starts with `--listen 0.0.0.0:18081 --metrics-listen 0.0.0.0:18082` inside the container, so publish the ports to loopback only.
 
-```bash
-docker run --rm -p 127.0.0.1:18081:18081 -p 127.0.0.1:18082:18082 \
-  -v /etc/modsecurity:/etc/modsecurity:ro -v /etc/crs:/etc/crs:ro \
-  ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.2 \
-  --modsec-rules /etc/modsecurity/main.conf
-```
-
-The release workflow builds the image and runs `--version` in it. The `docker run` above is not exercised by this repository's tests.
-
-### From source
-
-On Linux or macOS. libmodsecurity **3.0.13 or newer** must be visible to `pkg-config modsecurity`; only v3.0.17 is tested on every pull request. `./demo/scripts/install-libmodsecurity.sh` installs the pinned version (macOS: Homebrew; Linux: source build into `~/.local`).
-
-```bash
-export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib   # Linux, after install-libmodsecurity.sh
-cargo build --release --locked -p ext-proc-modsec
-./target/release/ext-proc-modsec --version
-```
-
-`MODSECURITY_LIB_DIR=<dir>` skips `pkg-config` and its version check. At run time the library must be on the loader path.
+The release workflow may also publish a multi-arch tag under `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` for maintainers; that is optional convenience, not the supported install path for early testers, and not required to use or evaluate the connector.
 
 ## 2. Write the rules entry file
 

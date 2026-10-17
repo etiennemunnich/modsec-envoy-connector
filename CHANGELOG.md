@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   harness quirks), linked from the README and [how-it-works](./docs/how-it-works.md) “What is not
   inspected.”
 
+### Docs
+
+- Alpha security reports go through **GitHub Issues** ([SECURITY.md](./SECURITY.md)); no private-advisory requirement or SLA while early-testing.
+
 ## [v0.1.0-alpha.2] — 2026-10-17
 
 Early-test pre-release. Envoy pin is `v1.39.4` (was `v1.39.3` at `v0.1.0-alpha.1`); libmodsecurity and CRS pins are unchanged.
@@ -214,5 +218,6 @@ section.
 [UAT checklist](https://github.com/etiennemunnich/modsec-envoy-connector/blob/v0.1.0-alpha.1/docs/modes/uat.md). Local: `up.sh` → `smoke.sh` →
 `fail-closed.sh`. Hosted: `ci-ok` on both arches for the tag commit on `main`.
 
-[v0.1.0-alpha.2]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.2...HEAD
+[v0.1.0-alpha.2]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [v0.1.0-alpha.1]: https://github.com/etiennemunnich/modsec-envoy-connector/releases/tag/v0.1.0-alpha.1

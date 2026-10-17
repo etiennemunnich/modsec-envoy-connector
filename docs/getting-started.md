@@ -6,8 +6,6 @@ Versions come from [`versions.lock.md`](../versions.lock.md); the install script
 
 ## 1. Prerequisites
 
-**Access.** The repository is private: you need a GitHub account with read access to clone it.
-
 **macOS** (Apple silicon or Intel): Xcode Command Line Tools (`xcode-select --install`), [Homebrew](https://brew.sh) and [rustup](https://rustup.rs). The install scripts run `brew install envoy modsecurity pkg-config` themselves, then stop if Homebrew's versions are not the pinned ones.
 
 **Linux** (tested on Ubuntu 24.04; other Debian-based systems may work), with `sudo`: [rustup](https://rustup.rs), `git`, `curl`, `python3` and `lsof`. The libmodsecurity script installs build dependencies with `apt-get` and compiles libmodsecurity from source into `~/.local`, which takes a few minutes.

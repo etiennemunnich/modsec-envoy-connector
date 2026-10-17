@@ -7,7 +7,7 @@ labels: bug
 
 **Connector:** output of `ext-proc-modsec --version`, plus the release tag, image digest or commit
 
-**Install method:** release tarball / container image / built from source / demo (`demo/scripts/up.sh`)
+**Install method:** built from source / release tarball / local container image (`packaging/Dockerfile`) / demo (`demo/scripts/up.sh`)
 
 **OS and architecture:** e.g. Ubuntu 24.04 x86_64, macOS 15 arm64
 
