@@ -6,9 +6,9 @@ release are quoted from [`versions.lock.md`](./versions.lock.md).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [v0.1.0-alpha.2] — Unreleased
+## [v0.1.0-alpha.2] — 2026-10-17
 
-Next early-test pre-release. Envoy pin is `v1.39.4` (was `v1.39.3` at `v0.1.0-alpha.1`); libmodsecurity and CRS pins are unchanged.
+Early-test pre-release. Envoy pin is `v1.39.4` (was `v1.39.3` at `v0.1.0-alpha.1`); libmodsecurity and CRS pins are unchanged.
 
 ### Security
 
