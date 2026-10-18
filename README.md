@@ -56,9 +56,9 @@ Complete Envoy config, body-mode settings, timeouts, health checks and security 
 | WebSocket frames | not inspected (the upgrade handshake can be) |
 | gRPC message bodies | not inspected (headers and metadata are) |
 | trailer values | not inspected |
-| Non-URI `Referer`, hop-by-hop `Connection` | Envoy strips before the connector; see [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) |
+| Non-URI `Referer`, hop-by-hop `Connection` | Envoy may remove these before `ext_proc`; see [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) |
 
-Not every CRS or custom SecRule works like nginx+ModSecurity. Limits (signal loss vs early reject vs FTW quirk): [CRS and Envoy limits](./docs/crs-and-envoy-limits.md).
+Envoy normalizes some headers before ModSecurity sees them; aim rules at what is still forwarded: [CRS and Envoy limits](./docs/crs-and-envoy-limits.md).
 
 ## Docs
 
@@ -67,7 +67,7 @@ Not every CRS or custom SecRule works like nginx+ModSecurity. Limits (signal los
 | [Getting started](./docs/getting-started.md) | local demo, step by step, and the early-tester checklist |
 | [Deploy](./docs/deploy.md) | running the connector beside your own Envoy |
 | [How it works](./docs/how-it-works.md) | request path and what the client sees |
-| [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) | what CRS/custom rules cannot fully do behind Envoy |
+| [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) | what Envoy forwards to ModSec, and how to write rules for it |
 | [Body modes](./docs/body-modes.md) | what each Envoy body mode inspects, and when |
 | [Fail-closed](./docs/fail-closed.md) | what happens when the connector or engine cannot decide |
 | [Troubleshooting](./docs/troubleshooting.md) | status codes, install errors, logs |
