@@ -38,9 +38,9 @@ Full walkthrough, other body modes and the early-tester checklist: [Getting star
 
 ## Run it beside your own Envoy
 
-1. Get the connector: `cargo build --release -p ext-proc-modsec`, or a Linux release tarball from `v0.1.0-alpha.2` on. For a container, build the image locally from that layout (`packaging/Dockerfile`) — see [Deploy](./docs/deploy.md).
+1. Get the connector: pull `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.2` (multi-arch; pin by digest in [`versions.lock.md`](./versions.lock.md)), or a Linux release tarball, or `cargo build --release -p ext-proc-modsec`. Details and auth while the package is private: [Deploy](./docs/deploy.md).
 2. Write one rules entry file, for example `/etc/modsecurity/main.conf`, that `Include`s the engine settings, `crs-setup.conf` and `rules/*.conf`.
-3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf`.
+3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf` (or the equivalent `docker run` from Deploy).
 4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`. With any body mode other than NONE, also set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; `SKIP` lets the request reach origin before the body phase runs.
 5. Check: `/healthz` is 200, a SQLi gets 403, and with the connector stopped requests get 500.
 

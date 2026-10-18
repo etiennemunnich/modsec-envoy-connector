@@ -7,7 +7,7 @@ labels: bug
 
 **Connector:** output of `ext-proc-modsec --version`, plus the release tag, image digest or commit
 
-**Install method:** built from source / release tarball / local container image (`packaging/Dockerfile`) / demo (`demo/scripts/up.sh`)
+**Install method:** GHCR image / release tarball / built from source / demo (`demo/scripts/up.sh`) / local Dockerfile build
 
 **OS and architecture:** e.g. Ubuntu 24.04 x86_64, macOS 15 arm64
 

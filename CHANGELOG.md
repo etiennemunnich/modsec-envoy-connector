@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Docs
 
 - Alpha security reports go through **GitHub Issues** ([SECURITY.md](./SECURITY.md)); no private-advisory requirement or SLA while early-testing.
+<<<<<<< HEAD
+=======
+- Supported container install is **GHCR** (`ghcr.io/…/modsec-envoy-connector:<tag>`, pin by digest in `versions.lock.md`); tarball and source remain alternatives. Local `packaging/Dockerfile` build is advanced/dev only. Images publish on release tags only (no PR/`latest` churn); stale cleanup via `scripts/ghcr-delete-stale.sh`.
+>>>>>>> 56342e9 (docs: GHCR as supported container install)
 
 ## [v0.1.0-alpha.2] — 2026-10-17
 

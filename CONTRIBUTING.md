@@ -65,7 +65,7 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 | Full CRS go-ftw | `crs-full` × arch (monthly) | `./demo/scripts/go-ftw.sh full` |
 | Release artifacts | `release` on a tag on `main` whose commit passed `ci` | — |
 
-GHCR cleanup is an owner task: `./scripts/ghcr-delete-stale.sh` (dry-run by default).
+Supported container installs pull release tags from GHCR ([docs/deploy.md](./docs/deploy.md)); images are published only by `release` on tags (not on PRs). GHCR cleanup is an owner task: `./scripts/ghcr-delete-stale.sh` (dry-run by default).
 
 ## Versioning
 
