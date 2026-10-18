@@ -6,6 +6,15 @@ release are quoted from [`versions.lock.md`](./versions.lock.md).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Docs: [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) — plain-English limits for CRS and custom
+  SecRules behind Envoy (Referer / Connection signal loss vs nginx, codec early reject, go-ftw
+  harness quirks), linked from the README and [how-it-works](./docs/how-it-works.md) “What is not
+  inspected.”
+
 ## [v0.1.0-alpha.2] — 2026-10-17
 
 Early-test pre-release. Envoy pin is `v1.39.4` (was `v1.39.3` at `v0.1.0-alpha.1`); libmodsecurity and CRS pins are unchanged.
