@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Supported container install is **GHCR** (`ghcr.io/…/modsec-envoy-connector:<tag>`, pin by digest in `versions.lock.md`); tarball and source remain alternatives. Local `packaging/Dockerfile` build is advanced/dev only. Images publish on release tags only (no PR/`latest` churn); stale cleanup via `scripts/ghcr-delete-stale.sh`.
 - Deploy: GHCR auth is tied to **package** visibility (may stay private after the GitHub repo is public); Release tarballs on a public repo download without login.
 - Agent standards: drop stale “repository is private on GitHub Pro” minutes language; keep CI discipline for a public repo.
+- Docs scrub: no local machine / Agent Store / `file://` paths in shipped docs (ripgrep clean). Soften `install-crs.sh` “before production use” comment to early-testing honesty; AGENTS Never bans battle-tested / production-ready / enterprise-grade hype.
 
 ## [v0.1.0-alpha.2] — 2026-10-17
 

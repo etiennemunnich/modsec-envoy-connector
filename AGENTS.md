@@ -30,6 +30,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 - Return **`Continue`** after ModSec / FFI `Err` (that is connector-lie fail-open → map to ImmediateResponse **500**).
 - Invent Envoy / ModSec / CRS tip flags or pins not in `versions.lock.md`.
 - Market go-ftw green as “H2 WAF proven” (go-ftw is **HTTP/1.x CRS fidelity** only).
+- Claim **battle-tested**, **production-ready**, **enterprise-grade**, or similar marketing certainty (or synonyms: prod-ready, “proven in production” without a cited run). Status is early testing only — match README; do not invent softer hype.
 
 ## Testing expectations
 
