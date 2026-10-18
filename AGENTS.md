@@ -1,6 +1,6 @@
 # Agent standards — modsec-envoy-connector
 
-Mandatory for coding agents working in this repo. Keep it short; deep tables live in `docs/` and lab notes outside this tree.
+Mandatory for coding agents working in this repo. Keep it short; deep tables live in `docs/`.
 
 ## Product
 
@@ -58,12 +58,12 @@ GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not cla
 
 ## GitHub Actions minutes
 
-This repository is private on GitHub Pro: 3,000 minutes a month across all private repositories. At the quota, CI stops until the 1st.
+This repository is **public**. Standard GitHub-hosted Actions for public repositories are not billed against a private Pro minutes quota. Still treat CI as scarce: do not invent soft skips, and do not skip, shrink or disable checks to “save” anything.
 
 - **`ci` runs on pushes to `main`, pull requests and dispatches.** A branch push runs nothing: open the PR, or `gh workflow run ci.yml --ref <branch>`.
 - **The only skips are automatic** (`ci-ok` still reports): a docs-only change whose base commit has a green `ci` run (`scripts/ci-changes.sh`), and a merge whose tree a same-repo PR run already passed (`scripts/ci-tested-tree.sh`). Bring the branch up to date with `main` before merging, or `main` re-runs everything.
 - **Never use workflow-skip tokens** in a commit message, PR title or PR body. A squash merge copies them onto `main`, that commit gets no `ci` run, and it cannot be released. `pin-check` fails a PR that carries one (`scripts/ci-skip-tokens.sh`).
-- **When minutes run out, stop and tell Etienne.** Do not skip, shrink or disable checks to save minutes.
+- **When Actions is unavailable or rate-limited, stop and tell Etienne.** Do not skip, shrink or disable checks to work around it.
 - **PR e2e is the three product body modes** (BUFFERED / STREAMED / FULL_DUPLEX × both arches). PARTIAL, NONE, and asymmetric labs run on `e2e-lab` (weekly + dispatch).
 - **`ash` runs on security-relevant PRs, weekly on main tip, and dispatch** — not every main push and not docs-only PRs. Install is commit-pinned (`ASH_PIN` in `versions.lock.md`).
 - **Timeouts sit a few times above measured runs.** Warm, every `ci` job finished under 2.1 minutes in 60 runs; a cold libmodsecurity build (any change to its install script) took up to 9.8 minutes (run 38241457904). Limits: e2e 15, rust-quality 15, msrv 20, crs-full 25. Never the 360-minute default; `check-workflows.sh` requires `timeout-minutes` on every job.
