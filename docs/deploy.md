@@ -288,4 +288,4 @@ Open on `main`; see [`CHANGELOG.md`](../CHANGELOG.md).
 - **Trailer values** are never passed to ModSecurity; trailers only end the body phase. Trailer mode `SKIP` with a body mode lets the request reach origin; set both trailer modes to `SEND` (see the table in [section 4](#4-add-the-filter-to-envoy)).
 - **BUFFERED_PARTIAL** inspects only the prefix up to Envoy's buffer limit. **NONE** never inspects bodies.
 - HTTP/3 and WebSocket frames are not inspected.
-- Envoy strips non-URI `Referer` and hop-by-hop `Connection` before `ext_proc`; those CRS signals are weaker than typical nginx+ModSec. Limits and custom-rule guidance: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md).
+- Envoy may remove non-URI `Referer` and hop-by-hop `Connection` before `ext_proc`. Write rules against what is still forwarded: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md).

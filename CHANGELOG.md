@@ -10,13 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Docs: [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) — plain-English limits for CRS and custom
-  SecRules behind Envoy (Referer / Connection signal loss vs nginx, codec early reject, go-ftw
-  harness quirks), linked from the README and [how-it-works](./docs/how-it-works.md) “What is not
-  inspected.”
+- Docs: [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) — operator guide to what Envoy
+  forwards to ModSecurity (and how to aim custom SecRules), linked from the README and
+  [how-it-works](./docs/how-it-works.md) “What is not inspected.”
 
 ### Docs
 
+- Soften [CRS and Envoy limits](./docs/crs-and-envoy-limits.md): operator framing around what Envoy forwards / ModSec sees; drop “security weaker than nginx” headlines; probe status codes as illustrative only; nginx comparisons demoted to a short appendix. Matching one-liners in README, getting-started, how-it-works, and deploy.
 - Alpha security reports go through **GitHub Issues** ([SECURITY.md](./SECURITY.md)); no private-advisory requirement or SLA while early-testing. Issue chooser contact link matches that (no “report privately / never in a public issue” wording).
 - Supported container install is **GHCR** (`ghcr.io/…/modsec-envoy-connector:<tag>`, pin by digest in `versions.lock.md`); tarball and source remain alternatives. Local `packaging/Dockerfile` build is advanced/dev only. Images publish on release tags only (no PR/`latest` churn); stale cleanup via `scripts/ghcr-delete-stale.sh`.
 - Deploy: GHCR auth is tied to **package** visibility (may stay private after the GitHub repo is public); Release tarballs on a public repo download without login.
