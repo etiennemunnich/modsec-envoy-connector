@@ -62,9 +62,8 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement:
 
 * Maintainer: **Etienne Munnich** — GitHub [@etiennemunnich](https://github.com/etiennemunnich)
-* Or open a private report via
-  [Security Advisories](https://github.com/etiennemunnich/modsec-envoy-connector/security/advisories/new)
-  if the incident is security-sensitive
+* Or open a [GitHub Issue](https://github.com/etiennemunnich/modsec-envoy-connector/issues/new/choose)
+  (during alpha, security-sensitive reports also go through Issues — see [SECURITY.md](./SECURITY.md))
 
 All complaints will be reviewed and investigated promptly and fairly.
 

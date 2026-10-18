@@ -9,6 +9,8 @@ name: release
 # per-arch image pushed by digest (untagged) → multi-arch manifest
 # ghcr.io/<owner>/<repo>:<ver> from both digests → GitHub Release (a
 # pre-release for vX.Y.Z-suffix tags).
+# Cost: images publish only on release tags (not on PRs or main pushes); no
+# floating :latest. Stale GHCR cleanup is manual: scripts/ghcr-delete-stale.sh.
 # Build provenance is attested when the repo is public.
 # workflow_dispatch is a build-only dry run from any ref: it builds and tests
 # the tarballs and images and uploads the tarballs as run artifacts. It pushes
@@ -198,6 +200,9 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    outputs:
+      image: ${{ steps.m.outputs.image }}
+      digest: ${{ steps.m.outputs.digest }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -255,9 +260,12 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.manifest.outputs.image }}
+          DIGEST: ${{ needs.manifest.outputs.digest }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
+          image_tag="${IMAGE}:${GITHUB_REF_NAME}"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::missing multi-arch digest from manifest job"; exit 1; }
           {
             echo "Envoy ext_proc → libmodsecurity connector ${GITHUB_REF_NAME}."
             echo
@@ -267,7 +275,8 @@ jobs:
             sed -n "/^${fence}\$/,/^${fence}\$/p" versions.lock.md | sed "/^${fence}\$/d"
             echo "$fence"
             echo
-            echo "- Image (linux/amd64, linux/arm64): \`${image}\`"
+            echo "- Image (linux/amd64, linux/arm64): \`${image_tag}\`"
+            echo "- Image digest (pin this): \`${IMAGE}@${DIGEST}\`"
             echo "- Tarballs bundle \`bin/ext-proc-modsec\` and \`lib/libmodsecurity.so*\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. The binary finds \`lib/\` through its RUNPATH (\`\$ORIGIN/../lib\`): keep \`bin/\` and \`lib/\` side by side; no \`LD_LIBRARY_PATH\` needed."
           } > notes.md
           pre=()
