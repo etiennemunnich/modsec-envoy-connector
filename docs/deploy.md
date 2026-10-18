@@ -28,13 +28,13 @@ docker pull ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.2
 docker pull ghcr.io/etiennemunnich/modsec-envoy-connector@sha256:9d41f057ee7cba094da93953fb3b96a8222e1501c0f0f5d3b646f8cab3fd445a
 ```
 
-**Auth while the package is private** (repository still private today): log in with a token that has `read:packages`, then pull:
+**Auth while the GHCR package is private:** the GitHub repository may already be public while the container package still requires login. Log in with a token that has `read:packages`, then pull:
 
 ```bash
 echo "$TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
-When the repository (and its GHCR package) are made **public**, anonymous `docker pull` of release tags works without login. That package-visibility flip is an owner step at go-public time — same moment as making the repo public — so the install commands above keep working for strangers.
+When the **GHCR package** is made public (owner step; independent of repo visibility), anonymous `docker pull` of release tags works without login. The install commands above keep working either way.
 
 Pull **release tags** (`v0.1.0-alpha.2`, …), not a floating `latest`. Images are published only by the `release` workflow on git tags (not on every PR or `main` push), which keeps Actions minutes and GHCR storage lean. Maintainers can list/delete allowlisted stale package versions with [`scripts/ghcr-delete-stale.sh`](../scripts/ghcr-delete-stale.sh) (dry-run by default).
 
@@ -55,7 +55,7 @@ Fail-closed behaviour is unchanged: use `failure_mode_allow: false` on the Envoy
 
 ### Release tarball
 
-Linux x86_64 and aarch64. The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries. While the repository is private, `gh auth login` is enough to download Release assets.
+Linux x86_64 and aarch64. The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries. Release assets on a public repository download without login (browser or `gh`); if you use `gh` against a private fork or mirror, `gh auth login` first.
 
 ```bash
 VER=v0.1.0-alpha.2 ARCH=x86_64          # or aarch64
