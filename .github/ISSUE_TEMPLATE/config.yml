@@ -1,4 +1,4 @@
-# Structured templates only. Security problems never go in a public issue.
+# Structured templates only. Alpha security reports go through GitHub Issues (see SECURITY.md).
 # Pattern aligned with OWASP CRS (blank_issues_enabled: false + contact_links).
 blank_issues_enabled: false
 contact_links:
@@ -7,4 +7,4 @@ contact_links:
     about: Getting started, running beside your own Envoy, body modes, fail-closed, troubleshooting.
   - name: Security problem (bypass, crash, fail-open)
     url: https://github.com/etiennemunnich/modsec-envoy-connector/blob/main/SECURITY.md#reporting-a-vulnerability
-    about: Report privately via Security Advisories or the maintainer — never in a public issue.
+    about: During alpha, open a GitHub Issue (bug template; say it is a security report). See SECURITY.md — no private-advisory path yet.
