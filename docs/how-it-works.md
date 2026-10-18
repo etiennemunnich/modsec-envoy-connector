@@ -1,6 +1,6 @@
 # How it works
 
-Where the connector sits, how one HTTP exchange moves through it, and what the client sees. Failure handling: [fail-closed.md](./fail-closed.md). Body modes: [body-modes.md](./body-modes.md). Running it: [getting-started.md](./getting-started.md), [deploy.md](./deploy.md).
+Where the connector sits, how one HTTP exchange moves through it, and what the client sees. Failure handling: [fail-closed.md](./fail-closed.md). Body modes: [body-modes.md](./body-modes.md). CRS/custom-rule limits behind Envoy: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Running it: [getting-started.md](./getting-started.md), [deploy.md](./deploy.md).
 
 ## What this is
 
@@ -121,7 +121,8 @@ The deny body is always generic. Rule ids and matched data go only to the connec
 | HTTP/3 | no QUIC listener is configured or tested |
 | trailer values | never inspected; trailers only end a STREAMED / FULL_DUPLEX body phase. Configs with a body mode need trailer mode `SEND`; `SKIP` lets the request reach origin |
 | bodies under NONE, and past the limit under BUFFERED_PARTIAL | [body-modes.md](./body-modes.md) |
+| Non-URI `Referer`, hop-by-hop `Connection` | Envoy removes them before `ext_proc`; CRS rules that need those values never see them — weaker than typical nginx+ModSec for those payloads. Absolute-URI Referers still reach ModSec. [crs-and-envoy-limits.md](./crs-and-envoy-limits.md) |
 | Envoy's own local replies before the request phase | passed through, not inspected; the origin was never contacted |
 | pause interventions | logged and ignored: ext_proc has no delay primitive |
 
-Configuration, health checks and metrics: [deploy.md](./deploy.md).
+CRS/custom-rule limits behind Envoy (Referer, Connection, body modes, FTW harness): [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Configuration, health checks and metrics: [deploy.md](./deploy.md).

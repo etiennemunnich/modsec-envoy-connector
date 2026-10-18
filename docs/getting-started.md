@@ -112,4 +112,4 @@ For alpha testers:
 - [ ] no `failure_mode_allow: true` in any config you tested
 - [ ] results filed with the [bug template](https://github.com/etiennemunnich/modsec-envoy-connector/issues/new?template=bug.md): versions, OS and architecture, and the script output
 
-This alpha does not claim production readiness, HTTP/3 or WebSocket-frame inspection, HTTP/2 coverage from go-ftw (it is HTTP/1.x only), or full CRS inspection under BUFFERED_PARTIAL or NONE. Open issues: [`CHANGELOG.md`](../CHANGELOG.md).
+This alpha does not claim production readiness, HTTP/3 or WebSocket-frame inspection, HTTP/2 coverage from go-ftw (it is HTTP/1.x only), or full CRS inspection under BUFFERED_PARTIAL or NONE. Envoy also strips some headers (for example non-URI `Referer` and hop-by-hop `Connection`) before ModSecurity sees them — not every SecRule behaves like nginx+ModSec: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Open issues: [`CHANGELOG.md`](../CHANGELOG.md).
