@@ -287,5 +287,5 @@ Open on `main`; see [`CHANGELOG.md`](../CHANGELOG.md).
 - **STREAMED responses:** Envoy forwards the response headers as soon as the connector answers them, so a response-body deny on a later chunk resets the client stream instead of answering 403; bytes already sent are not recalled. Use BUFFERED for the response when phase-4 blocking must answer 403.
 - **Trailer values** are never passed to ModSecurity; trailers only end the body phase. Trailer mode `SKIP` with a body mode lets the request reach origin; set both trailer modes to `SEND` (see the table in [section 4](#4-add-the-filter-to-envoy)).
 - **BUFFERED_PARTIAL** inspects only the prefix up to Envoy's buffer limit. **NONE** never inspects bodies.
-- HTTP/3 and WebSocket frames are not inspected.
+- HTTP/3 is lab-probe only (`demo/scripts/h3-probe.sh`); not product-supported. WebSocket frames are not inspected.
 - Envoy may remove non-URI `Referer` and hop-by-hop `Connection` before `ext_proc`. Write rules against what is still forwarded: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md).

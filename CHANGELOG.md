@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Demo **HTTP/3 (QUIC) experiment** only: [`demo/envoy/envoy-h3.yaml`](./demo/envoy/envoy-h3.yaml) +
+  [`demo/scripts/h3-probe.sh`](./demo/scripts/h3-probe.sh) (aioquic client). Not product support;
+  `failure_mode_allow: false`, NONE bodies. README / how-it-works / testing / deploy say lab probe only.
 - Docs: [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) — operator guide to what Envoy
   forwards to ModSecurity (and how to aim custom SecRules), linked from the README and
   [how-it-works](./docs/how-it-works.md) “What is not inspected.”
