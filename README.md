@@ -52,7 +52,7 @@ Complete Envoy config, body-mode settings, timeouts, health checks and security 
 |---------|--------|
 | request and response bodies under the NONE body mode | not sent to the connector |
 | body bytes past the limit under BUFFERED_PARTIAL | not inspected |
-| HTTP/3 | lab QUIC probe only (`demo/scripts/h3-probe.sh`); not product-supported |
+| HTTP/3 | lab demo suite only (`demo/scripts/h3-probe.sh`); not product-supported |
 | WebSocket frames | not inspected (the upgrade handshake can be) |
 | gRPC message bodies | not inspected (headers and metadata are) |
 | trailer values | not inspected |

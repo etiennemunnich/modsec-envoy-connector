@@ -1,20 +1,32 @@
 #!/usr/bin/env bash
-# EXPERIMENT — measured HTTP/3 (QUIC) hop through ext_proc. Not product support.
+# Lab HTTP/3 (QUIC) demo suite — durable local test, not product H3 support.
 #
-# Prerequisites:
-#   - Envoy at ENVOY_PIN (release binary includes QUIC on Linux)
-#   - connector + origin already up (e.g. BODY_MODE=NONE ./demo/scripts/up.sh)
-#   - Python 3 + aioquic (`pip install aioquic`); stock curl often has no --http3
-#   - openssl for a throwaway self-signed cert
+# Usage:
+#   BODY_MODE=NONE ./demo/scripts/up.sh   # optional if not already up
+#   ./demo/scripts/h3-probe.sh
+#   H3_PROBE_KEEP=1 ./demo/scripts/h3-probe.sh   # leave H3 Envoy running
 #
-# What this proves (when green):
-#   - Envoy QUIC listener accepts HTTP/3; access log shows HTTP/3
-#   - connector sees http_version=3.0; header/query CRS can 403
-#   - body mode NONE → body attacks reach origin (honest bypass)
-#   - failure_mode_allow: false → kill→500, hang→504, origin untouched
+# If the connector/origin are down, this script starts them with BODY_MODE=NONE
+# (headers-only honesty matches the H3 config). It always manages a second Envoy
+# process on UDP (default :18443) with --base-id so it does not clash with the
+# TCP demo Envoy.
 #
-# What this does NOT prove: product H3 support, BUFFERED/STREAMED body CRS on
-# QUIC, go-ftw on H3, or CI coverage.
+# Dependencies (exit 2 if missing, with a clear message):
+#   - envoy at ENVOY_PIN (Linux release binary includes QUIC)
+#   - python3 + aioquic (`pip install aioquic`); stock curl often has no --http3
+#   - openssl (throwaway self-signed cert under demo/.run/h3-certs/)
+#
+# Asserts (PASS floor ≥ MIN_H3_CHECKS, default 9; summary carries checks=N):
+#   - benign GET → 200, origin +1; Envoy access log shows HTTP/3
+#   - connector logs http_version=3.0
+#   - SQLi in query → 403, origin +0
+#   - SQLi in body (NONE) → 200, origin +1 (body not inspected)
+#   - connector killed → 500, origin +0; restore → ready
+#   - connector hung (SIGSTOP) → 504, origin +0
+#   - failure_mode_allowed = 0
+#
+# Does NOT prove: product H3 WAF, BUFFERED/STREAMED CRS on QUIC, go-ftw on H3,
+# or CI coverage (demo-only; not on every PR).
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -28,23 +40,59 @@ H3_LOG="${RUN}/envoy-h3.log"
 H3_PID="${RUN}/envoy-h3.pid"
 TEMPLATE="${DEMO}/envoy/envoy-h3.yaml"
 H3GET="${DEMO}/scripts/h3get.py"
+# Floor: 3 hop cells + access-log + connector version + killed + restore + hung + fma.
+MIN_H3_CHECKS="${MIN_H3_CHECKS:-9}"
 FAIL=0
+PASS=0
+STARTED_STACK=0
 
-pass() { echo "  PASS $*"; }
+pass() { echo "  PASS $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $*"; FAIL=$((FAIL + 1)); }
 
-require_connector() {
+die_deps() {
+  echo "$*" >&2
+  exit 2
+}
+
+require_deps() {
+  command -v envoy >/dev/null || die_deps "envoy not on PATH — run demo/scripts/install-envoy.sh"
+  command -v openssl >/dev/null || die_deps "openssl required for H3 lab certs"
+  command -v python3 >/dev/null || die_deps "python3 required"
+  [[ -f "${H3GET}" ]] || die_deps "missing ${H3GET}"
+  [[ -f "${TEMPLATE}" ]] || die_deps "missing ${TEMPLATE}"
+  python3 -c 'import aioquic' 2>/dev/null \
+    || die_deps "aioquic missing — pip install aioquic (stock curl often has no --http3)"
+
+  local pin want ver
+  pin="$(grep -E '^ENVOY_PIN=' "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2)"
+  pin="${pin:-v1.39.4}"
+  want="${pin#v}"
+  ver="$(envoy --version 2>&1 || true)"
+  echo "${ver}" | grep -q "/${want}/" \
+    || die_deps "envoy version does not match ENVOY_PIN=${pin} (got: ${ver})"
+  echo "==> H3 lab suite Envoy ${want} (not product H3 support)"
+}
+
+ensure_stack() {
+  if curl -sf "${METRICS}/healthz" >/dev/null \
+    && curl -sf "http://127.0.0.1:${ORIGIN_PORT}/" >/dev/null; then
+    echo "==> attaching to running connector ${CONNECTOR_LISTEN} + origin :${ORIGIN_PORT}"
+    return 0
+  fi
+  echo "==> connector/origin down — starting BODY_MODE=NONE demo stack"
+  BODY_MODE=NONE "${DEMO}/scripts/up.sh"
+  STARTED_STACK=1
   curl -sf "${METRICS}/healthz" >/dev/null \
-    || { echo "connector not ready at ${METRICS}/healthz — run BODY_MODE=NONE ./demo/scripts/up.sh first" >&2; exit 2; }
-  curl -sf "http://127.0.0.1:${ORIGIN_PORT}/" >/dev/null \
-    || { echo "origin not ready on :${ORIGIN_PORT}" >&2; exit 2; }
+    || die_deps "connector still not ready at ${METRICS}/healthz after up.sh"
 }
 
 stop_h3_envoy() {
   if [[ -f "${H3_PID}" ]]; then
+    local pid
     pid="$(tr -d '[:space:]' <"${H3_PID}" || true)"
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
       kill "${pid}" 2>/dev/null || true
+      local _
       for _ in $(seq 1 30); do
         kill -0 "${pid}" 2>/dev/null || break
         sleep 0.1
@@ -58,7 +106,7 @@ stop_h3_envoy() {
 ensure_certs() {
   mkdir -p "${H3_CERT_DIR}"
   if [[ ! -f "${H3_CERT_DIR}/servercert.pem" || ! -f "${H3_CERT_DIR}/serverkey.pem" ]]; then
-    command -v openssl >/dev/null || { echo "openssl required for H3 experiment certs" >&2; exit 2; }
+    echo "==> generating self-signed cert in ${H3_CERT_DIR}"
     openssl req -x509 -newkey rsa:2048 \
       -keyout "${H3_CERT_DIR}/serverkey.pem" \
       -out "${H3_CERT_DIR}/servercert.pem" \
@@ -69,8 +117,6 @@ ensure_certs() {
 }
 
 render_cfg() {
-  [[ -f "${TEMPLATE}" ]] || { echo "missing ${TEMPLATE}" >&2; exit 2; }
-  # Escape paths for sed replacement.
   local cert key
   cert="${H3_CERT_DIR}/servercert.pem"
   key="${H3_CERT_DIR}/serverkey.pem"
@@ -81,9 +127,11 @@ render_cfg() {
     -e "s|port_value: 18098|port_value: ${ORIGIN_PORT}|g" \
     "${TEMPLATE}" >"${H3_CFG_RENDERED}"
   grep -q 'failure_mode_allow: false' "${H3_CFG_RENDERED}" \
-    || { echo "rendered H3 config must keep failure_mode_allow: false" >&2; exit 2; }
+    || die_deps "rendered H3 config must keep failure_mode_allow: false"
   grep -q 'request_body_mode: NONE' "${H3_CFG_RENDERED}" \
-    || { echo "rendered H3 config must keep request_body_mode: NONE" >&2; exit 2; }
+    || die_deps "rendered H3 config must keep request_body_mode: NONE"
+  grep -q 'codec_type: HTTP3' "${H3_CFG_RENDERED}" \
+    || die_deps "rendered H3 config must set codec_type: HTTP3"
 }
 
 start_h3_envoy() {
@@ -105,32 +153,45 @@ h3() {
 }
 
 status_of() {
-  # First line: STATUS <code>
   echo "$1" | awk '/^STATUS /{print $2; exit}'
+}
+
+# Run the H3 client without aborting the suite on transport errors.
+h3_capture() {
+  local out rc
+  set +e
+  out="$(h3 "$@" 2>&1)"
+  rc=$?
+  set -e
+  H3_LAST_OUT="${out}"
+  H3_LAST_RC="${rc}"
 }
 
 expect_h3() {
   local name="$1" want_status="$2" want_delta="$3"
   shift 3
-  local before after out code delta
+  local before after code delta
   before="$(origin_hits)"
-  out="$(h3 "$@" 2>&1)" || true
+  h3_capture "$@"
   sleep 0.1
   after="$(origin_hits)"
   delta=$((after - before))
-  code="$(status_of "${out}")"
+  code="$(status_of "${H3_LAST_OUT}")"
+  if [[ -z "${code}" ]]; then
+    fail "[${name}] no STATUS (client rc=${H3_LAST_RC})"
+    echo "${H3_LAST_OUT}" | sed 's/^/    /'
+    return 0
+  fi
   if [[ "${code}" == "${want_status}" && "${delta}" == "${want_delta}" ]]; then
     pass "[${name}] HTTP ${code}, origin hits +${delta}"
   else
-    fail "[${name}] HTTP ${code:-?} (want ${want_status}), origin +${delta} (want +${want_delta})"
-    echo "${out}" | sed 's/^/    /'
+    fail "[${name}] HTTP ${code} (want ${want_status}), origin +${delta} (want +${want_delta})"
+    echo "${H3_LAST_OUT}" | sed 's/^/    /'
   fi
 }
 
-echo "==> H3 experiment (not product support) pin=$(envoy --version 2>&1 | grep -o '1\.[0-9]*\.[0-9]*' | head -1)"
-python3 -c 'import aioquic' 2>/dev/null \
-  || { echo "aioquic missing — pip install aioquic" >&2; exit 2; }
-require_connector
+require_deps
+ensure_stack
 ensure_certs
 render_cfg
 envoy --mode validate -c "${H3_CFG_RENDERED}" >/dev/null
@@ -147,47 +208,49 @@ echo "==> NONE honesty: SQLi in body → 200, origin +1"
 expect_h3 "h3-sqli-body-bypass" 200 1 \
   --method POST --path /login --body "user=admin'%20UNION%20SELECT%201,2,3--"
 
-if ! rg -q '"GET / HTTP/3" 200' "${H3_LOG}"; then
-  fail "[access-log] missing HTTP/3 200 line in ${H3_LOG}"
-else
+if grep -qE '"GET / HTTP/3" 200' "${H3_LOG}"; then
   pass "[access-log] HTTP/3 present"
-fi
-if ! rg -q 'http_version="3.0"' "${RUN}/connector.log"; then
-  fail "[connector] missing http_version=3.0 in connector.log"
 else
+  fail "[access-log] missing HTTP/3 200 line in ${H3_LOG}"
+fi
+if grep -qE 'http_version="3\.0"' "${RUN}/connector.log"; then
   pass "[connector] http_version=3.0 logged"
+else
+  fail "[connector] missing http_version=3.0 in connector.log"
 fi
 
 echo "==> fail-closed: kill connector → 500, origin untouched"
 before="$(origin_hits)"
 kill -9 "$(cat "${RUN}/connector.pid")"
 for _ in $(seq 1 30); do
-  curl -sf "${METRICS}/healthz" >/dev/null 2>&1 || break
+  if ! curl -sf "${METRICS}/healthz" >/dev/null 2>&1; then
+    break
+  fi
   sleep 0.1
 done
-out="$(h3 --path / 2>&1)" || true
+h3_capture --path /
 sleep 0.1
 delta=$(( $(origin_hits) - before ))
-code="$(status_of "${out}")"
+code="$(status_of "${H3_LAST_OUT}")"
 if [[ "${code}" == "500" && "${delta}" == "0" ]]; then
   pass "[h3-killed] HTTP 500, origin hits +0"
 else
   fail "[h3-killed] HTTP ${code:-?} (want 500), origin +${delta} (want 0)"
 fi
 start_connector
-if ! wait_http "${METRICS}/healthz" 100; then
-  fail "[restore] connector not ready"
-else
+if wait_http "${METRICS}/healthz" 100; then
   pass "[restore] connector ready"
+else
+  fail "[restore] connector not ready"
 fi
 
 echo "==> fail-closed: hang connector (SIGSTOP) → 504, origin untouched"
 before="$(origin_hits)"
 kill -STOP "$(cat "${RUN}/connector.pid")"
-out="$(h3 --path / --timeout 8 2>&1)" || true
+h3_capture --path / --timeout 8
 sleep 0.1
 delta=$(( $(origin_hits) - before ))
-code="$(status_of "${out}")"
+code="$(status_of "${H3_LAST_OUT}")"
 kill -CONT "$(cat "${RUN}/connector.pid")" 2>/dev/null || true
 if [[ "${code}" == "504" && "${delta}" == "0" ]]; then
   pass "[h3-hung] HTTP 504, origin hits +0"
@@ -196,7 +259,9 @@ else
 fi
 if ! curl -sf "${METRICS}/healthz" >/dev/null; then
   start_connector
-  wait_http "${METRICS}/healthz" 100 >/dev/null || true
+  if ! wait_http "${METRICS}/healthz" 100; then
+    fail "[restore-after-hang] connector not ready"
+  fi
 fi
 
 fma="$(curl -s "http://127.0.0.1:${H3_ADMIN_PORT}/stats" \
@@ -207,17 +272,21 @@ else
   fail "[envoy] failure_mode_allowed=${fma:-?} (want 0)"
 fi
 
-# Leave H3 Envoy up for manual follow-up unless H3_PROBE_DOWN=1.
-if [[ "${H3_PROBE_DOWN:-0}" == "1" ]]; then
-  stop_h3_envoy
-  echo "==> H3 Envoy stopped (H3_PROBE_DOWN=1)"
-else
+# Default: stop H3 Envoy. Keep with H3_PROBE_KEEP=1 (or legacy H3_PROBE_DOWN=0).
+if [[ "${H3_PROBE_KEEP:-0}" == "1" || "${H3_PROBE_DOWN:-1}" == "0" ]]; then
   echo "==> H3 Envoy still up (UDP :${H3_PORT}, admin :${H3_ADMIN_PORT}, log ${H3_LOG})"
-  echo "    stop with: kill \$(cat ${H3_PID})"
+  echo "    stop with: kill \$(cat ${H3_PID})  or  ./demo/scripts/down.sh"
+else
+  stop_h3_envoy
+  echo "==> H3 Envoy stopped"
 fi
 
 if [[ "${FAIL}" -ne 0 ]]; then
-  echo "H3 PROBE FAILED checks_failed=${FAIL}"
+  echo "H3 PROBE FAILED checks_failed=${FAIL} pass=${PASS}"
   exit 1
 fi
-echo "H3 PROBE PASSED (experiment only — not product H3 support)"
+if [[ "${PASS}" -lt "${MIN_H3_CHECKS}" ]]; then
+  echo "H3 PROBE FAILED pass=${PASS} < MIN_H3_CHECKS=${MIN_H3_CHECKS}"
+  exit 1
+fi
+echo "H3 PROBE PASSED checks=${PASS} (lab only — not product H3 support)"

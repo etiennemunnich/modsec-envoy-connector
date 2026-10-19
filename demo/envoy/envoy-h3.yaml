@@ -1,12 +1,12 @@
-# EXPERIMENT — HTTP/3 (QUIC) downstream + ext_proc. Not product support.
+# Lab HTTP/3 (QUIC) downstream + ext_proc. Not product support / not PR CI.
 #
-# Measured once on Envoy v1.39.4 (cloud VM): aioquic client → UDP :18443 →
+# Driven by demo/scripts/h3-probe.sh (aioquic). Envoy at ENVOY_PIN: UDP :18443 →
 # ext_proc (failure_mode_allow: false, body modes NONE) → connector → origin.
 # Header/query CRS can deny; bodies are not sent (NONE honesty). Fail-closed
-# kill→500 and hang→504 held. Do not read this as "H3 WAF supported".
+# kill→500 and hang→504 are asserted by the script. Do not read as "H3 WAF supported".
 #
-# Cert paths are placeholders; demo/scripts/h3-probe.sh renders them into
-# demo/.run/envoy-h3.yaml before starting Envoy with --base-id 17.
+# Cert paths are placeholders; h3-probe.sh renders them into demo/.run/envoy-h3.yaml
+# and starts Envoy with --base-id 17 (alongside the TCP demo Envoy).
 #
 # Ports (defaults; DEMO_PORT_BASE shifts the TCP demo only — H3 ports are fixed
 # unless H3_PORT / H3_ADMIN_PORT are set when rendering):

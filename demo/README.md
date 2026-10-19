@@ -30,7 +30,7 @@ curl ──► Envoy :18080 ──ext_proc gRPC──► ext-proc-modsec :18081 
 | [`partial-honesty.sh`](./scripts/partial-honesty.sh) | BUFFERED_PARTIAL only: SQLi in a small body **403**; SQLi after a 2 MiB pad reaches the origin. |
 | [`buffered-oversize.sh`](./scripts/buffered-oversize.sh) | BUFFERED only: a body over a 1 KiB ModSecurity and Envoy limit gets **413**. |
 | [`connect-assert.sh`](./scripts/connect-assert.sh) | CONNECT → **403** fast, origin untouched, ext_proc disabled on that route. |
-| [`h3-probe.sh`](./scripts/h3-probe.sh) | **Experiment only** (not product support): QUIC/HTTP/3 listener + ext_proc (NONE bodies), aioquic client. Header/query CRS, NONE body bypass honesty, fail-closed kill→500 / hang→504. Needs `pip install aioquic`. Config: [`envoy/envoy-h3.yaml`](./envoy/envoy-h3.yaml). |
+| [`h3-probe.sh`](./scripts/h3-probe.sh) | **Lab HTTP/3 suite** (not product support; demo-only, not PR CI): brings up or attaches to NONE stack + QUIC Envoy, aioquic client. Asserts ≥9 PASS (200 / query 403 / body bypass / kill→500 / hang→504 / `failure_mode_allowed=0`). Needs `pip install aioquic`. Config: [`envoy/envoy-h3.yaml`](./envoy/envoy-h3.yaml). |
 | [`perf.sh`](./scripts/perf.sh) | Latency samples (p50/p99) for allow and deny paths; fails on an empty or partial run. Not an SLO. Results in `demo/.run/perf/`. |
 | [`down.sh`](./scripts/down.sh) | Stops everything `up.sh` started. |
 | [`origin.py`](./scripts/origin.py), [`daemonize.py`](./scripts/daemonize.py), [`lib.sh`](./scripts/lib.sh) | Demo origin (records every hit with its request id and writes each response in one segment), a detach helper, shared settings. |
@@ -45,7 +45,7 @@ Logs, pid files, generated rules and the ModSecurity audit log go to `demo/.run/
 | [`envoy/envoy-streamed.yaml`](./envoy/envoy-streamed.yaml) | STREAMED bodies (`BODY_MODE=STREAMED`). |
 | [`envoy/envoy-full-duplex.yaml`](./envoy/envoy-full-duplex.yaml) | FULL_DUPLEX_STREAMED bodies, trailers `SEND`; the connector runs with `--body-reply streamed`. |
 | [`envoy/envoy-none.yaml`](./envoy/envoy-none.yaml) | NONE: headers only (`BODY_MODE=NONE`). |
-| [`envoy/envoy-h3.yaml`](./envoy/envoy-h3.yaml) | **Experiment:** UDP QUIC / HTTP/3 + ext_proc (`failure_mode_allow: false`, NONE bodies). Not a product body mode. |
+| [`envoy/envoy-h3.yaml`](./envoy/envoy-h3.yaml) | **Lab:** UDP QUIC / HTTP/3 + ext_proc (`failure_mode_allow: false`, NONE bodies). Rendered by `h3-probe.sh`. Not a product body mode. |
 | [`envoy/envoy-buffered-partial.yaml`](./envoy/envoy-buffered-partial.yaml) | BUFFERED_PARTIAL with `per_connection_buffer_limit_bytes: 1048576` (1 MiB). |
 | [`envoy/envoy-req-buffered-resp-streamed.yaml`](./envoy/envoy-req-buffered-resp-streamed.yaml), [`envoy/envoy-req-streamed-resp-buffered.yaml`](./envoy/envoy-req-streamed-resp-buffered.yaml) | Different body modes per direction. |
 | [`envoy/envoy-trailers.yaml`](./envoy/envoy-trailers.yaml), [`envoy/envoy-streamed-trailers.yaml`](./envoy/envoy-streamed-trailers.yaml) | The stock and STREAMED configs plus HTTP/1 `enable_trailers`, for `trailers.sh`. |

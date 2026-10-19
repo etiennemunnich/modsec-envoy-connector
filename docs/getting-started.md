@@ -91,6 +91,13 @@ BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh &
 
 Under FULL_DUPLEX_STREAMED the frozen-connector check is reported as `SKIP`: Envoy does not apply `message_timeout` in that mode. NONE and BUFFERED_PARTIAL are limited modes: [body-modes.md](./body-modes.md). `DEMO_CRS=0 ./demo/scripts/up.sh` runs without CRS.
 
+Optional **lab HTTP/3** (not product support; needs `pip install aioquic`):
+
+```bash
+BODY_MODE=NONE ./demo/scripts/up.sh   # or let h3-probe start NONE for you
+./demo/scripts/h3-probe.sh            # QUIC :18443; ≥9 PASS; demo-only, not PR CI
+```
+
 ## 6. Stop
 
 ```bash
@@ -110,4 +117,4 @@ For alpha testers:
 - [ ] no `failure_mode_allow: true` in any config you tested
 - [ ] results filed with the [bug template](https://github.com/etiennemunnich/modsec-envoy-connector/issues/new?template=bug.md): versions, OS and architecture, and the script output
 
-This alpha does not claim production readiness, HTTP/3 or WebSocket-frame inspection, HTTP/2 coverage from go-ftw (it is HTTP/1.x only), or full CRS inspection under BUFFERED_PARTIAL or NONE. Envoy normalizes some headers (for example non-URI `Referer` and hop-by-hop `Connection`) before ModSecurity sees them; aim rules at what is still forwarded: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Open issues: [`CHANGELOG.md`](../CHANGELOG.md).
+This alpha does not claim production readiness, product HTTP/3 WAF support (there is only a lab `h3-probe.sh` hop), WebSocket-frame inspection, HTTP/2 coverage from go-ftw (it is HTTP/1.x only), or full CRS inspection under BUFFERED_PARTIAL or NONE. Envoy normalizes some headers (for example non-URI `Referer` and hop-by-hop `Connection`) before ModSecurity sees them; aim rules at what is still forwarded: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Open issues: [`CHANGELOG.md`](../CHANGELOG.md).

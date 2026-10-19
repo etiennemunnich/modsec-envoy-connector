@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Stop Envoy, the connector and the demo origin.
+# Stop Envoy, the connector and the demo origin (and the lab H3 Envoy if up).
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
 stop_pidfile "${RUN}/envoy.pid"
+stop_pidfile "${RUN}/envoy-h3.pid"
 stop_pidfile "${RUN}/connector.pid"
 stop_pidfile "${RUN}/origin.pid"
 # Stragglers from a previous run that lost its pid files.

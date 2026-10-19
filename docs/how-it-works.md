@@ -118,7 +118,7 @@ The deny body is always generic. Rule ids and matched data go only to the connec
 |---------|--------------|
 | gRPC message bodies | headers, path and metadata are inspected (`hop-trace-grpc.sh`); protobuf bodies are not. Fail-closed still holds |
 | WebSocket frames | the upgrade handshake can be inspected with a headers-only route; frames after the upgrade are not. BUFFERED on an upgrade route hangs |
-| HTTP/3 | lab QUIC probe only (`demo/scripts/h3-probe.sh` + `demo/envoy/envoy-h3.yaml`); not a product body mode or CRS claim |
+| HTTP/3 | lab demo suite only (`demo/scripts/h3-probe.sh` + `demo/envoy/envoy-h3.yaml`); not a product body mode, not PR CI, not a CRS H3 claim |
 | trailer values | never inspected; trailers only end a STREAMED / FULL_DUPLEX body phase. Configs with a body mode need trailer mode `SEND`; `SKIP` lets the request reach origin |
 | bodies under NONE, and past the limit under BUFFERED_PARTIAL | [body-modes.md](./body-modes.md) |
 | Non-URI `Referer`, hop-by-hop `Connection` | Envoy may remove them before `ext_proc`, so rules that only look at those values may not fire. Absolute-URI Referers still reach ModSec. [crs-and-envoy-limits.md](./crs-and-envoy-limits.md) |
