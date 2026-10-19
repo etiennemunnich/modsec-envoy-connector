@@ -310,6 +310,10 @@ check "floor: buffered-oversize 4"                     0 "$(floor_ok BUFFERED bu
 check "floor: buffered-oversize 3 (neg)"               1 "$(floor_ok BUFFERED buffered-oversize 'BUFFERED-OVERSIZE PASSED body_mode=BUFFERED checks=3')"
 check "floor: connect-assert 1"                        0 "$(floor_ok BUFFERED connect-assert 'CONNECT-ASSERT PASSED body_mode=BUFFERED checks=1')"
 check "floor: connect-assert 0 (neg)"                  1 "$(floor_ok BUFFERED connect-assert 'CONNECT-ASSERT PASSED body_mode=BUFFERED checks=0')"
+check "floor: h3-probe 14"                             0 "$(floor_ok BUFFERED h3-probe 'H3 PROBE PASSED checks=14 (lab only — not product H3 support)')"
+check "floor: h3-probe 13 (neg)"                       1 "$(floor_ok BUFFERED h3-probe 'H3 PROBE PASSED checks=13 (lab only — not product H3 support)')"
+check "floor: cookie-protocols 13"                     0 "$(floor_ok BUFFERED cookie-protocols 'COOKIE-PROTOCOLS PASSED checks=13 (Envoy Cookie coalesce / multi-Cookie CRS; lab H3 if included)')"
+check "floor: cookie-protocols 12 (neg)"               1 "$(floor_ok BUFFERED cookie-protocols 'COOKIE-PROTOCOLS PASSED checks=12 (Envoy Cookie coalesce / multi-Cookie CRS; lab H3 if included)')"
 check "floor: go-ftw-smoke 8 + 118"                    0 "$(floor_ok BUFFERED go-ftw-smoke 'demo tests: success=8 failed=0' 'CRS body ids: success=118 failed=0')"
 check "floor: go-ftw-smoke body 99 (neg)"              1 "$(floor_ok BUFFERED go-ftw-smoke 'demo tests: success=8 failed=0' 'CRS body ids: success=99 failed=0')"
 check "floor: go-ftw-smoke no demo line (neg)"         1 "$(floor_ok BUFFERED go-ftw-smoke 'CRS body ids: success=118 failed=0')"
@@ -355,6 +359,19 @@ grep -q 'response_body_mode: NONE' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 
 check "demo: envoy-none response bodies NONE" 0 "${ok}"
 grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-none.yaml" && ok=0 || ok=1
 check "demo: envoy-none fail-closed" 0 "${ok}"
+# Lab HTTP/3 (QUIC) config — demo suite only; must stay fail-closed + NONE.
+[[ -f "${ROOT}/demo/envoy/envoy-h3.yaml" ]] && ok=0 || ok=1
+check "demo: envoy-h3.yaml present" 0 "${ok}"
+grep -q 'codec_type: HTTP3' "${ROOT}/demo/envoy/envoy-h3.yaml" && ok=0 || ok=1
+check "demo: envoy-h3 codec HTTP3" 0 "${ok}"
+grep -q 'request_body_mode: NONE' "${ROOT}/demo/envoy/envoy-h3.yaml" && ok=0 || ok=1
+check "demo: envoy-h3 bodies NONE" 0 "${ok}"
+grep -q 'failure_mode_allow: false' "${ROOT}/demo/envoy/envoy-h3.yaml" && ok=0 || ok=1
+check "demo: envoy-h3 fail-closed" 0 "${ok}"
+[[ -x "${ROOT}/demo/scripts/h3-probe.sh" ]] && ok=0 || ok=1
+check "demo: h3-probe.sh executable" 0 "${ok}"
+[[ -x "${ROOT}/demo/scripts/h3get.py" ]] && ok=0 || ok=1
+check "demo: h3get.py executable" 0 "${ok}"
 grep -q 'e2e-none' "${ROOT}/.github/workflows/e2e-lab.yml" && ok=0 || ok=1
 check "e2e-lab: e2e-none job present" 0 "${ok}"
 grep -q 'e2e-buffered-partial' "${ROOT}/.github/workflows/e2e-lab.yml" && ok=0 || ok=1

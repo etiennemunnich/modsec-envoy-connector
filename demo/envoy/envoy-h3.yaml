@@ -1,0 +1,114 @@
+# Lab HTTP/3 (QUIC) downstream + ext_proc. Not product support / not PR CI.
+#
+# Driven by demo/scripts/h3-probe.sh (aioquic). Envoy at ENVOY_PIN: UDP :18443 →
+# ext_proc (failure_mode_allow: false, body modes NONE) → connector → origin.
+# Header/query CRS can deny; bodies are not sent (NONE honesty). Fail-closed
+# kill→500 and hang→504 are asserted by the script. Do not read as "H3 WAF supported".
+#
+# Cert paths are placeholders; h3-probe.sh renders them into demo/.run/envoy-h3.yaml
+# and starts Envoy with --base-id 17 (alongside the TCP demo Envoy).
+#
+# Ports (defaults; DEMO_PORT_BASE shifts the TCP demo only — H3 ports are fixed
+# unless H3_PORT / H3_ADMIN_PORT are set when rendering):
+#   UDP QUIC :18443   admin :18449   connector :18081   origin :18098
+
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 18449 }
+
+static_resources:
+  listeners:
+  - name: ingress_h3
+    address:
+      socket_address:
+        protocol: UDP
+        address: 127.0.0.1
+        port_value: 18443
+    udp_listener_config:
+      quic_options: {}
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.quic
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.quic.v3.QuicDownstreamTransport
+          downstream_tls_context:
+            common_tls_context:
+              tls_certificates:
+              - certificate_chain: { filename: __H3_CERT__ }
+                private_key: { filename: __H3_KEY__ }
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          codec_type: HTTP3
+          stat_prefix: ingress_h3
+          http3_protocol_options: {}
+          generate_request_id: true
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                text_format_source:
+                  inline_string: "[%START_TIME%] \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% details=%RESPONSE_CODE_DETAILS% flags=%RESPONSE_FLAGS% rid=%REQ(X-REQUEST-ID)% upstream=%UPSTREAM_HOST% dur=%DURATION%\n"
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: app
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                route: { cluster: origin }
+          http_filters:
+          - name: envoy.filters.http.ext_proc
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+              stat_prefix: modsec_ext_proc_h3
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: modsec_ext_proc
+              failure_mode_allow: false
+              message_timeout: 2s
+              processing_mode:
+                request_header_mode: SEND
+                response_header_mode: SEND
+                request_body_mode: NONE
+                response_body_mode: NONE
+                request_trailer_mode: SKIP
+                response_trailer_mode: SKIP
+              request_attributes:
+              - source.address
+              - source.port
+              - destination.address
+              - destination.port
+              - request.protocol
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  - name: modsec_ext_proc
+    type: STATIC
+    connect_timeout: 1s
+    typed_extension_protocol_options:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        explicit_http_config:
+          http2_protocol_options: {}
+    load_assignment:
+      cluster_name: modsec_ext_proc
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18081 }
+  - name: origin
+    type: STATIC
+    connect_timeout: 1s
+    load_assignment:
+      cluster_name: origin
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18098 }
