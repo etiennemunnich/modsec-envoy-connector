@@ -13,7 +13,9 @@
 #   6       audit log unwritable        → decisions unchanged or connector refuses to boot
 #   fo      negative control: failure_mode_allow: true (temporary Envoy config) lets
 #           traffic through on kill and hang — proves the drills above can see fail-open
-#   cookie  split Cookie headers: each crumb is inspected
+#   cookie  split Cookie headers / crumbs: benign multi-Cookie 200; XSS in 2nd
+#           crumb, 1st crumb, and single joined Cookie → 403 (H1+H2). H3: see
+#           cookie-protocols.sh / h3-probe.sh (lab QUIC).
 #   body    attack only in the last H1 chunk / last H2 DATA frames → 403 (BUFFERED)
 #
 # Class 3 cannot be injected through a well-behaved Envoy, so it runs the
@@ -308,9 +310,15 @@ run_fail_open_control() {
 
 run_cookie() {
   local id="C2-${PROTO}"
+  # Multi-Cookie field lines on one request (H1: separate headers; H2: curl may
+  # send multiple cookie fields — Envoy reconstitutes before ModSec).
   expect "${id}-benign" 200 1 -H 'cookie: session=ok' -H 'cookie: theme=dark' "${BASE}/"
   expect "${id}-attack-in-2nd" 403 0 -H 'cookie: session=ok' \
     -H 'cookie: theme=<script>alert(1)</script>' "${BASE}/"
+  expect "${id}-attack-in-1st" 403 0 \
+    -H 'cookie: theme=<script>alert(1)</script>' -H 'cookie: session=ok' "${BASE}/"
+  expect "${id}-joined-xss" 403 0 \
+    -H 'cookie: session=ok; theme=<script>alert(1)</script>' "${BASE}/"
 }
 
 run_tail_body() {

@@ -11,9 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Demo **lab HTTP/3 suite** (not product support, not PR CI): [`demo/envoy/envoy-h3.yaml`](./demo/envoy/envoy-h3.yaml) +
-  [`demo/scripts/h3-probe.sh`](./demo/scripts/h3-probe.sh) / [`h3get.py`](./demo/scripts/h3get.py) (aioquic).
-  Attaches or starts NONE stack; PASS floor ≥ 9; `failure_mode_allow: false`, NONE bodies.
-  Floor wired in `scripts/ci-floors.sh` for honesty; suite stays demo-only (extra deps / minutes).
+  [`h3-probe.sh`](./demo/scripts/h3-probe.sh) / [`h3-lib.sh`](./demo/scripts/h3-lib.sh) / [`h3get.py`](./demo/scripts/h3get.py).
+  PASS floor ≥ 14 (hop/fail-closed + Cookie crumbs). Demo-only.
+- Demo **Cookie protocols** suite: [`cookie-protocols.sh`](./demo/scripts/cookie-protocols.sh) locks multi-`Cookie`
+  / crumb CRS on H1 + H2 + lab H3 (≥13 PASS). `fail-modes.sh --class cookie` expanded (1st crumb + joined XSS).
 - Docs: [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) — operator guide to what Envoy
   forwards to ModSecurity (and how to aim custom SecRules), linked from the README and
   [how-it-works](./docs/how-it-works.md) “What is not inspected.”

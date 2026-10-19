@@ -77,7 +77,7 @@ sequenceDiagram
   end
 ```
 
-HTTP/1.1 and HTTP/2 take the same path. Envoy joins split HTTP/2 `Cookie` headers before the connector sees them. `allow_custom_methods` in the Envoy config lets CRS rule 911100 judge non-standard methods instead of Envoy's codec dropping them. `demo/scripts/hop-trace.sh` follows one request across Envoy, the connector and the origin by `x-request-id`.
+HTTP/1.1 and HTTP/2 take the same path. Envoy joins split HTTP/2 `Cookie` headers with `"; "` before the connector sees them; the lab HTTP/3 listener does the same for QPACK crumbs (`demo/scripts/cookie-protocols.sh`, `h3-probe.sh` — not product H3 WAF support). `allow_custom_methods` in the Envoy config lets CRS rule 911100 judge non-standard methods instead of Envoy's codec dropping them. `demo/scripts/hop-trace.sh` follows one request across Envoy, the connector and the origin by `x-request-id`.
 
 ## One exchange, step by step
 

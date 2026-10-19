@@ -91,11 +91,13 @@ BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh &
 
 Under FULL_DUPLEX_STREAMED the frozen-connector check is reported as `SKIP`: Envoy does not apply `message_timeout` in that mode. NONE and BUFFERED_PARTIAL are limited modes: [body-modes.md](./body-modes.md). `DEMO_CRS=0 ./demo/scripts/up.sh` runs without CRS.
 
-Optional **lab HTTP/3** (not product support; needs `pip install aioquic`):
+Optional **lab HTTP/3** and **Cookie crumb** suites (not product H3 WAF; H3 needs `pip install aioquic`):
 
 ```bash
-BODY_MODE=NONE ./demo/scripts/up.sh   # or let h3-probe start NONE for you
-./demo/scripts/h3-probe.sh            # QUIC :18443; ≥9 PASS; demo-only, not PR CI
+BODY_MODE=NONE ./demo/scripts/up.sh   # or let the scripts start NONE for you
+./demo/scripts/h3-probe.sh            # QUIC :18443; ≥14 PASS (hop + Cookie); demo-only
+./demo/scripts/cookie-protocols.sh    # H1 + H2 + lab H3 multi-Cookie / crumb CRS (≥13 PASS)
+./demo/scripts/fail-modes.sh --class cookie   # H1+H2 Cookie class only
 ```
 
 ## 6. Stop

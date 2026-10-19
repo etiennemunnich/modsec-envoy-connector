@@ -41,15 +41,18 @@ MIN_WS_FRAMES="${MIN_WS_FRAMES:-6}"
 MIN_PARTIAL_HONESTY="${MIN_PARTIAL_HONESTY:-3}"
 MIN_BUFFERED_OVERSIZE="${MIN_BUFFERED_OVERSIZE:-4}"
 MIN_CONNECT_ASSERT="${MIN_CONNECT_ASSERT:-1}"
-# h3-probe: lab-only QUIC suite (demo script; not on every PR). 9 PASS cells.
-MIN_H3_CHECKS="${MIN_H3_CHECKS:-9}"
+# h3-probe: lab-only QUIC suite (demo script; not on every PR).
+# 9 hop/fail-closed + 5 Cookie crumb cells.
+MIN_H3_CHECKS="${MIN_H3_CHECKS:-14}"
+# cookie-protocols: H1+H2 (4 each) + H3 (5 incl. empty crumb) = 13.
+MIN_COOKIE_PROTOCOLS="${MIN_COOKIE_PROTOCOLS:-13}"
 # MIN_FTW_BODY: set by ci-live-e2e.sh from the installed CRS tag (version-aware);
 # floor() falls back to MIN_FTW_BODY_PIN.
 
 # Suite summary lines for the report table. Must match mid-line suffixes
 # (e.g. "SMOKE PASSED body_mode=BUFFERED body_checks=6"), not only EOL PASSED.
 # shellcheck disable=SC2034 # read by ci-live-e2e.sh and test-ci-scripts.sh
-SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS|PARTIAL-HONESTY|BUFFERED-OVERSIZE|CONNECT-ASSERT|H3 PROBE'
+SUMMARY_RE='summary: PASS=|^(demo tests|CRS body ids|CRS full):|\bPASSED\b|\bFAILED\b|HOP-TRACE|TRAILERS|PARTIAL-HONESTY|BUFFERED-OVERSIZE|CONNECT-ASSERT|H3 PROBE|COOKIE-PROTOCOLS'
 
 # ftw_success <log> <line prefix> — go-ftw success= count on that summary line (0 if absent).
 ftw_success() {
@@ -98,6 +101,7 @@ floor() {
     buffered-oversize) marker_count "$2" 'BUFFERED-OVERSIZE PASSED' checks "${MIN_BUFFERED_OVERSIZE}" || return 1 ;;
     connect-assert) marker_count "$2" 'CONNECT-ASSERT PASSED' checks "${MIN_CONNECT_ASSERT}" || return 1 ;;
     h3-probe) marker_count "$2" 'H3 PROBE PASSED' checks "${MIN_H3_CHECKS}" || return 1 ;;
+    cookie-protocols) marker_count "$2" 'COOKIE-PROTOCOLS PASSED' checks "${MIN_COOKIE_PROTOCOLS}" || return 1 ;;
     go-ftw-smoke)
       n="$(ftw_success "$2" 'demo tests')"
       [[ "${n}" -ge "${MIN_FTW_DEMO}" ]] || { echo "demo tests success=${n} < ${MIN_FTW_DEMO}"; return 1; }
