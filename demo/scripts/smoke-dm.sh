@@ -104,18 +104,10 @@ if [[ "${BODY_MODE}" == "NONE" ]]; then
   echo "==> response path (NONE → no response body to ModSec; leak reaches client)"
   expect "response-body-leak-bypass" 200 1 "${BASE}/leak"
 elif [[ "${BODY_MODE}" == "STREAMED" ]]; then
-  # STREAMED response: headers Continue may release body before phase-4 deny.
-  # Accept 403 (caught) or 200 (early release honesty); origin +1 either way.
-  echo "==> response path (STREAMED honesty: phase-4 may or may not beat early release)"
-  before="$(origin_hits)"
-  code="$(http_code "${BASE}/leak")"
-  sleep 0.15
-  delta=$(( $(origin_hits) - before ))
-  if [[ "$delta" == "1" && ( "$code" == "403" || "$code" == "200" ) ]]; then
-    body_pass "[response-body-leak] HTTP $code origin +1 (STREAMED response honesty)"
-  else
-    fail "[response-body-leak] HTTP $code origin +$delta (want 200|403, +1)"
-  fi
+  # stream_chunks holds response headers until phase 4 → deny is 403 (not leak→200).
+  # Origin still executes (+1). Request-path forward-before-deny is separate.
+  echo "==> response path (stream_chunks: hold response headers → phase-4 deny 403)"
+  expect "response-body-leak" 403 1 --body "${BASE}/leak"
 else
   echo "==> response path (origin answers; phase-4 demo rule blocks the leak)"
   expect "response-body-leak" 403 1 --body "${BASE}/leak"

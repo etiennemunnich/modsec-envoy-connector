@@ -3,8 +3,8 @@
 #
 #   A) module.remote paste → prove fail-open (filter omitted / unfiltered 200)
 #      then document that product configs must forbid remote.
-#   B) Optional: build with --features negctl-continue-on-err and show Continue
-#      after EngineError hits origin; default build must not.
+#   B) Unit floor: EngineError → send_response(500) + Stop* (never filter Continue).
+#      There is no Continue-after-Err feature flag (removed; it lied — Stop* without 500).
 #
 # Exit 0 only when both: remote fail-open is **demonstrated** AND default
 # .so still EngineError→500 (unit tests cover B when cargo test runs).
@@ -91,16 +91,16 @@ else
   fail "[remote] inconclusive (alive=${remote_alive} code=${code} origin ${before}→${after}); see ${ART}/negctl-remote-envoy.log"
 fi
 
-echo "==> B) Continue-on-Err: unit test floor (default build must send 500)"
+echo "==> B) EngineError → 500 unit floor (never Continue after Err)"
 set +e
 (cd "${ROOT}" && cargo test -q -p modsec-dm engine_error_sends_500_never_continue -- --nocapture) \
-  >"${ART}/negctl-continue-on-err-unit.log" 2>&1
+  >"${ART}/negctl-engine-error-unit.log" 2>&1
 trc=$?
 set -e
 if [[ "$trc" -eq 0 ]]; then
-  pass "[continue-on-err] unit: EngineError → 500 on default build"
+  pass "[engine-error] unit: EngineError → 500 + Stop* on default build"
 else
-  fail "[continue-on-err] unit failed — see ${ART}/negctl-continue-on-err-unit.log"
+  fail "[engine-error] unit failed — see ${ART}/negctl-engine-error-unit.log"
 fi
 
 stop_pidfile "${RUN}/origin-negctl.pid" KILL

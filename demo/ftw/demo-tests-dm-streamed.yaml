@@ -2,7 +2,7 @@
 # (headers Continue → early body release). Leak expects 200 (honesty).
 meta:
   author: "modsec-envoy-connector"
-  description: "DM STREAMED — query/body CRS; response leak honesty (may reach client)"
+  description: "DM stream_chunks — query/body CRS; response headers held until phase 4 (leak → 403)"
   name: "demo-tests-dm-streamed.yaml"
 rule_id: 949110
 tests:
@@ -106,7 +106,7 @@ tests:
         output:
           status: 403
   - test_id: 8
-    desc: "STREAMED response honesty: leak marker may reach client (200)"
+    desc: "stream_chunks holds response headers — phase-4 leak marker denied (403)"
     stages:
       - input:
           method: GET
@@ -117,7 +117,7 @@ tests:
             User-Agent: "OWASP CRS test agent"
             Accept: "*/*"
         output:
-          status: 200
+          status: 403
   - test_id: 9
     desc: "Cookie crumb + benign GET allowed"
     stages:

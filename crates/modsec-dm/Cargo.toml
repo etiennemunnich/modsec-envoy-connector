@@ -17,9 +17,6 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Test-only: Mid-exchange EngineError Continuues (fail-open). Used by
-# demo/scripts/fail-closed-dm-negctl.sh to prove the default build never does this.
-negctl-continue-on-err = []
 # Re-export engine fail-inject for MockEnvoy unit tests.
 fail-inject = ["modsec-engine/fail-inject"]
 
