@@ -1,6 +1,13 @@
 # Run it beside your own Envoy
 
-How to run `ext-proc-modsec` next to an Envoy you operate: get the connector, write the rules entry file, start it, add the `ext_proc` filter, and check that it fails closed. The local demo ([getting-started.md](./getting-started.md)) is the same wiring with every piece on one host.
+How to run **modsec-envoy-connector** next to an Envoy you operate. **Elect one hop** (alpha dual option, early testing):
+
+| Election | Artifact | Fail-closed model |
+|----------|----------|-------------------|
+| **ext_proc** (default) | `ext-proc-modsec` sidecar + HTTP/2 cluster | Absolute — [`fail-closed.md`](./fail-closed.md) |
+| **dynamic module** (alpha) | `libmodsec_dm.so` via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH` | Weaker — [`fail-closed-dm.md`](./fail-closed-dm.md); forbid `module.remote`; rebuild `.so` on every Envoy bump (`DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN`) |
+
+Do not stack both ModSec filters on one chain. The local demo ([getting-started.md](./getting-started.md)) wires ext_proc by default; `DEPLOY=dm ./demo/scripts/up.sh` exercises the DM path.
 
 Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.39.4, libmodsecurity v3.0.17, CRS v4.30.0. Other versions are tested weekly ([testing.md](./testing.md#workflows)) but are not supported.
 

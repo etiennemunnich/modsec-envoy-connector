@@ -1,6 +1,8 @@
 # Body modes
 
-Envoy's `ext_proc` filter has a body mode (`BodySendMode`) per direction. It decides whether the connector sees request and response bodies, and when Envoy lets body bytes move on. The connector does the same thing in every mode: it appends each chunk to the ModSecurity transaction, checks for an intervention on every append, and runs the body phase when the body ends ([below](#where-the-body-phase-ends)). Wiring for each mode: [deploy.md](./deploy.md#5-pick-a-body-mode).
+**Dual option (alpha):** operators elect **ext_proc** or **dynamic module (DM)**. Shared vocabulary below is **CRS phase intent**. DM does **not** use Envoy `BodySendMode` — buffering is filter return codes and a native JSON `body_policy` (`buffer_until_eos`, `stream_chunks`, `headers_only`, `prefix_then_continue`). `FULL_DUPLEX_STREAMED` / `full_duplex_hold` is **UNSUPPORTED** on DM (config reject). See [`fail-closed-dm.md`](./fail-closed-dm.md).
+
+Envoy's `ext_proc` filter has a body mode (`BodySendMode`) per direction. It decides whether the connector sees request and response bodies, and when Envoy lets body bytes move on. The connector does the same thing in every mode: it appends each chunk to the ModSecurity transaction, checks for an intervention on every append, and runs the body phase when the body ends ([below](#where-the-body-phase-ends)). Wiring for each mode: [deploy.md](./deploy.md#5-pick-a-body-mode). Demo: `DEPLOY=dm BODY_MODE=… ./demo/scripts/up.sh` maps product `BODY_MODE` to native `body_policy`.
 
 | ModSecurity phase | Envoy message | Connector |
 |-------------------|---------------|-----------|
@@ -28,13 +30,13 @@ A message on a phase that already ended, or Envoy closing the stream while a bod
 
 ## Comparison
 
-| Mode | Request-body deny happens | Response-body rules | Hung connector | Demo | Tested |
+| Mode | Request-body deny happens | Response-body rules | Hung inspector | Demo | Tested |
 |------|---------------------------|---------------------|----------------|------|--------|
-| **BUFFERED** (default) | before the origin sees any of the body | before the client sees the body | **504** | `BODY_MODE=BUFFERED` | every PR, monthly full CRS |
-| **STREAMED** | after early chunks may have reached the origin | after the response headers, and possibly body chunks, reached the client; a deny resets the stream | **504** | `BODY_MODE=STREAMED` | every PR, monthly full CRS |
-| **FULL_DUPLEX_STREAMED** | before the origin sees any of the body | before the client sees the body | not bounded by `message_timeout` ([below](#full_duplex_streamed)) | `BODY_MODE=FULL_DUPLEX_STREAMED` | every PR, monthly full CRS |
-| **NONE** | never: bodies are not sent | never | **504** | `BODY_MODE=NONE` | weekly, headers only |
-| **BUFFERED_PARTIAL** | before the origin, on the prefix up to the buffer limit; bytes past it are not inspected | on the prefix only | **504** | `BODY_MODE=BUFFERED_PARTIAL` | weekly, under the limit only |
+| **BUFFERED** (default) | before the origin sees any of the body | before the client sees the body | **504** (ext_proc); DM: availability / other timeouts | `BODY_MODE=BUFFERED`; DM: `buffer_until_eos` | ext_proc: every PR; DM: local `smoke-dm.sh` (alpha) |
+| **STREAMED** | after early chunks may have reached the origin | after the response headers, and possibly body chunks, reached the client; a deny resets the stream | **504** (ext_proc) | `BODY_MODE=STREAMED`; DM: `stream_chunks` (origin delta 0\|1 honesty) | ext_proc: every PR; DM: `dm-body-honesty.sh` |
+| **FULL_DUPLEX_STREAMED** | before the origin sees any of the body | before the client sees the body | not bounded by `message_timeout` ([below](#full_duplex_streamed)) | ext_proc only | every PR; **DM: UNSUPPORTED** |
+| **NONE** | never: bodies are not sent | never | **504** (ext_proc) | `BODY_MODE=NONE`; DM: `headers_only` | weekly / DM honesty |
+| **BUFFERED_PARTIAL** | before the origin, on the prefix up to the buffer limit; bytes past it are not inspected | on the prefix only | **504** (ext_proc) | `BODY_MODE=BUFFERED_PARTIAL`; DM: `prefix_then_continue` | weekly; never CRS-complete |
 | **GRPC** | not implemented in the pinned Envoy | — | — | — | — |
 
 Request and response can use different modes; the demo has `REQ_BUFFERED_RESP_STREAMED` and `REQ_STREAMED_RESP_BUFFERED`, tested weekly.

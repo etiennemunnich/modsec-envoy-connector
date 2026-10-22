@@ -1,8 +1,10 @@
 # Testing
 
-What each test proves, where it runs, and how to run it yourself. Pins are in [`versions.lock.md`](../versions.lock.md); the failure model is in [fail-closed.md](./fail-closed.md).
+What each test proves, where it runs, and how to run it yourself. Pins are in [`versions.lock.md`](../versions.lock.md); the failure model is in [fail-closed.md](./fail-closed.md) (ext_proc) and [fail-closed-dm.md](./fail-closed-dm.md) (alpha DM — separate PASS lines; not fail-closed absolute).
 
 Every pull request, push to `main` and dispatch of `ci` runs, natively on GitHub-hosted `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), the Rust checks **and** the live Envoy → connector → libmodsecurity + CRS suites in the three product body modes (BUFFERED, STREAMED, FULL_DUPLEX_STREAMED). The limited body modes, the full CRS regression and other upstream versions run on schedules. There is no self-hosted or Mac runner, no QEMU and no cross-compiling.
+
+**DM (alpha, local):** `cargo test -p modsec-dm`; `DEPLOY=dm ./demo/scripts/up.sh` then `smoke-dm.sh`, `fail-closed-dm.sh`, `dm-body-honesty.sh`, `fail-closed-dm-negctl.sh`. DM e2e is **not** yet a required `ci` cell.
 
 ## What is proven
 
@@ -52,6 +54,14 @@ cargo test --workspace --locked
 ./demo/scripts/install-go-ftw.sh      # go-ftw at GO_FTW_PIN, into ~/.local/bin
 ./demo/scripts/go-ftw.sh smoke        # or: body | full
 ./demo/scripts/perf.sh                # latency samples, not an SLO
+./demo/scripts/down.sh
+
+# Alpha DM (separate floors; not fail-closed absolute)
+DEPLOY=dm ./demo/scripts/up.sh
+DEPLOY=dm ./demo/scripts/smoke-dm.sh
+DEPLOY=dm ./demo/scripts/fail-closed-dm.sh
+DEPLOY=dm BODY_MODE=STREAMED ./demo/scripts/up.sh && DEPLOY=dm ./demo/scripts/dm-body-honesty.sh
+./demo/scripts/fail-closed-dm-negctl.sh
 ./demo/scripts/down.sh
 ```
 
