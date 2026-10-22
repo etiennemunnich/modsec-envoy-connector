@@ -94,8 +94,13 @@ static_resources:
           stat_prefix: dm_ingress
           generate_request_id: true
           stream_error_on_invalid_http_message: true
+          # allow_custom_methods + enable_trailers live on Http1ProtocolOptions
+          # (HCM field name is http_protocol_options in this Envoy build).
           http_protocol_options:
             allow_custom_methods: true
+            enable_trailers: true
+          # H2 prior-knowledge (h2c) for trailer EOS drills.
+          http2_protocol_options: {{}}
           access_log:
           - name: envoy.access_loggers.stdout
             typed_config:
