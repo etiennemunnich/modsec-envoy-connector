@@ -110,7 +110,7 @@ Logs and generated rules stay in `demo/.run/` until you delete it.
 
 ## Early-tester checklist
 
-For alpha testers:
+For alpha testers (current pre-release: `v0.1.0-alpha.3`; formerly documented under `docs/modes/uat.md`, now this page):
 
 - [ ] `envoy --version`, `pkg-config --modversion modsecurity` (on Linux with `PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig`) and `git -C demo/.crs describe --tags` match `versions.lock.md` (the install scripts check this)
 - [ ] BUFFERED: `smoke.sh` and `fail-closed.sh` pass

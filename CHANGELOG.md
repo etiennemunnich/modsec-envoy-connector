@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.1.0-alpha.3] — 2026-10-22
+
+Early-test pre-release. Pins unchanged from `v0.1.0-alpha.2`: Envoy `v1.39.4`,
+libmodsecurity `v3.0.17`, CRS `v4.30.0` (see [`versions.lock.md`](./versions.lock.md)).
+No dynamic-modules product path in this cut (store-only research; not shipped).
+
 ### Added
 
 - Demo **lab HTTP/3 suite** (not product support, not PR CI): [`demo/envoy/envoy-h3.yaml`](./demo/envoy/envoy-h3.yaml) +
@@ -27,6 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Deploy: GHCR auth is tied to **package** visibility (may stay private after the GitHub repo is public); Release tarballs on a public repo download without login.
 - Agent standards: drop stale “repository is private on GitHub Pro” minutes language; keep CI discipline for a public repo.
 - Docs scrub: no local machine / Agent Store / `file://` paths in shipped docs (ripgrep clean). Soften `install-crs.sh` “before production use” comment to early-testing honesty; AGENTS Never bans battle-tested / production-ready / enterprise-grade hype.
+
+### Changed
+
+- Dependabot: `tokio` 1.53.2 → 1.53.3 (#24); demo `golang.org/x/net` 0.60.0 → 0.61.0 (#23).
+- Crate version `0.1.0-alpha.3` (product tag `v0.1.0-alpha.3`).
 
 ## [v0.1.0-alpha.2] — 2026-10-17
 
@@ -227,6 +238,7 @@ section.
 [UAT checklist](https://github.com/etiennemunnich/modsec-envoy-connector/blob/v0.1.0-alpha.1/docs/modes/uat.md). Local: `up.sh` → `smoke.sh` →
 `fail-closed.sh`. Hosted: `ci-ok` on both arches for the tag commit on `main`.
 
-[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.3...HEAD
+[v0.1.0-alpha.3]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [v0.1.0-alpha.2]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [v0.1.0-alpha.1]: https://github.com/etiennemunnich/modsec-envoy-connector/releases/tag/v0.1.0-alpha.1

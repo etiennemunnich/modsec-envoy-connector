@@ -6,7 +6,7 @@ Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.39.4,
 
 ## 1. Get the connector
 
-Supported paths from `v0.1.0-alpha.2` on (do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)):
+Supported paths from `v0.1.0-alpha.2` on (current pre-release `v0.1.0-alpha.3`; do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)):
 
 1. **Container (primary for operators):** pull the multi-arch release image from GHCR.
 2. **Release tarball:** Linux binary + bundled `libmodsecurity`.
@@ -22,10 +22,10 @@ Pin the current release by **digest** as well as tag (digest is the lock in [`ve
 
 ```bash
 # Tag (multi-arch; Docker picks amd64 or arm64 for the host)
-docker pull ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.2
+docker pull ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.3
 
-# Or pin the exact index digest from versions.lock.md (preferred for fleets)
-docker pull ghcr.io/etiennemunnich/modsec-envoy-connector@sha256:9d41f057ee7cba094da93953fb3b96a8222e1501c0f0f5d3b646f8cab3fd445a
+# Or pin the exact index digest from the connector row in versions.lock.md
+# (filled in after the release workflow publishes the multi-arch image).
 ```
 
 **Auth while the GHCR package is private:** the GitHub repository may already be public while the container package still requires login. Log in with a token that has `read:packages`, then pull:
@@ -36,12 +36,12 @@ echo "$TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 
 When the **GHCR package** is made public (owner step; independent of repo visibility), anonymous `docker pull` of release tags works without login. The install commands above keep working either way.
 
-Pull **release tags** (`v0.1.0-alpha.2`, …), not a floating `latest`. Images are published only by the `release` workflow on git tags (not on every PR or `main` push), which keeps Actions minutes and GHCR storage lean. Maintainers can list/delete allowlisted stale package versions with [`scripts/ghcr-delete-stale.sh`](../scripts/ghcr-delete-stale.sh) (dry-run by default).
+Pull **release tags** (`v0.1.0-alpha.3`, …), not a floating `latest`. Images are published only by the `release` workflow on git tags (not on every PR or `main` push), which keeps Actions minutes and GHCR storage lean. Maintainers can list/delete allowlisted stale package versions with [`scripts/ghcr-delete-stale.sh`](../scripts/ghcr-delete-stale.sh) (dry-run by default).
 
 ```bash
 docker run --rm -p 127.0.0.1:18081:18081 -p 127.0.0.1:18082:18082 \
   -v /etc/modsecurity:/etc/modsecurity:ro -v /etc/crs:/etc/crs:ro \
-  ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.2 \
+  ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.3 \
   --modsec-rules /etc/modsecurity/main.conf
 ```
 
@@ -58,7 +58,7 @@ Fail-closed behaviour is unchanged: use `failure_mode_allow: false` on the Envoy
 Linux x86_64 and aarch64. The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries. Release assets on a public repository download without login (browser or `gh`); if you use `gh` against a private fork or mirror, `gh auth login` first.
 
 ```bash
-VER=v0.1.0-alpha.2 ARCH=x86_64          # or aarch64
+VER=v0.1.0-alpha.3 ARCH=x86_64          # or aarch64
 gh release download "$VER" -R etiennemunnich/modsec-envoy-connector -p "ext-proc-modsec-$VER-linux-$ARCH.tar.gz*"
 sha256sum -c "ext-proc-modsec-$VER-linux-$ARCH.tar.gz.sha256"
 tar xzf "ext-proc-modsec-$VER-linux-$ARCH.tar.gz"
@@ -87,7 +87,7 @@ For development only. [`packaging/Dockerfile`](../packaging/Dockerfile) expects 
 
 ```bash
 docker build -f packaging/Dockerfile -t modsec-envoy-connector:local \
-  "ext-proc-modsec-v0.1.0-alpha.2-linux-x86_64"
+  "ext-proc-modsec-v0.1.0-alpha.3-linux-x86_64"
 ```
 
 Prefer the GHCR release image above for normal deploys.
