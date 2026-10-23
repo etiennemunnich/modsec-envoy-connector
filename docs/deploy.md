@@ -15,9 +15,9 @@ Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.39.4,
 
 Supported paths from `v0.1.0-alpha.2` on (current pre-release `v0.1.0-alpha.3`; do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)):
 
-1. **Container (primary for operators):** pull the multi-arch release image from GHCR.
-2. **Release tarball:** Linux binary + bundled `libmodsecurity`.
-3. **From source / demo:** `cargo build` or [`./demo/scripts/up.sh`](../demo/scripts/up.sh).
+1. **Container (primary for operators):** pull the multi-arch release image from GHCR (ext_proc sidecar; also carries alpha `libmodsec_dm.so` under `/usr/local/lib/`).
+2. **Release tarball:** Linux `ext-proc-modsec` + bundled `libmodsecurity` + alpha `lib/libmodsec_dm.so`.
+3. **From source / demo:** `cargo build` or [`./demo/scripts/up.sh`](../demo/scripts/up.sh) (`DEPLOY=dm` for the module path).
 
 ### Container image (GHCR)
 
@@ -62,7 +62,7 @@ Fail-closed behaviour is unchanged: use `failure_mode_allow: false` on the Envoy
 
 ### Release tarball
 
-Linux x86_64 and aarch64. The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries. Release assets on a public repository download without login (browser or `gh`); if you use `gh` against a private fork or mirror, `gh auth login` first.
+Linux x86_64 and aarch64. The tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, alpha `lib/libmodsec_dm.so`, `LICENSE`, `NOTICE` and `versions.lock.md`. It needs Ubuntu 24.04's runtime libraries. Release assets on a public repository download without login (browser or `gh`); if you use `gh` against a private fork or mirror, `gh auth login` first.
 
 ```bash
 VER=v0.1.0-alpha.3 ARCH=x86_64          # or aarch64
@@ -72,9 +72,34 @@ tar xzf "ext-proc-modsec-$VER-linux-$ARCH.tar.gz"
 sudo apt-get install -y libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0
 DIR="$PWD/ext-proc-modsec-$VER-linux-$ARCH"
 "$DIR/bin/ext-proc-modsec" --version
+ls -l "$DIR/lib/libmodsec_dm.so"
 ```
 
-The binary finds the bundled `lib/libmodsecurity.so` through its RUNPATH `$ORIGIN/../lib`: keep `bin/` and `lib/` side by side, and no `LD_LIBRARY_PATH` is needed.
+The binary finds the bundled `lib/libmodsecurity.so` through its RUNPATH `$ORIGIN/../lib`: keep `bin/` and `lib/` side by side, and no `LD_LIBRARY_PATH` is needed. `libmodsec_dm.so` finds sibling `libmodsecurity` through RUNPATH `$ORIGIN`.
+
+### Alpha dynamic module from release artifacts
+
+Early testing only — not fail-closed absolute ([fail-closed-dm.md](./fail-closed-dm.md)). The module is built against `DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN` (today `v1.39.4`); rebuild or re-pull on every Envoy bump. Forbid `module.remote`.
+
+From the **tarball** `lib/` directory (keep `libmodsec_dm.so` next to `libmodsecurity.so*`):
+
+```bash
+export ENVOY_DYNAMIC_MODULES_SEARCH_PATH="$DIR/lib"
+# Point Envoy at a local dynamic module named modsec_dm (see demo DEPLOY=dm YAML).
+```
+
+From the **GHCR image** (same package as the sidecar; ENTRYPOINT is still `ext-proc-modsec`):
+
+```bash
+cid="$(docker create ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.3)"
+mkdir -p ./dm-modules
+docker cp "$cid:/usr/local/lib/libmodsec_dm.so" ./dm-modules/
+docker cp "$cid:/usr/local/lib/libmodsecurity.so.3" ./dm-modules/
+docker rm "$cid"
+export ENVOY_DYNAMIC_MODULES_SEARCH_PATH="$PWD/dm-modules"
+```
+
+There is no separate GHCR package name for the `.so`; it ships inside `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` and the multi-arch image `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>`. Elect **one** hop — do not stack DM and ext_proc ModSec filters.
 
 ### From source
 
@@ -84,6 +109,9 @@ On Linux or macOS. libmodsecurity **3.0.13 or newer** must be visible to `pkg-co
 export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib   # Linux, after install-libmodsecurity.sh
 cargo build --release --locked -p ext-proc-modsec
 ./target/release/ext-proc-modsec --version
+# Alpha DM (needs libclang for the Envoy SDK bindgen):
+cargo build --release --locked -p modsec-dm
+ls target/release/libmodsec_dm.so
 ```
 
 `MODSECURITY_LIB_DIR=<dir>` skips `pkg-config` and its version check. At run time the library must be on the loader path.

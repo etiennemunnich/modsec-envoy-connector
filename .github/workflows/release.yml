@@ -5,7 +5,8 @@ name: release
 # commit is on main, and a successful ci.yml run for that exact commit has
 # every required check green from GitHub Actions) → per-arch native release
 # build (x86_64, aarch64) → ext-proc-modsec-<ver>-linux-<arch>.tar.gz +
-# .sha256 (bin/ finds lib/libmodsecurity.so via RUNPATH $ORIGIN/../lib) →
+# .sha256 (bin/ finds lib/libmodsecurity.so via RUNPATH $ORIGIN/../lib;
+# lib/libmodsec_dm.so alpha DM finds the same via RUNPATH $ORIGIN) →
 # per-arch image pushed by digest (untagged) → multi-arch manifest
 # ghcr.io/<owner>/<repo>:<ver> from both digests → GitHub Release (a
 # pre-release for vX.Y.Z-suffix tags).
@@ -96,12 +97,29 @@ jobs:
         with:
           pin: ${{ steps.meta.outputs.pin }}
 
+      # bindgen for envoy-proxy-dynamic-modules-rust-sdk (modsec-dm).
+      - name: libclang for DM SDK
+        run: |
+          set -euo pipefail
+          if [[ ! -d /usr/lib/llvm-18/lib ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libclang-18-dev
+          fi
+
       # RUNPATH $ORIGIN/../lib: the tarball's bin/ loads lib/libmodsecurity.so
       # without LD_LIBRARY_PATH, and so does the image (/usr/local/{bin,lib}).
-      - name: cargo build --release
+      - name: cargo build --release (ext-proc-modsec)
         env:
           RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN/../lib
         run: cargo build --release --locked -p ext-proc-modsec
+
+      # RUNPATH $ORIGIN: lib/libmodsec_dm.so loads sibling lib/libmodsecurity.so*
+      # when ENVOY_DYNAMIC_MODULES_SEARCH_PATH points at that lib/ directory.
+      - name: cargo build --release (modsec-dm)
+        env:
+          RUSTFLAGS: -C link-arg=-Wl,-rpath,$ORIGIN
+          LIBCLANG_PATH: /usr/lib/llvm-18/lib
+        run: cargo build --release --locked -p modsec-dm
 
       - name: Package tarball
         id: pkg
@@ -114,9 +132,11 @@ jobs:
           out="dist/${name}"
           mkdir -p "${out}/bin" "${out}/lib"
           install -m 0755 target/release/ext-proc-modsec "${out}/bin/"
+          install -m 0755 target/release/libmodsec_dm.so "${out}/lib/"
           cp -P "${MODSECURITY_PREFIX:-$GITHUB_WORKSPACE/.local/modsecurity}"/lib/libmodsecurity.so* "${out}/lib/"
           cp LICENSE NOTICE versions.lock.md "${out}/"
           file "${out}/bin/ext-proc-modsec"
+          file "${out}/lib/libmodsec_dm.so"
           rpath="$(readelf -d "${out}/bin/ext-proc-modsec" | grep -E '\((RUNPATH|RPATH)\)')" \
             || { echo "::error::binary has no RUNPATH"; exit 1; }
           echo "${rpath}"
@@ -129,6 +149,16 @@ jobs:
             || { echo "::error::libmodsecurity resolves to '${lib}', not ${out}/lib"; exit 1; }
           ! grep -q 'not found' "$RUNNER_TEMP/ldd.txt" || { echo "::error::unresolved libraries"; exit 1; }
           env -u LD_LIBRARY_PATH "${out}/bin/ext-proc-modsec" --version
+          rpath_dm="$(readelf -d "${out}/lib/libmodsec_dm.so" | grep -E '\((RUNPATH|RPATH)\)')" \
+            || { echo "::error::libmodsec_dm.so has no RUNPATH"; exit 1; }
+          echo "${rpath_dm}"
+          # shellcheck disable=SC2016 # a literal $ORIGIN, expanded by ld.so
+          [[ "${rpath_dm}" == *'[$ORIGIN]'* ]] || { echo "::error::libmodsec_dm.so RUNPATH is not \$ORIGIN"; exit 1; }
+          env -u LD_LIBRARY_PATH ldd "${out}/lib/libmodsec_dm.so" | tee "$RUNNER_TEMP/ldd-dm.txt"
+          lib_dm="$(awk '/libmodsecurity\.so/ && $2 == "=>" { print $3; exit }' "$RUNNER_TEMP/ldd-dm.txt")"
+          [[ -n "${lib_dm}" && "$(dirname "$(realpath "${lib_dm}")")" == "$(realpath "${out}/lib")" ]] \
+            || { echo "::error::libmodsec_dm libmodsecurity resolves to '${lib_dm}', not ${out}/lib"; exit 1; }
+          ! grep -q 'not found' "$RUNNER_TEMP/ldd-dm.txt" || { echo "::error::libmodsec_dm unresolved libraries"; exit 1; }
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" && cat "${name}.tar.gz.sha256")
           echo "dir=${out}" >> "$GITHUB_OUTPUT"
@@ -277,7 +307,7 @@ jobs:
             echo
             echo "- Image (linux/amd64, linux/arm64): \`${image_tag}\`"
             echo "- Image digest (pin this): \`${IMAGE}@${DIGEST}\`"
-            echo "- Tarballs bundle \`bin/ext-proc-modsec\` and \`lib/libmodsecurity.so*\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. The binary finds \`lib/\` through its RUNPATH (\`\$ORIGIN/../lib\`): keep \`bin/\` and \`lib/\` side by side; no \`LD_LIBRARY_PATH\` needed."
+            echo "- Tarballs bundle \`bin/ext-proc-modsec\`, \`lib/libmodsecurity.so*\`, and alpha \`lib/libmodsec_dm.so\`; they need Ubuntu 24.04 runtime libraries: libpcre2-8-0 libxml2 libyajl2 libcurl4t64 libgeoip1t64 liblmdb0. The binary finds \`lib/\` through its RUNPATH (\`\$ORIGIN/../lib\`); the DM \`.so\` finds sibling \`libmodsecurity\` through \`\$ORIGIN\`. Keep \`bin/\` and \`lib/\` side by side; no \`LD_LIBRARY_PATH\` needed. DM is early-testing only (not fail-closed absolute); rebuild on every Envoy bump."
           } > notes.md
           pre=()
           [[ "$GITHUB_REF_NAME" != *-* ]] || pre=(--prerelease)

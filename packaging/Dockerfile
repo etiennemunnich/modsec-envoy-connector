@@ -2,6 +2,8 @@
 # directory produced natively on the matching runner (bin/, lib/, LICENSE,
 # NOTICE, versions.lock.md), built on the same Ubuntu 24.04 base, so the
 # bundled libmodsecurity matches the system libraries below.
+# lib/ includes alpha libmodsec_dm.so (operators copy it out for Envoy); the
+# ENTRYPOINT remains the ext_proc sidecar.
 FROM ubuntu:24.04
 
 RUN apt-get update \
@@ -15,7 +17,9 @@ COPY LICENSE NOTICE versions.lock.md /usr/share/doc/ext-proc-modsec/
 
 RUN ldconfig \
  && ! ldd /usr/local/bin/ext-proc-modsec | grep -q 'not found' \
- && /usr/local/bin/ext-proc-modsec --version
+ && /usr/local/bin/ext-proc-modsec --version \
+ && test -f /usr/local/lib/libmodsec_dm.so \
+ && ! ldd /usr/local/lib/libmodsec_dm.so | grep -q 'not found'
 
 USER 65532:65532
 EXPOSE 18081 18082

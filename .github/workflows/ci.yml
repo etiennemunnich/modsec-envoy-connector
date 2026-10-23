@@ -315,7 +315,7 @@ jobs:
 
   # Alpha dynamic-module dual path. Lean: BUFFERED smoke+fail-closed-dm and
   # STREAMED smoke only (no go-ftw matrix — minutes). Same docs/tree skip as
-  # other heavy jobs. Negctl: break on cursor/ci-negctl-* (follow-up if minutes).
+  # other heavy jobs. Negctl: cursor/ci-negctl-e2e-dm-* (workflow_dispatch).
   e2e-dm:
     name: e2e-dm (${{ matrix.arch }})
     needs: pin-check

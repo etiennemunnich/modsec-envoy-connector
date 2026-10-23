@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Alpha dynamic module from release artifacts](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package.
+
 ## [v0.1.0-alpha.3] — 2026-10-22
 
 Early-test pre-release. Pins unchanged from `v0.1.0-alpha.2`: Envoy `v1.39.4`,
