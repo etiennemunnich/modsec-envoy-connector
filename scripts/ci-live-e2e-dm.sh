@@ -120,7 +120,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   cat "${REPORT}" >>"${GITHUB_STEP_SUMMARY}"
 fi
 
+# NEGCTL (not for merge): force e2e-dm red — impossible floor so the check fails.
 # Minimum suite count (no vacuous pass): up×2 + smoke×2 + fail-closed = 5
-[[ "${pass}" -ge 5 ]] || die "pass=${pass} < 5 (vacuous or incomplete)"
+[[ "${pass}" -ge 999 ]] || die "pass=${pass} < 999 (negctl deliberate fail)"
 [[ "${fail}" -eq 0 ]] || die "one or more cells failed — see ${REPORT}"
 echo "ci-live-e2e-dm PASSED pass=${pass}"
