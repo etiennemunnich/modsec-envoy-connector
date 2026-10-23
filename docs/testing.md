@@ -1,8 +1,10 @@
 # Testing
 
-What each test proves, where it runs, and how to run it yourself. Pins are in [`versions.lock.md`](../versions.lock.md); the failure model is in [fail-closed.md](./fail-closed.md).
+What each test proves, where it runs, and how to run it yourself. Pins are in [`versions.lock.md`](../versions.lock.md); the failure model is in [fail-closed.md](./fail-closed.md) (ext_proc) and [fail-closed-dm.md](./fail-closed-dm.md) (alpha DM — separate PASS lines; not fail-closed absolute).
 
 Every pull request, push to `main` and dispatch of `ci` runs, natively on GitHub-hosted `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm` (aarch64), the Rust checks **and** the live Envoy → connector → libmodsecurity + CRS suites in the three product body modes (BUFFERED, STREAMED, FULL_DUPLEX_STREAMED). The limited body modes, the full CRS regression and other upstream versions run on schedules. There is no self-hosted or Mac runner, no QEMU and no cross-compiling.
+
+**DM (alpha):** `cargo test -p modsec-dm`; live `DEPLOY=dm` via `e2e-dm` × arch on every PR (`scripts/ci-live-e2e-dm.sh`: BUFFERED smoke-dm + fail-closed-dm, STREAMED smoke-dm). Local extras: `dm-body-honesty.sh`, `fail-closed-dm-negctl.sh`, `go-ftw-dm.sh`, `h2-trailers-dm.sh`. Not fail-closed absolute.
 
 ## What is proven
 
@@ -53,6 +55,14 @@ cargo test --workspace --locked
 ./demo/scripts/go-ftw.sh smoke        # or: body | full
 ./demo/scripts/perf.sh                # latency samples, not an SLO
 ./demo/scripts/down.sh
+
+# Alpha DM (separate floors; not fail-closed absolute)
+DEPLOY=dm ./demo/scripts/up.sh
+DEPLOY=dm ./demo/scripts/smoke-dm.sh
+DEPLOY=dm ./demo/scripts/fail-closed-dm.sh
+DEPLOY=dm BODY_MODE=STREAMED ./demo/scripts/up.sh && DEPLOY=dm ./demo/scripts/dm-body-honesty.sh
+./demo/scripts/fail-closed-dm-negctl.sh
+./demo/scripts/down.sh
 ```
 
 Other scripts: `partial-honesty.sh` (BUFFERED_PARTIAL: an in-prefix SQLi is **403**, a SQLi past the limit can reach the origin), `buffered-oversize.sh`, `connect-assert.sh`, `hop-trace-ws.sh` and `hop-trace-ws-frames.sh` (WebSocket handshake and frame bounds; frames are not CRS-inspected), `hop-trace-grpc.sh` (gRPC headers and metadata; needs `go` and `grpcurl`; protobuf bodies are not CRS-inspected), `cookie-protocols.sh` (multi-`Cookie` / crumb CRS on **H1 + H2 + lab H3**; Envoy `; ` coalesce before ModSec), `h3-probe.sh` (**lab HTTP/3 only**: QUIC + aioquic; hop/fail-closed + Cookie crumbs; NONE body honesty; **not** product H3 WAF / not on every PR — demo-only).
@@ -72,7 +82,7 @@ CI-side checks, offline: `./scripts/check-pins.sh`, `./scripts/check-workflows.s
 
 | Workflow | Trigger | What runs (× x86_64, aarch64) | Reports |
 |----------|---------|-------------------------------|---------|
-| `ci` | pull requests, pushes to `main`, dispatch. Branch pushes run nothing; runs on `main` are never cancelled | `pin-check` (pins, workflow rules, shellcheck, CI-script tests, the skip decision, and on PRs the CI-skip-token guard); `rust-quality` × arch (fmt, clippy, test, build, all `--locked`; installs the CRS pin and sets `MODSEC_REQUIRE_CRS=1`, so the engine CRS test fails rather than skips); `msrv`; `supply-chain` (cargo-deny); `protos` (`gen-protos.sh --check`); `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch; `ci-ok`, the single verdict | check status |
+| `ci` | pull requests, pushes to `main`, dispatch. Branch pushes run nothing; runs on `main` are never cancelled | `pin-check` (pins, workflow rules, shellcheck, CI-script tests, the skip decision, and on PRs the CI-skip-token guard); `rust-quality` × arch (fmt, clippy, test, build, all `--locked`; installs the CRS pin and sets `MODSEC_REQUIRE_CRS=1`, so the engine CRS test fails rather than skips); `msrv`; `supply-chain` (cargo-deny); `protos` (`gen-protos.sh --check`); `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch; `e2e-dm` × arch (alpha `DEPLOY=dm` lean: BUFFERED smoke+fail-closed-dm, STREAMED smoke); `ci-ok`, the single verdict | check status |
 | `e2e-lab` | weekly (Mon 05:47 UTC), dispatch | BUFFERED_PARTIAL, NONE and the two asymmetric body modes | issue `e2e-lab: failing cells` |
 | `crs-full` | monthly (7th, 03:41 UTC), dispatch | `go-ftw.sh full` in BUFFERED, STREAMED, FULL_DUPLEX_STREAMED | issue `crs-full: go-ftw failing` |
 | `release-watch` | daily 05:17 UTC, dispatch | lists stable releases of each axis; the latest stable **and** the top patch of the pinned line, when newer than the pin, each get a `stable-candidate` dispatch; newer release lines the patterns do not cover are flagged; a tag is retested until its issue records a result | issue `stable-candidate: <axis> <tag>`; its own failures: `release-watch: failing` |
@@ -95,7 +105,7 @@ There are no other skips. On pull requests `pin-check` fails if the PR title, th
 
 ### Releases
 
-On a tag, `gate` first runs [`scripts/release-version.sh`](../scripts/release-version.sh): the tag must equal `v` + the version of every crate, pre-release included (`v0.1.0-alpha.3` needs `0.1.0-alpha.3`). Then [`scripts/release-gate.sh`](../scripts/release-gate.sh): the tag commit must be on `main`, and a successful `ci` run for exactly that commit, from this repository, must have these 13 checks green from GitHub Actions in its own check suite: `ci-ok`, `pin-check`, `rust-quality` × 2, `msrv`, `supply-chain`, `protos`, and `e2e-pin`, `e2e-streamed`, `e2e-full-duplex` × 2. A same-named check from another app or workflow does not count. A `main` commit whose heavy jobs were skipped has no such run: dispatch `ci` on `main` for it before tagging.
+On a tag, `gate` first runs [`scripts/release-version.sh`](../scripts/release-version.sh): the tag must equal `v` + the version of every crate, pre-release included (`v0.1.0-alpha.3` needs `0.1.0-alpha.3`). Then [`scripts/release-gate.sh`](../scripts/release-gate.sh): the tag commit must be on `main`, and a successful `ci` run for exactly that commit, from this repository, must have these 15 checks green from GitHub Actions in its own check suite: `ci-ok`, `pin-check`, `rust-quality` × 2, `msrv`, `supply-chain`, `protos`, `e2e-pin`, `e2e-streamed`, `e2e-full-duplex` × 2, and `e2e-dm` × 2. A same-named check from another app or workflow does not count. A `main` commit whose heavy jobs were skipped has no such run: dispatch `ci` on `main` for it before tagging.
 
 Then each architecture builds `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` (+ `.sha256`). The tarball bundles `lib/libmodsecurity.so*`, and the binary finds it through RUNPATH `$ORIGIN/../lib`; the job fails if the RUNPATH is missing or `ldd` resolves libmodsecurity anywhere else. Per-arch images are built, tested and pushed by digest; the multi-arch tag `ghcr.io/<owner>/modsec-envoy-connector:<ver>` is made from both digests, then the GitHub Release is created. Build provenance is attested once the repository is public.
 

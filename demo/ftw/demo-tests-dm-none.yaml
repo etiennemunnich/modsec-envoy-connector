@@ -1,0 +1,119 @@
+# DM NONE (headers_only): header/query CRS only. Body + response body bypass.
+# Do not claim body CRS. Floors assert bypass honesty (200) for body attacks.
+meta:
+  author: "modsec-envoy-connector"
+  description: "DM NONE — header deny; body/response bypass honesty"
+  name: "demo-tests-dm-none.yaml"
+rule_id: 949110
+tests:
+  - test_id: 1
+    desc: "Benign GET / is allowed"
+    stages:
+      - input:
+          method: GET
+          uri: "/"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 200
+  - test_id: 2
+    desc: "SQLi in the query string is blocked"
+    stages:
+      - input:
+          method: GET
+          uri: "/search?q=1'%20UNION%20SELECT%201,2--"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 403
+  - test_id: 3
+    desc: "XSS in the query string is blocked"
+    stages:
+      - input:
+          method: GET
+          uri: "/page?q=%3Cscript%3Ealert(1)%3C/script%3E"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 403
+  - test_id: 4
+    desc: "Benign POST form body is allowed (body not inspected)"
+    stages:
+      - input:
+          method: POST
+          uri: "/post"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/x-www-form-urlencoded"
+          data: "name=alice&note=hello-world"
+        output:
+          status: 200
+  - test_id: 5
+    desc: "NONE honesty: SQLi in POST body reaches origin (200)"
+    stages:
+      - input:
+          method: POST
+          uri: "/post"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/x-www-form-urlencoded"
+          data: "var=1' UNION SELECT 1,2--"
+        output:
+          status: 200
+  - test_id: 6
+    desc: "NONE honesty: XSS in POST body reaches origin (200)"
+    stages:
+      - input:
+          method: POST
+          uri: "/post"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/x-www-form-urlencoded"
+          data: "comment=<script>alert(1)</script>"
+        output:
+          status: 200
+  - test_id: 7
+    desc: "NONE honesty: response leak reaches client (200)"
+    stages:
+      - input:
+          method: GET
+          uri: "/leak"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 200
+  - test_id: 8
+    desc: "Cookie crumb + SQLi query blocked"
+    stages:
+      - input:
+          method: GET
+          uri: "/search?q=1'%20UNION%20SELECT%201--"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Cookie: "session=abc"
+        output:
+          status: 403

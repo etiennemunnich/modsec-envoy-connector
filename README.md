@@ -2,9 +2,14 @@
 
 Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and the **OWASP Core Rule Set (CRS)**.
 
-Envoy does not run ModSecurity by itself. This project is a small Rust **External Processing** (`ext_proc`) connector that sits beside Envoy, inspects requests and responses with **libmodsecurity** (and optionally CRS) in-process, and tells Envoy to allow or block. Envoy alone forwards traffic to your origin, and only after the connector allows it.
+Envoy does not run ModSecurity by itself. This project offers an **alpha dual option** (early testing only — elect **one** hop per chain):
 
-**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.3`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)).
+1. **Default:** a Rust **External Processing** (`ext_proc`) sidecar that inspects with **libmodsecurity** (+ optional CRS) out of process and tells Envoy to allow or block.
+2. **Alpha / lab:** an in-process Envoy **dynamic module** (`crates/modsec-dm`, `libmodsec_dm.so`) that drives the same `modsec-engine`. Same-process trust: **not** fail-closed absolute; HTTP filter is not hardened. See [`docs/fail-closed-dm.md`](./docs/fail-closed-dm.md).
+
+Envoy alone forwards traffic to your origin, and only after the elected path allows it. Do not run both ModSec filters on one chain.
+
+**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.3`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
 
 ## How it decides
 
@@ -31,6 +36,12 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/                
 curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:18080/search?q=1'%20UNION%20SELECT%201,2--"   # 403
 ./demo/scripts/smoke.sh             # allow and deny checks
 ./demo/scripts/fail-closed.sh       # kill → 500, hang → 504, bad rules → 500
+./demo/scripts/down.sh
+
+# Alpha dynamic module (optional; weaker fail-closed model — see docs/fail-closed-dm.md)
+DEPLOY=dm ./demo/scripts/up.sh
+DEPLOY=dm ./demo/scripts/smoke-dm.sh
+DEPLOY=dm ./demo/scripts/fail-closed-dm.sh
 ./demo/scripts/down.sh
 ```
 
@@ -69,7 +80,8 @@ Envoy normalizes some headers before ModSecurity sees them; aim rules at what is
 | [How it works](./docs/how-it-works.md) | request path and what the client sees |
 | [CRS and Envoy limits](./docs/crs-and-envoy-limits.md) | what Envoy forwards to ModSec, and how to write rules for it |
 | [Body modes](./docs/body-modes.md) | what each Envoy body mode inspects, and when |
-| [Fail-closed](./docs/fail-closed.md) | what happens when the connector or engine cannot decide |
+| [Fail-closed](./docs/fail-closed.md) | what happens when the connector or engine cannot decide (ext_proc) |
+| [Fail-closed (DM)](./docs/fail-closed-dm.md) | weaker / different model for the alpha dynamic module |
 | [Troubleshooting](./docs/troubleshooting.md) | status codes, install errors, logs |
 | [Testing](./docs/testing.md) | what is tested, where, and how to run it |
 

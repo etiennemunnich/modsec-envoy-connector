@@ -385,6 +385,12 @@ grep -qE '^[[:space:]]*e2e-buffered-partial:' "${ROOT}/.github/workflows/ci.yml"
 check "ci: e2e-buffered-partial not on every-PR path" 0 "${ok}"
 grep -q 'e2e-full-duplex' "${ROOT}/.github/workflows/ci.yml" && ok=0 || ok=1
 check "ci: e2e-full-duplex product cell present" 0 "${ok}"
+grep -q 'e2e-dm' "${ROOT}/.github/workflows/ci.yml" && ok=0 || ok=1
+check "ci: e2e-dm alpha cell present" 0 "${ok}"
+grep -q 'ci-live-e2e-dm.sh' "${ROOT}/.github/workflows/ci.yml" && ok=0 || ok=1
+check "ci: e2e-dm invokes ci-live-e2e-dm.sh" 0 "${ok}"
+[[ -x "${ROOT}/scripts/ci-live-e2e-dm.sh" ]] && ok=0 || ok=1
+check "ci-live-e2e-dm.sh executable" 0 "${ok}"
 grep -q 'body_mode: \[BUFFERED, STREAMED, FULL_DUPLEX_STREAMED\]' "${ROOT}/.github/workflows/crs-full.yml" && ok=0 || ok=1
 check "crs-full: Envoy full-CRS body_mode matrix" 0 "${ok}"
 # ASH commit pin: lock and workflow agree; no movable @vX.Y.Z tag install.
@@ -555,7 +561,11 @@ gate() { # gate <compare status> <runs fixture> <checks fixture> -> exit code
   SHA="${GSHA}" GITHUB_REPOSITORY=o/r GATE_COMPARE_STATUS="$1" GATE_RUNS_JSON="$2" GATE_CHECKS_JSON="$3" \
     "${ROOT}/scripts/release-gate.sh" >/dev/null 2>&1 && echo 0 || echo 1
 }
-check "release-gate: requires at least 13 checks" yes "$([[ ${#gate_required[@]} -ge 13 ]] && echo yes || echo no)"
+check "release-gate: requires at least 15 checks" yes "$([[ ${#gate_required[@]} -ge 15 ]] && echo yes || echo no)"
+printf '%s\n' "${gate_required[@]}" | grep -qx 'e2e-dm (x86_64)' && ok=0 || ok=1
+check "release-gate: requires e2e-dm (x86_64)" 0 "${ok}"
+printf '%s\n' "${gate_required[@]}" | grep -qx 'e2e-dm (aarch64)' && ok=0 || ok=1
+check "release-gate: requires e2e-dm (aarch64)" 0 "${ok}"
 check "release-gate: on main, ci green"               0 "$(gate identical "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
 check "release-gate: ancestor of main"                0 "$(gate behind "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"
 check "release-gate: not on main (neg)"               1 "$(gate ahead "$(gate_runs 7 success)" "$(gate_checks 7 github-actions)")"

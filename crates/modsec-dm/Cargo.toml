@@ -1,0 +1,32 @@
+[package]
+name = "modsec-dm"
+version = "0.1.0-alpha.3"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Etienne Munnich"]
+repository = "https://github.com/etiennemunnich/modsec-envoy-connector"
+readme = "../../README.md"
+description = "Alpha Envoy dynamic-module HTTP filter driving modsec-engine (libmodsecurity + optional CRS). Same-process; not fail-closed absolute. Elect one of ext_proc or DM."
+publish = false
+
+[lib]
+name = "modsec_dm"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+default = []
+# Re-export engine fail-inject for MockEnvoy unit tests.
+fail-inject = ["modsec-engine/fail-inject"]
+
+[dependencies]
+# Must match ENVOY_PIN / DYNAMIC_MODULES_SDK_REV in versions.lock.md (tag = pin).
+envoy-proxy-dynamic-modules-rust-sdk = { git = "https://github.com/envoyproxy/envoy", tag = "v1.39.4" }
+modsec-engine = { path = "../modsec-engine" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+modsec-engine = { path = "../modsec-engine", features = ["fail-inject"] }
+tempfile = "3"

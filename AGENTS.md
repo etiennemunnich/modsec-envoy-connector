@@ -4,9 +4,9 @@ Mandatory for coding agents working in this repo. Keep it short; deep tables liv
 
 ## Product
 
-- **Shape:** Rust Envoy `ext_proc` gRPC sidecar → in-process C API → **libmodsecurity** (+ optional OWASP CRS). Not Coraza-as-product; not a Rust Envoy dynamic module.
-- **Fail-closed is absolute:** connector down, gRPC error, panic/abort, hang/timeout, ModSec init/rules fail, ExtProc unreachable, or per-request ModSec `Err` → traffic must **not** reach origin as OK. Body mode (BUFFERED/STREAMED) does **not** relax this.
-- **Hops:** Client → Envoy → (side-call) connector; **Envoy alone** forwards to origin after `Continue`. Connector / libmodsecurity never dial origin.
+- **Shape:** Operators elect **one** hop (alpha dual option, early testing): (A) Rust Envoy `ext_proc` gRPC sidecar → in-process C API → **libmodsecurity** (+ optional OWASP CRS), or (B) in-process Rust Envoy **dynamic module** `crates/modsec-dm` (`libmodsec_dm.so`) → same `modsec-engine`. Not Coraza-as-product; not WASM. Do not run both ModSec filters on one chain.
+- **Fail-closed is absolute on ext_proc:** connector down, gRPC error, panic/abort, hang/timeout, ModSec init/rules fail, ExtProc unreachable, or per-request ModSec `Err` → traffic must **not** reach origin as OK. Body mode (BUFFERED/STREAMED) does **not** relax this. **DM does not inherit that absolute** — weaker/different model ([`docs/fail-closed-dm.md`](./docs/fail-closed-dm.md)); forbid `module.remote`; CatchUnwind ≠ libmodsecurity SIGSEGV containment; FULL_DUPLEX unsupported on DM.
+- **Hops:** Client → Envoy → (A) side-call connector or (B) in-process DM callbacks; **Envoy alone** forwards to origin after allow. Connector / module / libmodsecurity never dial origin.
 
 ## Pins (source of truth)
 
@@ -15,6 +15,7 @@ Read **`versions.lock.md`** before bumping anything. Four axes + product tag:
 | Axis | Field | Do not invent |
 |------|-------|---------------|
 | Envoy | `ENVOY_PIN` | tip flags / unlisted builds |
+| DM SDK | `DYNAMIC_MODULES_SDK_REV` (= `ENVOY_PIN` tag) | tip examples `.so` / mismatched SDK |
 | libmodsecurity | `MODSECURITY_PIN` | random distro package as “the pin” |
 | CRS | `CRS_TAG` (+ optional LTS) | issue labels as versions |
 | Connector | git SHA / OCI digest | — |
@@ -27,7 +28,9 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 - Set `failure_mode_allow: true` on enforcement paths.
 - Treat **BUFFERED_PARTIAL** as “CRS-complete” body inspection.
 - Never claim **HTTP/3** or **WebSocket-frame** CRS without a proven QUIC / frame inspector path. WebSocket **handshake** hop-trace (`--proto ws`) documents Envoy upgrade rejection only — not CRS on upgrade headers or frames.
-- Return **`Continue`** after ModSec / FFI `Err` (that is connector-lie fail-open → map to ImmediateResponse **500**).
+- Return **`Continue`** after ModSec / FFI `Err` (that is connector-lie / DM-lie fail-open → map to ImmediateResponse / `send_response` **500**).
+- Use `module.remote` for ModSec DM enforcement (fetch fail → filter omitted = fail-open).
+- Claim “fail-closed absolute” for the DM path, or cite `fail-closed.sh` as DM proof.
 - Invent Envoy / ModSec / CRS tip flags or pins not in `versions.lock.md`.
 - Market go-ftw green as “H2 WAF proven” (go-ftw is **HTTP/1.x CRS fidelity** only).
 - Claim **battle-tested**, **production-ready**, **enterprise-grade**, or similar marketing certainty (or synonyms: prod-ready, “proven in production” without a cited run). Status is early testing only — match README; do not invent softer hype.
@@ -36,7 +39,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 | Gate | Where | What |
 |------|-------|------|
-| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; product e2e `e2e-pin` (BUFFERED) + `e2e-streamed` + `e2e-full-duplex` on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict. Lab modes (PARTIAL / NONE / asymm) are weekly via `e2e-lab`. |
+| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; product e2e `e2e-pin` (BUFFERED) + `e2e-streamed` + `e2e-full-duplex`; alpha DM lean `e2e-dm` (BUFFERED smoke+fail-closed-dm, STREAMED smoke) on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict. Lab modes (PARTIAL / NONE / asymm) are weekly via `e2e-lab`. |
 | **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `e2e-lab` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; lab body modes weekly; results as issues (see `docs/testing.md`) |
 | **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`, `perf.sh` (latency floors); `scripts/ci-live-e2e.sh` runs a CI cell locally |
 | **CRS** | go-ftw | **H1** rule fidelity only |
@@ -106,9 +109,10 @@ Copy into the PR body (or tick the PR template). Skip rows that truly do not app
 
 ## Crate layout
 
-- `crates/ext-proc-modsec` — tonic ExternalProcessor binary (product name).
-- `crates/modsec-engine` — safe façade over libmodsecurity; own `msc_*` FFI (`src/ffi.rs`); keep `unsafe` / FFI here only.
+- `crates/ext-proc-modsec` — tonic ExternalProcessor binary (default product hop).
+- `crates/modsec-dm` — Envoy dynamic-module `cdylib` (+ `rlib` for MockEnvoy tests); SDK git dep at `DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN`; CatchUnwind mandatory for Rust panics; native `body_policy` (not BodySendMode); FULL_DUPLEX config reject.
+- `crates/modsec-engine` — safe façade over libmodsecurity; own `msc_*` FFI (`src/ffi.rs`); keep `unsafe` / FFI here only. Do not put Envoy SDK types in the engine.
 - `proto/` → `crates/ext-proc-modsec/src/pb/` — vendored Envoy ext_proc proto closure and its committed generated code; never hand-edit `pb/`, rerun `scripts/gen-protos.sh`.
-- No new crates without a reason in the commit; the runtime set is tokio, tokio-stream, tonic (server + codegen), prost, tonic-prost, tracing.
+- No new crates without a reason in the commit; ext_proc runtime set is tokio, tokio-stream, tonic (server + codegen), prost, tonic-prost, tracing. DM adds the official Envoy Rust SDK + serde_json.
 
-Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`, `perf.sh`); go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `ENVOY_VERSION=… MODSECURITY_PIN=… CRS_TAG=… ./scripts/ci-live-e2e.sh`, `scripts/probe-modsec-pin.sh`. Ops cleanup: `scripts/ghcr-delete-stale.sh` (default dry-run; `--delete` allowlisted GHCR versions only; do not paste ad-hoc delete loops).
+Live demo + suites: `demo/scripts/` (`up.sh`, `smoke.sh`, `fail-closed.sh`, `fail-modes.sh`, `go-ftw.sh`, `hop-trace.sh`, `perf.sh`); DM twins: `DEPLOY=dm` + `smoke-dm.sh`, `fail-closed-dm.sh`, `dm-body-honesty.sh`, `fail-closed-dm-negctl.sh`. go-ftw config and measured Envoy overrides in `demo/ftw/`. Version probes: `ENVOY_VERSION=… MODSECURITY_PIN=… CRS_TAG=… ./scripts/ci-live-e2e.sh`, `scripts/probe-modsec-pin.sh`. Ops cleanup: `scripts/ghcr-delete-stale.sh` (default dry-run; `--delete` allowlisted GHCR versions only; do not paste ad-hoc delete loops).

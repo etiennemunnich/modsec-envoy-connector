@@ -1,0 +1,150 @@
+# Demo go-ftw tests for DEPLOY=dm (BUFFERED / BUFFERED_PARTIAL / STREAMED request path).
+# HTTP/1.x only. Cloud mode: status only. H1 CRS fidelity — not H2 WAF proven.
+# Response phase-4 (test 8) expects 403; STREAMED response early-release uses
+# demo-tests-dm-streamed.yaml instead.
+meta:
+  author: "modsec-envoy-connector"
+  description: "DM path — allow, CRS block (query + body), response-body block"
+  name: "demo-tests-dm.yaml"
+rule_id: 949110
+tests:
+  - test_id: 1
+    desc: "Benign GET / is allowed"
+    stages:
+      - input:
+          method: GET
+          uri: "/"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 200
+  - test_id: 2
+    desc: "SQLi in the query string is blocked"
+    stages:
+      - input:
+          method: GET
+          uri: "/search?q=1'%20UNION%20SELECT%201,2--"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 403
+  - test_id: 3
+    desc: "XSS in the query string is blocked"
+    stages:
+      - input:
+          method: GET
+          uri: "/page?q=%3Cscript%3Ealert(1)%3C/script%3E"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 403
+  - test_id: 4
+    desc: "Benign POST form body is allowed"
+    stages:
+      - input:
+          method: POST
+          uri: "/post"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/x-www-form-urlencoded"
+          data: "name=alice&note=hello-world"
+        output:
+          status: 200
+  - test_id: 5
+    desc: "SQLi in a POST form body is blocked"
+    stages:
+      - input:
+          method: POST
+          uri: "/post"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/x-www-form-urlencoded"
+          data: "var=1' UNION SELECT 1,2--"
+        output:
+          status: 403
+  - test_id: 6
+    desc: "XSS in a POST form body is blocked"
+    stages:
+      - input:
+          method: POST
+          uri: "/post"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/x-www-form-urlencoded"
+          data: "comment=<script>alert(1)</script>"
+        output:
+          status: 403
+  - test_id: 7
+    desc: "SQLi in a JSON body is blocked (JSON body processor)"
+    stages:
+      - input:
+          method: POST
+          uri: "/api/search"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Content-Type: "application/json"
+          data: "{\"q\":\"1' UNION SELECT password FROM users--\"}"
+        output:
+          status: 403
+  - test_id: 8
+    desc: "Response body carrying the demo leak marker is blocked (phase 4, rule 100001)"
+    stages:
+      - input:
+          method: GET
+          uri: "/leak"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+        output:
+          status: 403
+  - test_id: 9
+    desc: "Cookie crumb + benign GET allowed"
+    stages:
+      - input:
+          method: GET
+          uri: "/"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Cookie: "session=abc; theme=light"
+        output:
+          status: 200
+  - test_id: 10
+    desc: "Cookie crumb + SQLi query blocked"
+    stages:
+      - input:
+          method: GET
+          uri: "/search?q=1'%20UNION%20SELECT%201--"
+          version: HTTP/1.1
+          headers:
+            Host: "localhost"
+            User-Agent: "OWASP CRS test agent"
+            Accept: "*/*"
+            Cookie: "session=abc"
+        output:
+          status: 403

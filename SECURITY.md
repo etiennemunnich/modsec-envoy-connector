@@ -31,11 +31,15 @@ For any route that claims protection:
 
 Live drills: `demo/scripts/fail-closed.sh` (kill → 500, hang → 504 outside FULL_DUPLEX_STREAMED, bad rules → 500, origin untouched).
 
-### Why `ext_proc` (not an in-process dynamic module)
+### Why `ext_proc` is the stronger default
 
-Built on Envoy [security considerations](https://builtonenvoy.io/docs/security-considerations/) stress that Rust/Go **dynamic modules** share Envoy's process, memory, and worker threads. A WAF that links libmodsecurity is a poor fit for that model.
+Built on Envoy [security considerations](https://builtonenvoy.io/docs/security-considerations/) stress that Rust/Go **dynamic modules** share Envoy's process, memory, and worker threads. A WAF that links libmodsecurity is a **poor fit** for an edge “hardened” story: mid-life libmodsecurity faults can take or stall the proxy.
 
-`ext_proc` runs **out of process**: Envoy stays up if the connector dies (and with `failure_mode_allow: false`, traffic fails closed).
+`ext_proc` runs **out of process**: Envoy stays up if the connector dies (and with `failure_mode_allow: false`, traffic fails closed). That is the **fail-closed absolute** path documented in [`docs/fail-closed.md`](./docs/fail-closed.md).
+
+### Alpha dynamic module (optional elect)
+
+An in-process DM path (`crates/modsec-dm`) exists for alpha / lab / trusted-mesh experiments. It is **early testing only**, uses a **weaker fail-closed model** ([`docs/fail-closed-dm.md`](./docs/fail-closed-dm.md)), forbids `module.remote` for enforcement, and does **not** claim CatchUnwind contains C++ faults. Elect **one** hop; do not stack both ModSec filters. The Envoy HTTP dynamic-modules filter is documented as **not hardened** (trusted downstream and upstream) at the product pin.
 
 ### Bounds
 

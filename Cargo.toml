@@ -1,8 +1,10 @@
-# modsec-envoy-connector — Envoy ext_proc → libmodsecurity connector.
+# modsec-envoy-connector — Envoy → libmodsecurity (+ optional CRS).
 #
-# Out-of-process ExternalProcessor gRPC server (not an Envoy dynamic module).
-# `modsec-engine` owns all FFI; `ext-proc-modsec` is the product binary.
+# Operators elect **one** hop (alpha dual option, early testing only):
+#   - `ext-proc-modsec` — out-of-process ExtProc gRPC sidecar (default / stronger fail-closed)
+#   - `modsec-dm` — in-process Envoy dynamic module (`cdylib`; weaker isolation model)
+# `modsec-engine` owns all FFI. Do not run both ModSec filters on one chain.
 
 [workspace]
 resolver = "2"
-members = ["crates/ext-proc-modsec", "crates/modsec-engine"]
+members = ["crates/ext-proc-modsec", "crates/modsec-engine", "crates/modsec-dm"]

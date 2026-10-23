@@ -22,6 +22,7 @@ REQUIRED=(
   "e2e-pin / e2e (x86_64, BUFFERED)" "e2e-pin / e2e (aarch64, BUFFERED)"
   "e2e-streamed / e2e (x86_64, STREAMED)" "e2e-streamed / e2e (aarch64, STREAMED)"
   "e2e-full-duplex / e2e (x86_64, FULL_DUPLEX_STREAMED)" "e2e-full-duplex / e2e (aarch64, FULL_DUPLEX_STREAMED)"
+  "e2e-dm (x86_64)" "e2e-dm (aarch64)"
 )
 
 # identical = main's tip, behind = an ancestor of main; ahead/diverged = not on main.

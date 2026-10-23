@@ -7,10 +7,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEMO="${ROOT}/demo"
 RUN="${DEMO}/.run"
 CRS_DIR="${CRS_DIR:-${DEMO}/.crs}"
+DM_MODULES_DIR="${DM_MODULES_DIR:-${RUN}/modules}"
+DM_SO="${DM_SO:-${DM_MODULES_DIR}/libmodsec_dm.so}"
 
 # libmodsecurity built by install-libmodsecurity.sh on Linux lives under
 # ~/.local (or MODSECURITY_PREFIX); put it on the pkg-config and loader paths
-# so cargo and the connector find it without manual exports.
+# so cargo and the connector / DM .so find it without manual exports.
 _modsec_prefix="${MODSECURITY_PREFIX:-${HOME}/.local}"
 if [[ -f "${_modsec_prefix}/lib/pkgconfig/modsecurity.pc" ]]; then
   case ":${PKG_CONFIG_PATH:-}:" in *":${_modsec_prefix}/lib/pkgconfig:"*) ;; *)
@@ -22,16 +24,30 @@ if [[ -f "${_modsec_prefix}/lib/pkgconfig/modsecurity.pc" ]]; then
 fi
 unset _modsec_prefix
 
-# BODY_MODE selects Envoy request/response body modes (Envoy BodySendMode):
+# DEPLOY selects the Envoy hop (alpha dual option; elect one):
+#   ext_proc (default) — out-of-process connector
+#   dm                 — in-process dynamic module (libmodsec_dm.so)
+# Persist in demo/.run/deploy when up.sh starts so suites match without re-export.
+if [[ -z "${DEPLOY:-}" && -f "${RUN}/deploy" ]]; then
+  DEPLOY="$(tr -d '[:space:]' <"${RUN}/deploy")"
+fi
+DEPLOY="${DEPLOY:-ext_proc}"
+case "${DEPLOY}" in
+  ext_proc|dm) ;;
+  *)
+    echo "DEPLOY must be ext_proc or dm (got '${DEPLOY}')" >&2
+    return 2 2>/dev/null || exit 2
+    ;;
+esac
+
+# BODY_MODE selects inspection intent:
 #   BUFFERED (default) | STREAMED | BUFFERED_PARTIAL | NONE | FULL_DUPLEX_STREAMED
-#   REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED  (asymmetric labs)
-# `up.sh` writes demo/.run/body_mode so later scripts (smoke, fail-closed) match
-# the running Envoy without re-exporting BODY_MODE; `up.sh` itself starts
-# BUFFERED unless BODY_MODE is set.
-# BUFFERED_PARTIAL inspects only a body prefix: not full CRS.
-# NONE sends no bodies: body rules and go-ftw body suites do not apply.
-# FULL_DUPLEX_STREAMED requires connector --body-reply streamed (StreamedBodyResponse)
-# and trailer modes SEND; Envoy disables message_timeout under this mode.
+#   REQ_BUFFERED_RESP_STREAMED | REQ_STREAMED_RESP_BUFFERED  (asymmetric labs; ext_proc only)
+# Under DEPLOY=ext_proc these are Envoy BodySendMode values.
+# Under DEPLOY=dm they map to native body_policy (not BodySendMode):
+#   BUFFERED→buffer_until_eos, STREAMED→stream_chunks, NONE→headers_only,
+#   BUFFERED_PARTIAL→prefix_then_continue; FULL_DUPLEX_STREAMED is UNSUPPORTED (config reject).
+# `up.sh` writes demo/.run/body_mode so later scripts match the running Envoy.
 if [[ -z "${BODY_MODE:-}" && -f "${RUN}/body_mode" ]]; then
   BODY_MODE="$(tr -d '[:space:]' <"${RUN}/body_mode")"
 fi
@@ -39,30 +55,55 @@ BODY_MODE="${BODY_MODE:-BUFFERED}"
 BODY_REPLY=common
 REQUEST_BODY_MODE="${BODY_MODE}"
 RESPONSE_BODY_MODE="${BODY_MODE}"
+DM_BODY_POLICY=""
+DM_PARTIAL_SOFT_LIMIT="${DM_PARTIAL_SOFT_LIMIT:-1048576}"
 case "${BODY_MODE}" in
-  BUFFERED) ENVOY_CFG="${DEMO}/envoy/envoy.yaml" ;;
-  STREAMED) ENVOY_CFG="${DEMO}/envoy/envoy-streamed.yaml" ;;
-  BUFFERED_PARTIAL) ENVOY_CFG="${DEMO}/envoy/envoy-buffered-partial.yaml" ;;
-  NONE) ENVOY_CFG="${DEMO}/envoy/envoy-none.yaml" ;;
+  BUFFERED)
+    ENVOY_CFG="${DEMO}/envoy/envoy.yaml"
+    DM_BODY_POLICY=buffer_until_eos
+    ;;
+  STREAMED)
+    ENVOY_CFG="${DEMO}/envoy/envoy-streamed.yaml"
+    DM_BODY_POLICY=stream_chunks
+    ;;
+  BUFFERED_PARTIAL)
+    ENVOY_CFG="${DEMO}/envoy/envoy-buffered-partial.yaml"
+    DM_BODY_POLICY=prefix_then_continue
+    ;;
+  NONE)
+    ENVOY_CFG="${DEMO}/envoy/envoy-none.yaml"
+    DM_BODY_POLICY=headers_only
+    ;;
   FULL_DUPLEX_STREAMED)
     ENVOY_CFG="${DEMO}/envoy/envoy-full-duplex.yaml"
     BODY_REPLY=streamed
+    DM_BODY_POLICY=full_duplex_hold
     ;;
   REQ_BUFFERED_RESP_STREAMED)
     ENVOY_CFG="${DEMO}/envoy/envoy-req-buffered-resp-streamed.yaml"
     REQUEST_BODY_MODE=BUFFERED
     RESPONSE_BODY_MODE=STREAMED
+    DM_BODY_POLICY=""
     ;;
   REQ_STREAMED_RESP_BUFFERED)
     ENVOY_CFG="${DEMO}/envoy/envoy-req-streamed-resp-buffered.yaml"
     REQUEST_BODY_MODE=STREAMED
     RESPONSE_BODY_MODE=BUFFERED
+    DM_BODY_POLICY=""
     ;;
   *)
     echo "BODY_MODE must be BUFFERED, STREAMED, BUFFERED_PARTIAL, NONE, FULL_DUPLEX_STREAMED, REQ_BUFFERED_RESP_STREAMED, or REQ_STREAMED_RESP_BUFFERED (got '${BODY_MODE}')" >&2
     return 2 2>/dev/null || exit 2
     ;;
 esac
+if [[ "${DEPLOY}" == "dm" ]]; then
+  if [[ -z "${DM_BODY_POLICY}" ]]; then
+    echo "DEPLOY=dm does not support asymmetric BODY_MODE=${BODY_MODE}" >&2
+    return 2 2>/dev/null || exit 2
+  fi
+  # Materialized by up.sh into .run/envoy-dm.yaml (rules_path + ports).
+  ENVOY_CFG="${RUN}/envoy-dm.yaml"
+fi
 CONNECTOR_BIN="${ROOT}/target/debug/ext-proc-modsec"
 RULES_FILE="${RUN}/modsec.conf"
 HITS_FILE="${RUN}/origin-hits.log"
