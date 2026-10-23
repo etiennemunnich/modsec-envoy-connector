@@ -20,6 +20,9 @@ name: ci
 #                                      go-ftw-full via crs-full matrix incl. STREAMED)
 #   e2e-full-duplex × {x86_64, aarch64} FULL_DUPLEX product contract (same suites as
 #                                      e2e-streamed; hang→504 N/A; go-ftw-full via crs-full)
+#   e2e-dm × {x86_64, aarch64}         alpha DEPLOY=dm lean cell (BUFFERED smoke-dm +
+#                                      fail-closed-dm; STREAMED smoke-dm). Not fail-closed
+#                                      absolute; no go-ftw matrix here (minutes).
 #   ci-ok                              one verdict over all of the above; on a PR it
 #                                      also records the tested merge tree
 # Lab body modes (BUFFERED_PARTIAL, NONE, asymmetric) run weekly via e2e-lab.yml.
@@ -310,9 +313,100 @@ jobs:
       body_mode: FULL_DUPLEX_STREAMED
       timeout_minutes: 15
 
+  # Alpha dynamic-module dual path. Lean: BUFFERED smoke+fail-closed-dm and
+  # STREAMED smoke only (no go-ftw matrix — minutes). Same docs/tree skip as
+  # other heavy jobs. Negctl: break on cursor/ci-negctl-* (follow-up if minutes).
+  e2e-dm:
+    name: e2e-dm (${{ matrix.arch }})
+    needs: pin-check
+    if: needs.pin-check.outputs.skip != 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve versions
+        id: v
+        run: |
+          set -euo pipefail
+          envoy="$(./scripts/stable-releases.sh pin envoy)"
+          modsec="$(./scripts/stable-releases.sh pin modsecurity)"
+          crs="$(./scripts/stable-releases.sh pin crs)"
+          printf 'envoy=%s\nmodsec=%s\ncrs=%s\n' "$envoy" "$modsec" "$crs" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/rust-toolchain
+
+      - name: OS id
+        id: os
+        run: . /etc/os-release && echo "id=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            target
+          key: cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ steps.os.outputs.id }}-${{ runner.arch }}-${{ steps.v.outputs.modsec }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - uses: ./.github/actions/libmodsecurity
+        with:
+          pin: ${{ steps.v.outputs.modsec }}
+
+      - name: Cache Envoy ${{ steps.v.outputs.envoy }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/envoy-bin
+          key: envoy-${{ steps.v.outputs.envoy }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install Envoy ${{ steps.v.outputs.envoy }}, clang (DM cdylib)
+        env:
+          ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
+          ENVOY_BIN_DIR: ${{ runner.temp }}/envoy-bin
+        run: |
+          set -euo pipefail
+          command -v lsof >/dev/null || sudo apt-get install -y --no-install-recommends lsof
+          # libclang for envoy-proxy-dynamic-modules-rust-sdk bindgen
+          if [[ ! -d /usr/lib/llvm-18/lib ]]; then
+            sudo apt-get install -y --no-install-recommends libclang-18-dev
+          fi
+          PATH="${ENVOY_BIN_DIR}:${PATH}" ./demo/scripts/install-envoy.sh
+          echo "${ENVOY_BIN_DIR}" >> "$GITHUB_PATH"
+          # CRS pin checkout is inside ci-live-e2e-dm.sh (CRS_DIR=demo/.crs-<tag>).
+
+      - name: Live DM suites (BUFFERED smoke+fail-closed; STREAMED smoke)
+        env:
+          ENVOY_VERSION: ${{ steps.v.outputs.envoy }}
+          MODSECURITY_PIN: ${{ steps.v.outputs.modsec }}
+          CRS_TAG: ${{ steps.v.outputs.crs }}
+          EXPECT_ARCH: ${{ matrix.arch }}
+          LIBCLANG_PATH: /usr/lib/llvm-18/lib
+        run: ./scripts/ci-live-e2e-dm.sh
+
+      - name: Upload DM demo logs (failure only)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-dm-${{ matrix.arch }}-envoy${{ steps.v.outputs.envoy }}-modsec${{ steps.v.outputs.modsec }}
+          path: |
+            demo/.run/*.log
+            demo/.run/e2e-dm-report.md
+          retention-days: 5
+          if-no-files-found: ignore
+
   ci-ok:
     name: ci-ok
-    needs: [pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-full-duplex]
+    needs: [pin-check, rust-quality, msrv, supply-chain, protos, e2e-pin, e2e-streamed, e2e-full-duplex, e2e-dm]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -326,7 +420,7 @@ jobs:
           import json, os, sys
           needs = json.loads(os.environ["NEEDS"])
           skip = os.environ["SKIP"] == "true"
-          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-full-duplex"}
+          heavy = {"rust-quality", "msrv", "supply-chain", "protos", "e2e-pin", "e2e-streamed", "e2e-full-duplex", "e2e-dm"}
           bad = []
           for job, v in needs.items():
               r = v["result"]

@@ -39,7 +39,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
 | Gate | Where | What |
 |------|-------|------|
-| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; product e2e `e2e-pin` (BUFFERED) + `e2e-streamed` + `e2e-full-duplex` on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict. Lab modes (PARTIAL / NONE / asymm) are weekly via `e2e-lab`. |
+| **Push / PR** | GitHub Actions `ci`, x86_64 + aarch64 | `pin-check`, `rust-quality`, `msrv`, `supply-chain`, `protos`; product e2e `e2e-pin` (BUFFERED) + `e2e-streamed` + `e2e-full-duplex`; alpha DM lean `e2e-dm` (BUFFERED smoke+fail-closed-dm, STREAMED smoke) on `main` pushes, PRs and dispatches; `ci-ok` is the single verdict. Lab modes (PARTIAL / NONE / asymm) are weekly via `e2e-lab`. |
 | **Stable versions** | `release-watch` (daily) → `stable-candidate`; `stable-window` (weekly); `e2e-lab` (weekly); `crs-full` (monthly) | new / last-3 stables per axis, both arches; lab body modes weekly; results as issues (see `docs/testing.md`) |
 | **Live demo** | Mac / Linux host | `demo/scripts/`: `smoke.sh`, `fail-closed.sh`, `fail-modes.sh` (H1 + H2), `go-ftw.sh`, `hop-trace.sh`, `perf.sh` (latency floors); `scripts/ci-live-e2e.sh` runs a CI cell locally |
 | **CRS** | go-ftw | **H1** rule fidelity only |

@@ -182,6 +182,8 @@ fn new_http_filter_config_fn<EC: EnvoyHttpFilterConfig, EHF: EnvoyHttpFilter>(
     }
 }
 
+type HeaderPairs = Vec<(Vec<u8>, Vec<u8>)>;
+
 impl ModSecFilter {
     /// Local reply if response headers not yet forwarded; otherwise reset the
     /// stream so a phase-4 deny cannot no-op into a client-visible 200.
@@ -232,13 +234,7 @@ impl ModSecFilter {
                 } else {
                     403
                 };
-                self.disrupt_downstream(
-                    envoy,
-                    code,
-                    &[],
-                    Some(b"Forbidden\n"),
-                    "modsec_dm_deny",
-                );
+                self.disrupt_downstream(envoy, code, &[], Some(b"Forbidden\n"), "modsec_dm_deny");
                 true
             }
             Decision::Redirect { status, url, .. } => {
@@ -258,13 +254,7 @@ impl ModSecFilter {
                 true
             }
             Decision::Drop { .. } => {
-                self.disrupt_downstream(
-                    envoy,
-                    403,
-                    &[],
-                    Some(b"dropped\n"),
-                    "modsec_dm_drop",
-                );
+                self.disrupt_downstream(envoy, 403, &[], Some(b"dropped\n"), "modsec_dm_drop");
                 true
             }
         }
@@ -292,12 +282,10 @@ impl ModSecFilter {
             .unwrap_or(default)
     }
 
-    fn collect_request_headers<EHF: EnvoyHttpFilter>(
-        envoy: &EHF,
-    ) -> (String, String, Vec<(Vec<u8>, Vec<u8>)>) {
+    fn collect_request_headers<EHF: EnvoyHttpFilter>(envoy: &EHF) -> (String, String, HeaderPairs) {
         let mut method = String::from("GET");
         let mut path = String::from("/");
-        let mut hdrs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut hdrs: HeaderPairs = Vec::new();
         let mut host: Option<Vec<u8>> = None;
         let mut has_host = false;
 
@@ -332,16 +320,14 @@ impl ModSecFilter {
         (method, path, hdrs)
     }
 
-    fn collect_response_headers<EHF: EnvoyHttpFilter>(envoy: &EHF) -> (i32, Vec<(Vec<u8>, Vec<u8>)>) {
+    fn collect_response_headers<EHF: EnvoyHttpFilter>(envoy: &EHF) -> (i32, HeaderPairs) {
         let mut status: i32 = 200;
-        let mut hdrs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let mut hdrs: HeaderPairs = Vec::new();
         for (k, v) in envoy.get_response_headers() {
             let key = k.as_slice();
             let val = v.as_slice().to_vec();
             if key == b":status" {
-                status = String::from_utf8_lossy(&val)
-                    .parse()
-                    .unwrap_or(200);
+                status = String::from_utf8_lossy(&val).parse().unwrap_or(200);
                 continue;
             }
             if key.starts_with(b":") {
@@ -439,9 +425,7 @@ impl ModSecFilter {
         body: &[u8],
     ) -> Option<abi::envoy_dynamic_module_type_on_http_filter_response_body_status> {
         use abi::envoy_dynamic_module_type_on_http_filter_response_body_status as BS;
-        let Some(session) = self.session.as_mut() else {
-            return None;
-        };
+        let session = self.session.as_mut()?;
         match session.append_response_body(body) {
             Ok(d) if d.is_disruptive() => {
                 self.settle_disruptive(envoy, d);
@@ -1008,27 +992,16 @@ SecRule REQUEST_URI "@beginsWith /admin" \
         let mut envoy = MockEnvoyHttpFilter::new();
         envoy.expect_get_request_headers().returning(|| {
             vec![
-                (
-                    EnvoyBuffer::new(b":method"),
-                    EnvoyBuffer::new(b"GET"),
-                ),
-                (
-                    EnvoyBuffer::new(b":path"),
-                    EnvoyBuffer::new(b"/admin"),
-                ),
-                (
-                    EnvoyBuffer::new(b"host"),
-                    EnvoyBuffer::new(b"example.test"),
-                ),
+                (EnvoyBuffer::new(b":method"), EnvoyBuffer::new(b"GET")),
+                (EnvoyBuffer::new(b":path"), EnvoyBuffer::new(b"/admin")),
+                (EnvoyBuffer::new(b"host"), EnvoyBuffer::new(b"example.test")),
             ]
         });
         envoy.expect_get_attribute_string().returning(|_| None);
         envoy.expect_get_attribute_int().returning(|_| None);
         envoy
             .expect_send_response()
-            .withf(|status, _, _, details| {
-                *status == 403 && details == &Some("modsec_dm_deny")
-            })
+            .withf(|status, _, _, details| *status == 403 && details == &Some("modsec_dm_deny"))
             .returning(|_, _, _, _| {})
             .times(1);
 
@@ -1065,15 +1038,9 @@ SecRule REQUEST_URI "@unconditionalMatch" \
         let mut envoy = MockEnvoyHttpFilter::new();
         envoy.expect_get_request_headers().returning(|| {
             vec![
-                (
-                    EnvoyBuffer::new(b":method"),
-                    EnvoyBuffer::new(b"GET"),
-                ),
+                (EnvoyBuffer::new(b":method"), EnvoyBuffer::new(b"GET")),
                 (EnvoyBuffer::new(b":path"), EnvoyBuffer::new(b"/")),
-                (
-                    EnvoyBuffer::new(b"host"),
-                    EnvoyBuffer::new(b"example.test"),
-                ),
+                (EnvoyBuffer::new(b"host"), EnvoyBuffer::new(b"example.test")),
             ]
         });
         envoy.expect_get_attribute_string().returning(|_| None);
@@ -1116,22 +1083,13 @@ SecRule REQUEST_BODY "@contains UNION SELECT" \
         let mut envoy = MockEnvoyHttpFilter::new();
         envoy.expect_get_request_headers().returning(|| {
             vec![
-                (
-                    EnvoyBuffer::new(b":method"),
-                    EnvoyBuffer::new(b"POST"),
-                ),
-                (
-                    EnvoyBuffer::new(b":path"),
-                    EnvoyBuffer::new(b"/login"),
-                ),
+                (EnvoyBuffer::new(b":method"), EnvoyBuffer::new(b"POST")),
+                (EnvoyBuffer::new(b":path"), EnvoyBuffer::new(b"/login")),
                 (
                     EnvoyBuffer::new(b"content-type"),
                     EnvoyBuffer::new(b"application/x-www-form-urlencoded"),
                 ),
-                (
-                    EnvoyBuffer::new(b"host"),
-                    EnvoyBuffer::new(b"example.test"),
-                ),
+                (EnvoyBuffer::new(b"host"), EnvoyBuffer::new(b"example.test")),
             ]
         });
         envoy.expect_get_attribute_string().returning(|_| None);
@@ -1329,9 +1287,7 @@ SecRule RESPONSE_BODY "@contains SECRET" \
             .times(1);
         envoy
             .expect_send_response()
-            .withf(|status, _, _, details| {
-                *status == 403 && details == &Some("modsec_dm_deny")
-            })
+            .withf(|status, _, _, details| *status == 403 && details == &Some("modsec_dm_deny"))
             .returning(|_, _, _, _| {})
             .times(1);
 
