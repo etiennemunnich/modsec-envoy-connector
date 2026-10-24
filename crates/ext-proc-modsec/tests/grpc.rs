@@ -1687,6 +1687,10 @@ impl Levels {
 fn probe_exchange_logs_below_info_and_keeps_metrics_clean() {
     let p = processor();
     let run = |probe: bool| {
+        // Prior tests may have cached callsites as disabled under another
+        // dispatcher; rebuild so with_default actually sees phase INFO lines
+        // (aarch64 CI flake: info_or_above() == 0/1 without this).
+        tracing::callsite::rebuild_interest_cache();
         let levels = Levels::default();
         let step = tracing::subscriber::with_default(levels.clone(), || {
             let mut ex = if probe {
@@ -1705,7 +1709,13 @@ fn probe_exchange_logs_below_info_and_keeps_metrics_clean() {
         levels
     };
     // Negative control: real traffic logs its phases at INFO and counts.
-    assert!(run(false).info_or_above() >= 2);
+    let traffic = run(false);
+    let n = traffic.info_or_above();
+    assert!(
+        n >= 2,
+        "expected >=2 INFO+ events for real traffic, got {n}: {:?}",
+        traffic.0.lock().unwrap()
+    );
     assert_eq!(p.metrics().requests_total(), 1);
     let probe = run(true);
     assert_eq!(probe.info_or_above(), 0, "{:?}", probe.0.lock().unwrap());
