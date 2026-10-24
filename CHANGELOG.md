@@ -10,7 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Alpha dynamic module from release artifacts](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package.
+- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Alpha dynamic module from release artifacts](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package. **Not** published in `v0.1.0-alpha.3` (build from tip `main` until the next tag).
+
+### Fixed
+
+- Docs honesty: README / deploy / lock D-row no longer claim `v0.1.0-alpha.3` ships `libmodsec_dm.so` or still list the alpha.2 OCI digest.
 
 ## [v0.1.0-alpha.3] — 2026-10-22
 
