@@ -9,7 +9,7 @@ Envoy does not run ModSecurity by itself. This project offers an **alpha dual op
 
 Envoy alone forwards traffic to your origin, and only after the elected path allows it. Do not run both ModSec filters on one chain.
 
-**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.3`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
+**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.4`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
 
 ## How it decides
 
@@ -49,7 +49,7 @@ Full walkthrough, other body modes and the early-tester checklist: [Getting star
 
 ## Run it beside your own Envoy
 
-1. Get the connector: pull `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.3` (multi-arch; pin by digest in [`versions.lock.md`](./versions.lock.md)), or a Linux release tarball, or `cargo build --release -p ext-proc-modsec`. Alpha `libmodsec_dm.so` packaging landed on `main` (#36) but is **not** in the `v0.1.0-alpha.3` tarball/image — build with `cargo build -p modsec-dm` (or wait for the next release tag). Details and auth while the package is private: [Deploy](./docs/deploy.md).
+1. Get the connector: pull `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.4` (multi-arch; pin by digest in [`versions.lock.md`](./versions.lock.md)), or a Linux release tarball, or `cargo build --release -p ext-proc-modsec`. From `v0.1.0-alpha.4` on, release tarballs and the image also carry alpha `lib/libmodsec_dm.so` (load via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH`; not a separate GHCR package). `v0.1.0-alpha.3` does **not** include the `.so`. Details and auth while the package is private: [Deploy](./docs/deploy.md).
 2. Write one rules entry file, for example `/etc/modsecurity/main.conf`, that `Include`s the engine settings, `crs-setup.conf` and `rules/*.conf`.
 3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf` (or the equivalent `docker run` from Deploy). For the alpha DM hop instead, point Envoy at the bundled `.so` ([Deploy](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts)) — do not stack both.
 4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`. With any body mode other than NONE, also set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; `SKIP` lets the request reach origin before the body phase runs.
