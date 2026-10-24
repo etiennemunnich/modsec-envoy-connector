@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "ext-proc-modsec"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "modsec-engine",
  "prost",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "modsec-dm"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "envoy-proxy-dynamic-modules-rust-sdk",
  "modsec-engine",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "modsec-engine"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
  "tracing",
 ]

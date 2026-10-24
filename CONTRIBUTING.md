@@ -75,10 +75,10 @@ Supported container installs pull release tags from GHCR ([docs/deploy.md](./doc
 
 ## Releases
 
-1. In a PR to `main`: set `version` in every `crates/*/Cargo.toml` to the tag without the `v`, pre-release included (`0.1.0-alpha.3` for `v0.1.0-alpha.3`), and refresh `Cargo.lock` (`cargo update -w`); give the version's heading in [`CHANGELOG.md`](./CHANGELOG.md) its date; set `PRODUCT_VERSION` in `versions.lock.md` to the tag. The release workflow refuses a tag that is not exactly `v` + the crate version ([`scripts/release-version.sh`](./scripts/release-version.sh)).
+1. In a PR to `main`: set `version` in every `crates/*/Cargo.toml` to the tag without the `v`, pre-release included (`0.1.0-alpha.4` for `v0.1.0-alpha.4`), and refresh `Cargo.lock` (`cargo update -w`); give the version's heading in [`CHANGELOG.md`](./CHANGELOG.md) its date; set `PRODUCT_VERSION` in `versions.lock.md` to the tag. The release workflow refuses a tag that is not exactly `v` + the crate version ([`scripts/release-version.sh`](./scripts/release-version.sh)).
 2. Check that the commit has a successful `ci` run with every required check green. A merge that took the tested-tree skip does not: run `gh workflow run ci.yml --ref main` and wait for it first. `scripts/release-gate.sh` refuses the tag otherwise.
 3. Run the local early-tester checklist ([docs/getting-started.md](./docs/getting-started.md#early-tester-checklist)) on that commit.
-4. Tag it: `git tag -a v0.1.0-alpha.3 <sha> && git push origin v0.1.0-alpha.3`.
+4. Tag it: `git tag -a v0.1.0-alpha.4 <sha> && git push origin v0.1.0-alpha.4`.
 5. The `release` workflow builds the Linux tarballs and the multi-arch GHCR image and creates the GitHub Release (pre-release for suffixed tags) with the pins and artifact notes. Paste the CHANGELOG section into the Release body.
 6. After the release, record the commit and image digest in the connector row of `versions.lock.md`.
 

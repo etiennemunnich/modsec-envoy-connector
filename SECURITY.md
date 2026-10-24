@@ -9,7 +9,8 @@ While the project is in **0.1 alpha**, treat tags as early-testing artifacts: fi
 | ------- | --------- |
 | Latest release | :white_check_mark: |
 | `main` tip | :white_check_mark: (pre-release / development) |
-| `v0.1.0-alpha.3` and later alphas | :white_check_mark: (early testing only; not production) |
+| `v0.1.0-alpha.4` and later alphas | :white_check_mark: (early testing only; not production) |
+| `v0.1.0-alpha.3` | :white_check_mark: (early testing only; not production; no `libmodsec_dm.so` in artifacts) |
 | `v0.1.0-alpha.2` | :white_check_mark: (early testing only; not production) |
 | `v0.1.0-alpha.1` | :x: forwards some requests uninspected; see [`CHANGELOG.md`](./CHANGELOG.md) |
 | Older releases | :x: unless a release notes line says otherwise |

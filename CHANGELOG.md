@@ -8,13 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.1.0-alpha.4] — 2026-10-24
+
+Early-test pre-release. Pins unchanged: Envoy `v1.39.4`, libmodsecurity `v3.0.17`,
+CRS `v4.30.0` (see [`versions.lock.md`](./versions.lock.md)). First tag that ships
+alpha `libmodsec_dm.so` in the release tarball and GHCR image.
+
 ### Added
 
-- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Alpha dynamic module from release artifacts](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package. **Not** published in `v0.1.0-alpha.3` (build from tip `main` until the next tag).
+- **Alpha dual option:** Envoy dynamic module path `crates/modsec-dm` (`libmodsec_dm.so`) alongside default ext_proc. Elect **one** hop; weaker fail-closed model ([fail-closed-dm.md](./docs/fail-closed-dm.md)). Lean CI cell `e2e-dm` × both arches. (#33)
+- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Alpha dynamic module from release artifacts](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package. (#36) **First published in this tag** (`v0.1.0-alpha.3` tarballs/images do not contain the `.so`).
 
 ### Fixed
 
-- Docs honesty: README / deploy / lock D-row no longer claim `v0.1.0-alpha.3` ships `libmodsec_dm.so` or still list the alpha.2 OCI digest.
+- Docs honesty: README / deploy / lock D-row no longer claim `v0.1.0-alpha.3` ships `libmodsec_dm.so` or still list the alpha.2 OCI digest. (#38)
+
+### Changed
+
+- Crate version `0.1.0-alpha.4` (product tag `v0.1.0-alpha.4`).
 
 ## [v0.1.0-alpha.3] — 2026-10-22
 
@@ -246,7 +257,8 @@ section.
 [UAT checklist](https://github.com/etiennemunnich/modsec-envoy-connector/blob/v0.1.0-alpha.1/docs/modes/uat.md). Local: `up.sh` → `smoke.sh` →
 `fail-closed.sh`. Hosted: `ci-ok` on both arches for the tag commit on `main`.
 
-[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.3...HEAD
+[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.4...HEAD
+[v0.1.0-alpha.4]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [v0.1.0-alpha.3]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [v0.1.0-alpha.2]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [v0.1.0-alpha.1]: https://github.com/etiennemunnich/modsec-envoy-connector/releases/tag/v0.1.0-alpha.1
