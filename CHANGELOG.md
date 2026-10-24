@@ -22,6 +22,7 @@ alpha `libmodsec_dm.so` in the release tarball and GHCR image.
 ### Fixed
 
 - Docs honesty: README / deploy / lock D-row no longer claim `v0.1.0-alpha.3` ships `libmodsec_dm.so` or still list the alpha.2 OCI digest. (#38)
+- gRPC test `probe_exchange_logs_below_info_and_keeps_metrics_clean`: rebuild tracing interest cache before capture (aarch64 CI flake).
 
 ### Changed
 
