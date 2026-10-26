@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- gRPC test `probe_exchange_logs_below_info_and_keeps_metrics_clean`: capturing subscriber registers `Interest::always` and rebuilds the interest cache under that subscriber (CI flake: expected ≥2 INFO got 1).
+
 ## [v0.1.0-alpha.4] — 2026-10-24
 
 Early-test pre-release. Pins unchanged: Envoy `v1.39.4`, libmodsecurity `v3.0.17`,

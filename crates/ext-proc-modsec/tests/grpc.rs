@@ -1653,6 +1653,16 @@ async fn audit_log_written_after_deny_off_the_reply_path() {
 struct Levels(Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
 
 impl tracing::Subscriber for Levels {
+    // Always-on interest: prior tests in this binary may have registered
+    // Interest::never for the same phase_info! callsites under a NoSubscriber
+    // (or a filtered one). Interest::sometimes + rebuild alone still raced on
+    // CI (x86_64: expected ≥2 INFO got 1; aarch64 previously got 0/1).
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::always()
+    }
     fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
         true
     }
@@ -1687,12 +1697,11 @@ impl Levels {
 fn probe_exchange_logs_below_info_and_keeps_metrics_clean() {
     let p = processor();
     let run = |probe: bool| {
-        // Prior tests may have cached callsites as disabled under another
-        // dispatcher; rebuild so with_default actually sees phase INFO lines
-        // (aarch64 CI flake: info_or_above() == 0/1 without this).
-        tracing::callsite::rebuild_interest_cache();
         let levels = Levels::default();
         let step = tracing::subscriber::with_default(levels.clone(), || {
+            // Rebuild *under* the capturing subscriber so callsites pick up
+            // Interest::always from Levels, not a stale never from prior tests.
+            tracing::callsite::rebuild_interest_cache();
             let mut ex = if probe {
                 p.probe_exchange()
             } else {
@@ -1709,6 +1718,8 @@ fn probe_exchange_logs_below_info_and_keeps_metrics_clean() {
         levels
     };
     // Negative control: real traffic logs its phases at INFO and counts.
+    // Headers-only eos=true emits ≥2 INFO phase_info! lines (headers inspected
+    // + settle, and usually phase-2 settle too).
     let traffic = run(false);
     let n = traffic.info_or_above();
     assert!(
