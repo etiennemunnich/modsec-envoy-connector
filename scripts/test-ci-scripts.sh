@@ -14,7 +14,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 fails=0
 passes=0
 # Deleting a block of tests must fail too, not only a failing test.
-MIN_CHECKS=180
+MIN_CHECKS=220
 check() { # check <name> <want> <got>
   if [[ "$2" == "$3" ]]; then echo "ok   $1"; passes=$((passes + 1)); else echo "FAIL $1: want '$2', got '$3'"; fails=$((fails + 1)); fi
 }
@@ -400,6 +400,22 @@ ash_wf="$(grep -Eo 'automated-security-helper\.git@[0-9a-f]{40}' "${ROOT}/.githu
 check "ash: ASH_PIN matches ash.yml commit pin" 0 "${ok}"
 grep -qE 'automated-security-helper\.git@v[0-9]' "${ROOT}/.github/workflows/ash.yml" && ok=1 || ok=0
 check "ash: no movable tag install" 0 "${ok}"
+# DM SDK tag must equal ENVOY_PIN / DYNAMIC_MODULES_SDK_REV (Dependabot must not drift it).
+envoy_pin="$(grep -E '^ENVOY_PIN=' "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2 || true)"
+sdk_lock="$(grep -E '^DYNAMIC_MODULES_SDK_REV=' "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2 || true)"
+sdk_toml="$(grep -E 'envoy-proxy-dynamic-modules-rust-sdk\s*=' "${ROOT}/crates/modsec-dm/Cargo.toml" \
+  | grep -Eo 'tag\s*=\s*"[^"]+"' | head -1 | grep -Eo 'v1\.[0-9]+\.[0-9]+' || true)"
+[[ -n "$envoy_pin" && "$sdk_lock" == "$envoy_pin" ]] && ok=0 || ok=1
+check "pins: DYNAMIC_MODULES_SDK_REV equals ENVOY_PIN" 0 "${ok}"
+[[ -n "$sdk_toml" && "$sdk_toml" == "$sdk_lock" ]] && ok=0 || ok=1
+check "pins: modsec-dm Cargo.toml SDK tag matches lock" 0 "${ok}"
+grep -q 'envoy-proxy-dynamic-modules-rust-sdk' "${ROOT}/.github/dependabot.yml" \
+  && grep -A2 'ignore:' "${ROOT}/.github/dependabot.yml" | grep -q 'envoy-proxy-dynamic-modules-rust-sdk' \
+  && ok=0 || ok=1
+check "dependabot: ignores envoy-proxy-dynamic-modules-rust-sdk" 0 "${ok}"
+# BYO footgun: no shipped demo YAML enables observability_mode.
+if grep -R --include='*.yaml' -n 'observability_mode:\s*true' "${ROOT}/demo/envoy/" >/dev/null 2>&1; then ok=1; else ok=0; fi
+check "demo: no observability_mode: true in envoy YAML" 0 "${ok}"
 
 # Thin presence hook for WS frame-bound artifacts.
 [[ -x "${ROOT}/demo/scripts/hop-trace-ws-frames.sh" ]] && ok=0 || ok=1

@@ -6,6 +6,10 @@ updates:
       interval: weekly
     cooldown:
       default-days: 3
+    # SDK git tag must equal ENVOY_PIN / DYNAMIC_MODULES_SDK_REV; bump only with a
+    # deliberate Envoy pin change (not a Dependabot group update).
+    ignore:
+      - dependency-name: "envoy-proxy-dynamic-modules-rust-sdk"
     groups:
       cargo:
         patterns: ["*"]
