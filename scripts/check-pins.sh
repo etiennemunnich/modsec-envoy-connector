@@ -20,10 +20,23 @@ lock() { # lock <key> <pattern> — the value, checked against the pattern
 }
 
 ENVOY_PIN="$(lock ENVOY_PIN '^v1\.[0-9]+\.[0-9]+$')"
+DYNAMIC_MODULES_SDK_REV="$(lock DYNAMIC_MODULES_SDK_REV '^v1\.[0-9]+\.[0-9]+$')"
 MODSECURITY_PIN="$(lock MODSECURITY_PIN '^v3\.0\.[0-9]+$')"
 CRS_TAG="$(lock CRS_TAG '^v4\.[0-9]+\.[0-9]+$')"
 ASH_PIN="$(lock ASH_PIN '^[0-9a-f]{40}$')"
 GO_FTW_PIN="$(lock GO_FTW_PIN '^v2\.[0-9]+\.[0-9]+$')"
+
+# DM Rust SDK git tag must equal ENVOY_PIN (ABI). Dependabot must not drift it alone.
+[[ "$DYNAMIC_MODULES_SDK_REV" == "$ENVOY_PIN" ]] \
+  || die "DYNAMIC_MODULES_SDK_REV=$DYNAMIC_MODULES_SDK_REV != ENVOY_PIN=$ENVOY_PIN"
+
+DM_TOML="${ROOT}/crates/modsec-dm/Cargo.toml"
+[[ -f "$DM_TOML" ]] || die "missing $DM_TOML"
+sdk_tag="$(grep -E 'envoy-proxy-dynamic-modules-rust-sdk\s*=' "$DM_TOML" \
+  | grep -Eo 'tag\s*=\s*"[^"]+"' | head -1 | grep -Eo 'v1\.[0-9]+\.[0-9]+' || true)"
+[[ -n "$sdk_tag" ]] || die "modsec-dm Cargo.toml: no envoy-proxy-dynamic-modules-rust-sdk tag = \"vX.Y.Z\""
+[[ "$sdk_tag" == "$DYNAMIC_MODULES_SDK_REV" ]] \
+  || die "modsec-dm Cargo.toml SDK tag=$sdk_tag, versions.lock.md DYNAMIC_MODULES_SDK_REV=$DYNAMIC_MODULES_SDK_REV"
 
 fallback() { # fallback <file> <want> — the ${VAR:-vX.Y.Z} default in that script must be <want>
   local got
@@ -47,4 +60,4 @@ ash_got="$(grep -Eo 'git\+https://github.com/awslabs/automated-security-helper\.
 [[ -n "$ash_got" ]] || die "ash.yml: no commit-pinned automated-security-helper pip install line"
 [[ "$ash_got" == "$ASH_PIN" ]] || die "ash.yml installs @$ash_got, versions.lock.md ASH_PIN=$ASH_PIN"
 
-echo "pin-check OK: ENVOY_PIN=$ENVOY_PIN MODSECURITY_PIN=$MODSECURITY_PIN CRS_TAG=$CRS_TAG GO_FTW_PIN=$GO_FTW_PIN ASH_PIN=$ASH_PIN (install-script fallbacks + ash.yml match)"
+echo "pin-check OK: ENVOY_PIN=$ENVOY_PIN DYNAMIC_MODULES_SDK_REV=$DYNAMIC_MODULES_SDK_REV (= SDK tag) MODSECURITY_PIN=$MODSECURITY_PIN CRS_TAG=$CRS_TAG GO_FTW_PIN=$GO_FTW_PIN ASH_PIN=$ASH_PIN (install-script fallbacks + ash.yml + DM SDK tag match)"
