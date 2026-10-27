@@ -10,15 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-<<<<<<< HEAD
 - gRPC test `probe_exchange_logs_below_info_and_keeps_metrics_clean`: capturing subscriber registers `Interest::always` and rebuilds the interest cache under that subscriber (CI flake: expected ≥2 INFO got 1).
-=======
 - Dependabot cargo group no longer bumps `envoy-proxy-dynamic-modules-rust-sdk` away from `ENVOY_PIN` (ignore + `check-pins.sh` asserts lock `DYNAMIC_MODULES_SDK_REV` equals the `modsec-dm` Cargo.toml tag). Tokio → 1.54.1 only.
+- Resolve leftover merge-conflict markers in this changelog from the #43 squash.
 
 ### Changed
 
+- Envoy pin `v1.39.4` → `v1.39.6` (stable-candidate green on x86_64 + aarch64; see #45). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`. Remaining on the 1.39 line; `v1.40.2` (#44) not adopted yet.
 - `scripts/test-ci-scripts.sh`: assert DM SDK pin alignment, Dependabot ignore, and no `observability_mode: true` in demo Envoy YAML.
->>>>>>> d830d14 (fix(deps): bump tokio 1.54.1; keep DM SDK at ENVOY_PIN)
 
 ## [v0.1.0-alpha.4] — 2026-10-24
 

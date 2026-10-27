@@ -2,7 +2,7 @@
 
 Envoy normalizes some headers before `ext_proc` sees them. Rules that only look at those signals may not fire the way they would under a typical nginx + ModSecurity setup. This page is for early testers writing or reviewing SecRules: what ModSecurity usually sees on this path, what Envoy handles first, and how to aim custom rules.
 
-**Pins:** Envoy `v1.39.4`, libmodsecurity `v3.0.17`, CRS `v4.30.0` (see [`versions.lock.md`](../versions.lock.md)). No Envoy tip flags are claimed here.
+**Pins:** Envoy `v1.39.6`, libmodsecurity `v3.0.17`, CRS `v4.30.0` (see [`versions.lock.md`](../versions.lock.md)). No Envoy tip flags are claimed here.
 
 Fail-closed is unchanged: connector down, hang/timeout, bad rules, or ModSec/FFI `Err` → traffic must not reach origin as OK. Details: [fail-closed.md](./fail-closed.md).
 
@@ -24,7 +24,7 @@ Rule deny under BUFFERED or FULL_DUPLEX_STREAMED still answers **403** with the 
 
 ### Headers Envoy may remove first
 
-Envoy sanitizes `Referer` before any HTTP filter (including `ext_proc`). Values that are not a valid absolute URL or relative-ref are removed. Filter order cannot restore them; there is no `HttpConnectionManager` knob on Envoy `v1.39.4` to disable this.
+Envoy sanitizes `Referer` before any HTTP filter (including `ext_proc`). Values that are not a valid absolute URL or relative-ref are removed. Filter order cannot restore them; there is no `HttpConnectionManager` knob on Envoy `v1.39.6` to disable this.
 
 CRS rules that read `REQUEST_HEADERS:Referer` (for example **932161**, **932237**, **932239**, **941101**, **941110**) therefore cannot score bare shell or script strings in Referer. Absolute-URI Referers that carry a payload in the URL can still be scored.
 

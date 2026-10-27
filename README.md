@@ -9,7 +9,7 @@ Envoy does not run ModSecurity by itself. This project offers an **alpha dual op
 
 Envoy alone forwards traffic to your origin, and only after the elected path allows it. Do not run both ModSec filters on one chain.
 
-**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.4`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.4, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
+**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.4`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.39.6, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
 
 ## How it decides
 
