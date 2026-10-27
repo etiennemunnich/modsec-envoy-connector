@@ -30,7 +30,7 @@ h3_require_deps() {
 
   local pin want ver
   pin="$(grep -E '^ENVOY_PIN=' "${ROOT}/versions.lock.md" | head -1 | cut -d= -f2)"
-  pin="${pin:-v1.39.4}"
+  pin="${pin:-v1.39.6}"
   want="${pin#v}"
   ver="$(envoy --version 2>&1 || true)"
   echo "${ver}" | grep -q "/${want}/" \
