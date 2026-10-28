@@ -257,7 +257,8 @@ impl Limits {
 /// Outcome of parsing the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Run(Config),
+    /// Boxed: `Config` is large relative to Help/Version (clippy `large_enum_variant`).
+    Run(Box<Config>),
     Help,
     Version,
 }
@@ -627,7 +628,7 @@ where
     };
     require_loopback_or_public("--listen", listen, listen_public)?;
     require_loopback_or_public("--metrics-listen", metrics_listen, listen_public)?;
-    Ok(Command::Run(Config {
+    Ok(Command::Run(Box::new(Config {
         listen,
         metrics_listen,
         modsec_rules: rules,
@@ -638,7 +639,7 @@ where
         listen_public,
         require_connection_attrs,
         allow_detection_only,
-    }))
+    })))
 }
 
 fn require_loopback_or_public(
@@ -713,7 +714,7 @@ mod tests {
 
     fn run(args: &[&str], env: impl Fn(&str) -> Option<String>) -> Result<Config, ConfigError> {
         match parse(args.iter().copied(), env)? {
-            Command::Run(c) => Ok(c),
+            Command::Run(c) => Ok(*c),
             other => panic!("expected Run, got {other:?}"),
         }
     }

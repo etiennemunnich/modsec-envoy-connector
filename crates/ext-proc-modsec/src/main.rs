@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 #[tokio::main]
 async fn main() -> ExitCode {
     let config = match Config::from_env() {
-        Ok(Command::Run(c)) => c,
+        Ok(Command::Run(c)) => *c,
         Ok(Command::Help) => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;

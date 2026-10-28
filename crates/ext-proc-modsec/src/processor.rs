@@ -212,20 +212,17 @@ impl ExternalProcessor for ModSecProcessor {
         // Process-wide admission: over-cap refuses the stream before any
         // ModSec work. Envoy with failure_mode_allow: false answers 500 and
         // does not contact origin.
-        let permit = match self.admission.try_enter() {
-            Ok(p) => p,
-            Err(()) => {
-                self.metrics.inc_admission_refused();
-                warn!(
-                    action = "admission_refused",
-                    limit = self.admission.limit(),
-                    "in-flight ModSec stream admission cap reached; refusing Process (fail-closed)"
-                );
-                return Err(Status::resource_exhausted(format!(
-                    "admission limit: too many in-flight ModSec streams (cap {}); fail-closed",
-                    self.admission.limit()
-                )));
-            }
+        let Some(permit) = self.admission.try_enter() else {
+            self.metrics.inc_admission_refused();
+            warn!(
+                action = "admission_refused",
+                limit = self.admission.limit(),
+                "in-flight ModSec stream admission cap reached; refusing Process (fail-closed)"
+            );
+            return Err(Status::resource_exhausted(format!(
+                "admission limit: too many in-flight ModSec streams (cap {}); fail-closed",
+                self.admission.limit()
+            )));
         };
         let driver = Driver {
             exchange: self.exchange(),

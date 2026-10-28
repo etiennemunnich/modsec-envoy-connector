@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Default process-wide in-flight ModSec stream cap.
 pub const DEFAULT_MAX_IN_FLIGHT: u32 = 1024;
@@ -33,12 +33,8 @@ impl Admission {
     }
 
     /// Non-blocking: refuse immediately when at capacity (fail-closed).
-    pub fn try_enter(&self) -> Result<OwnedSemaphorePermit, ()> {
-        match self.sem.clone().try_acquire_owned() {
-            Ok(p) => Ok(p),
-            Err(TryAcquireError::NoPermits) => Err(()),
-            Err(TryAcquireError::Closed) => Err(()),
-        }
+    pub fn try_enter(&self) -> Option<OwnedSemaphorePermit> {
+        self.sem.clone().try_acquire_owned().ok()
     }
 }
 
@@ -50,8 +46,8 @@ mod tests {
     fn under_cap_acquires_over_cap_refuses() {
         let gate = Admission::new(1);
         let held = gate.try_enter().expect("first slot");
-        assert!(gate.try_enter().is_err(), "over-cap must refuse");
+        assert!(gate.try_enter().is_none(), "over-cap must refuse");
         drop(held);
-        assert!(gate.try_enter().is_ok(), "slot freed after drop");
+        assert!(gate.try_enter().is_some(), "slot freed after drop");
     }
 }
