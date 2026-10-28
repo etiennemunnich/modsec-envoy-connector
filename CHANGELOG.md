@@ -16,7 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Envoy pin `v1.39.4` → `v1.39.6` (stable-candidate green on x86_64 + aarch64; see #45). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`. Remaining on the 1.39 line; `v1.40.2` (#44) not adopted yet.
+- Envoy pin `v1.39.6` → `v1.40.2` (stable-candidate green on x86_64 + aarch64; see #44). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`. DM filter adapted for SDK 1.40 `&self` HTTP hooks (`RefCell` per-stream state; `mock` feature for unit tests; bindgen/`prettyplease` lock aligned).
+- Envoy pin `v1.39.4` → `v1.39.6` (stable-candidate green on x86_64 + aarch64; see #45). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`.
 - `scripts/test-ci-scripts.sh`: assert DM SDK pin alignment, Dependabot ignore, and no `observability_mode: true` in demo Envoy YAML.
 
 ## [v0.1.0-alpha.4] — 2026-10-24
