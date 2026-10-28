@@ -27,7 +27,13 @@ source "$(dirname "$0")/lib.sh"
 # shellcheck source=h3-lib.sh
 source "$(dirname "$0")/h3-lib.sh"
 
-MIN_H3_CHECKS="${MIN_H3_CHECKS:-14}"
+# ext_proc: hop + access-log + connector http_version + cookies + kill/hang/fma ≥14
+# dm: hop + access-log + cookies only (no sidecar kill/hang; DM not fail-closed absolute)
+if [[ "${DEPLOY}" == "dm" ]]; then
+  MIN_H3_CHECKS="${MIN_H3_CHECKS:-9}"
+else
+  MIN_H3_CHECKS="${MIN_H3_CHECKS:-14}"
+fi
 FAIL=0
 PASS=0
 XSS='theme=<script>alert(1)</script>'
@@ -58,7 +64,7 @@ expect_h3() {
   fi
 }
 
-echo "==> H3 lab suite (not product H3 support)"
+echo "==> H3 lab suite (not product H3 support) deploy=${DEPLOY}"
 h3_bring_up
 
 echo "==> hop: benign GET → 200, origin +1"
@@ -77,10 +83,12 @@ if grep -qE '"GET / HTTP/3" 200' "${H3_LOG}"; then
 else
   fail "[access-log] missing HTTP/3 200 line in ${H3_LOG}"
 fi
-if grep -qE 'http_version="3\.0"' "${RUN}/connector.log"; then
-  pass "[connector] http_version=3.0 logged"
-else
-  fail "[connector] missing http_version=3.0 in connector.log"
+if [[ "${DEPLOY}" == "ext_proc" ]]; then
+  if grep -qE 'http_version="3\.0"' "${RUN}/connector.log"; then
+    pass "[connector] http_version=3.0 logged"
+  else
+    fail "[connector] missing http_version=3.0 in connector.log"
+  fi
 fi
 
 echo "==> Cookie crumbs (Envoy ; coalesce → CRS)"
@@ -95,57 +103,61 @@ expect_h3 "cookie-joined-xss" 403 0 \
 expect_h3 "cookie-empty-dropped" 200 1 \
   --path / -H 'cookie: session=ok' -H 'cookie:'
 
-echo "==> fail-closed: kill connector → 500, origin untouched"
-before="$(origin_hits)"
-kill -9 "$(cat "${RUN}/connector.pid")"
-for _ in $(seq 1 30); do
-  if ! curl -sf "${METRICS}/healthz" >/dev/null 2>&1; then
-    break
-  fi
+if [[ "${DEPLOY}" == "ext_proc" ]]; then
+  echo "==> fail-closed: kill connector → 500, origin untouched"
+  before="$(origin_hits)"
+  kill -9 "$(cat "${RUN}/connector.pid")"
+  for _ in $(seq 1 30); do
+    if ! curl -sf "${METRICS}/healthz" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+  h3_capture --path /
   sleep 0.1
-done
-h3_capture --path /
-sleep 0.1
-delta=$(( $(origin_hits) - before ))
-code="$(h3_status_of "${H3_LAST_OUT}")"
-if [[ "${code}" == "500" && "${delta}" == "0" ]]; then
-  pass "[h3-killed] HTTP 500, origin hits +0"
-else
-  fail "[h3-killed] HTTP ${code:-?} (want 500), origin +${delta} (want 0)"
-fi
-start_connector
-if wait_http "${METRICS}/healthz" 100; then
-  pass "[restore] connector ready"
-else
-  fail "[restore] connector not ready"
-fi
-
-echo "==> fail-closed: hang connector (SIGSTOP) → 504, origin untouched"
-before="$(origin_hits)"
-kill -STOP "$(cat "${RUN}/connector.pid")"
-h3_capture --path / --timeout 8
-sleep 0.1
-delta=$(( $(origin_hits) - before ))
-code="$(h3_status_of "${H3_LAST_OUT}")"
-kill -CONT "$(cat "${RUN}/connector.pid")" 2>/dev/null || true
-if [[ "${code}" == "504" && "${delta}" == "0" ]]; then
-  pass "[h3-hung] HTTP 504, origin hits +0"
-else
-  fail "[h3-hung] HTTP ${code:-?} (want 504), origin +${delta} (want 0)"
-fi
-if ! curl -sf "${METRICS}/healthz" >/dev/null; then
-  start_connector
-  if ! wait_http "${METRICS}/healthz" 100; then
-    fail "[restore-after-hang] connector not ready"
+  delta=$(( $(origin_hits) - before ))
+  code="$(h3_status_of "${H3_LAST_OUT}")"
+  if [[ "${code}" == "500" && "${delta}" == "0" ]]; then
+    pass "[h3-killed] HTTP 500, origin hits +0"
+  else
+    fail "[h3-killed] HTTP ${code:-?} (want 500), origin +${delta} (want 0)"
   fi
-fi
+  start_connector
+  if wait_http "${METRICS}/healthz" 100; then
+    pass "[restore] connector ready"
+  else
+    fail "[restore] connector not ready"
+  fi
 
-fma="$(curl -s "http://127.0.0.1:${H3_ADMIN_PORT}/stats" \
-  | awk '/ext_proc.modsec_ext_proc_h3.failure_mode_allowed:/{print $2; exit}')"
-if [[ "${fma:-}" == "0" ]]; then
-  pass "[envoy] failure_mode_allowed=0"
+  echo "==> fail-closed: hang connector (SIGSTOP) → 504, origin untouched"
+  before="$(origin_hits)"
+  kill -STOP "$(cat "${RUN}/connector.pid")"
+  h3_capture --path / --timeout 8
+  sleep 0.1
+  delta=$(( $(origin_hits) - before ))
+  code="$(h3_status_of "${H3_LAST_OUT}")"
+  kill -CONT "$(cat "${RUN}/connector.pid")" 2>/dev/null || true
+  if [[ "${code}" == "504" && "${delta}" == "0" ]]; then
+    pass "[h3-hung] HTTP 504, origin hits +0"
+  else
+    fail "[h3-hung] HTTP ${code:-?} (want 504), origin +${delta} (want 0)"
+  fi
+  if ! curl -sf "${METRICS}/healthz" >/dev/null; then
+    start_connector
+    if ! wait_http "${METRICS}/healthz" 100; then
+      fail "[restore-after-hang] connector not ready"
+    fi
+  fi
+
+  fma="$(curl -s "http://127.0.0.1:${H3_ADMIN_PORT}/stats" \
+    | awk '/ext_proc.modsec_ext_proc_h3.failure_mode_allowed:/{print $2; exit}')"
+  if [[ "${fma:-}" == "0" ]]; then
+    pass "[envoy] failure_mode_allowed=0"
+  else
+    fail "[envoy] failure_mode_allowed=${fma:-?} (want 0)"
+  fi
 else
-  fail "[envoy] failure_mode_allowed=${fma:-?} (want 0)"
+  echo "==> DM H3: sidecar kill/hang/fma N/A (DM not fail-closed absolute; hop+cookie CRS only)"
 fi
 
 if [[ "${H3_PROBE_KEEP:-0}" == "1" || "${H3_PROBE_DOWN:-1}" == "0" ]]; then

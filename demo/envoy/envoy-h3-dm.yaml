@@ -1,0 +1,83 @@
+# Lab HTTP/3 (QUIC) downstream + in-process modsec-dm. Not product support / not PR CI.
+#
+# Twin of envoy-h3.yaml for DEPLOY=dm. Driven when h3-lib.sh sees DEPLOY=dm
+# (h3-probe.sh / cookie-protocols). Body policy headers_only (NONE honesty):
+# header/query CRS can deny; bodies are not inspected. DM is NOT fail-closed
+# absolute — kill/hang sidecar drills do not apply. Do not read as "H3 WAF supported".
+#
+# Placeholders rendered by h3-lib.sh into demo/.run/envoy-h3.yaml:
+#   __H3_CERT__ __H3_KEY__ __DM_SO_DIR__ __DM_RULES__  (+ port sed like ext_proc H3)
+
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 18449 }
+
+static_resources:
+  listeners:
+  - name: ingress_h3
+    address:
+      socket_address:
+        protocol: UDP
+        address: 127.0.0.1
+        port_value: 18443
+    udp_listener_config:
+      quic_options: {}
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.quic
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.quic.v3.QuicDownstreamTransport
+          downstream_tls_context:
+            common_tls_context:
+              tls_certificates:
+              - certificate_chain: { filename: __H3_CERT__ }
+                private_key: { filename: __H3_KEY__ }
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          codec_type: HTTP3
+          stat_prefix: ingress_h3
+          http3_protocol_options: {}
+          generate_request_id: true
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                text_format_source:
+                  inline_string: "[%START_TIME%] dm-h3 \"%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%\" %RESPONSE_CODE% details=%RESPONSE_CODE_DETAILS%\n"
+          route_config:
+            name: local_route
+            virtual_hosts:
+            - name: app
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/" }
+                route: { cluster: origin }
+          http_filters:
+          - name: envoy.filters.http.dynamic_modules
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+              dynamic_module_config:
+                name: modsec_dm
+                do_not_close: true
+              filter_name: modsecurity
+              filter_config:
+                "@type": type.googleapis.com/google.protobuf.StringValue
+                value: '{"rules_path":"__DM_RULES__","body_policy":"headers_only","partial_soft_limit_bytes":1048576,"label":"dm-h3"}'
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  - name: origin
+    type: STATIC
+    connect_timeout: 1s
+    load_assignment:
+      cluster_name: origin
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18098 }
