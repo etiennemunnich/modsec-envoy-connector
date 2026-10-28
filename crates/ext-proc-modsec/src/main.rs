@@ -74,7 +74,13 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("bind metrics {}: {e}", config.metrics_listen))?;
 
     let metrics = Arc::new(ConnectorMetrics::default());
-    let processor = ModSecProcessor::with_limits(engine, metrics, config.body_reply, config.limits);
+    let processor = ModSecProcessor::with_limits_and_admission(
+        engine,
+        metrics,
+        config.body_reply,
+        config.limits,
+        config.max_in_flight,
+    );
     tokio::spawn(metrics_server::serve(
         metrics_listener,
         processor.clone(),
@@ -92,6 +98,7 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         duplex_idle_timeout_s = config.limits.duplex_idle_timeout.as_secs_f64(),
         duplex_total_timeout_s = config.limits.duplex_total_timeout.as_secs_f64(),
         max_concurrent_streams = config.server.max_concurrent_streams,
+        max_in_flight = config.max_in_flight,
         http2_keepalive_interval_s = config.server.http2_keepalive_interval.as_secs_f64(),
         http2_keepalive_timeout_s = config.server.http2_keepalive_timeout.as_secs_f64(),
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"

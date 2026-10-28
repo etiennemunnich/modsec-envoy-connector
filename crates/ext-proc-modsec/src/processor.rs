@@ -38,10 +38,12 @@ use std::time::{Duration, Instant};
 
 use modsec_engine::{Decision, Engine, InspectionSession};
 use tokio::runtime::{Handle, RuntimeFlavor};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status, Streaming};
 use tracing::warn;
 
+use crate::admission::{Admission, DEFAULT_MAX_IN_FLIGHT};
 use crate::config::{BodyReply, Limits};
 use crate::connection_meta::ConnectionEndpoints;
 use crate::metrics::{ConnectorMetrics, Phase};
@@ -78,6 +80,7 @@ pub struct ModSecProcessor {
     metrics: Arc<ConnectorMetrics>,
     body_reply: BodyReply,
     limits: Limits,
+    admission: Admission,
 }
 
 impl ModSecProcessor {
@@ -99,11 +102,28 @@ impl ModSecProcessor {
         body_reply: BodyReply,
         limits: Limits,
     ) -> Self {
+        Self::with_limits_and_admission(
+            engine,
+            metrics,
+            body_reply,
+            limits,
+            DEFAULT_MAX_IN_FLIGHT,
+        )
+    }
+
+    pub fn with_limits_and_admission(
+        engine: Arc<Engine>,
+        metrics: Arc<ConnectorMetrics>,
+        body_reply: BodyReply,
+        limits: Limits,
+        max_in_flight: u32,
+    ) -> Self {
         Self {
             engine,
             metrics,
             body_reply,
             limits,
+            admission: Admission::new(max_in_flight),
         }
     }
 
@@ -117,6 +137,10 @@ impl ModSecProcessor {
 
     pub fn limits(&self) -> Limits {
         self.limits
+    }
+
+    pub fn admission_limit(&self) -> u32 {
+        self.admission.limit()
     }
 
     /// The tonic service with this processor's message-size limits applied.
@@ -176,10 +200,29 @@ impl ExternalProcessor for ModSecProcessor {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
+        // Process-wide admission: over-cap refuses the stream before any
+        // ModSec work. Envoy with failure_mode_allow: false answers 500 and
+        // does not contact origin.
+        let permit = match self.admission.try_enter() {
+            Ok(p) => p,
+            Err(()) => {
+                self.metrics.inc_admission_refused();
+                warn!(
+                    action = "admission_refused",
+                    limit = self.admission.limit(),
+                    "in-flight ModSec stream admission cap reached; refusing Process (fail-closed)"
+                );
+                return Err(Status::resource_exhausted(format!(
+                    "admission limit: too many in-flight ModSec streams (cap {}); fail-closed",
+                    self.admission.limit()
+                )));
+            }
+        };
         let driver = Driver {
             exchange: self.exchange(),
             inbound: request.into_inner(),
             pending_out: VecDeque::new(),
+            _admission: permit,
         };
         Ok(Response::new(Box::pin(Outbound {
             next: Some(Box::pin(driver.step())),
@@ -225,6 +268,8 @@ struct Driver {
     /// Extra replies queued after a multi-message duplex finalize (body then
     /// trailers). Drained before the next inbound read.
     pending_out: VecDeque<ProcessingResponse>,
+    /// Held for the life of this Process stream; drop frees an admission slot.
+    _admission: OwnedSemaphorePermit,
 }
 
 impl Driver {

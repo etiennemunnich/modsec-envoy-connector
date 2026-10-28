@@ -7,6 +7,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::admission::DEFAULT_MAX_IN_FLIGHT;
+
 pub const USAGE: &str = "\
 Envoy ExternalProcessor that inspects HTTP traffic with libmodsecurity (fail-closed)
 
@@ -57,6 +59,12 @@ Options:
                                HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS per Envoy
                                connection (Envoy opens more connections past it).
                                [env: EXT_PROC_MAX_CONCURRENT_STREAMS] [default: 1024]
+      --max-in-flight <N>
+                               Process-wide ModSec stream admission cap. A new
+                               Process past N is refused (gRPC resource_exhausted →
+                               Envoy 500 with failure_mode_allow: false; origin
+                               untouched). Distinct from --max-concurrent-streams.
+                               [env: EXT_PROC_MAX_IN_FLIGHT] [default: 1024]
       --http2-keepalive-interval <SECS>
                                HTTP/2 PING interval on idle Envoy connections.
                                [env: EXT_PROC_HTTP2_KEEPALIVE_INTERVAL] [default: 30]
@@ -146,6 +154,8 @@ pub struct Config {
     pub body_reply: BodyReply,
     pub limits: Limits,
     pub server: ServerLimits,
+    /// Process-wide concurrent ModSec `Process` streams (admission).
+    pub max_in_flight: u32,
     /// Report ready although the rules do not enforce (`SecRuleEngine`
     /// DetectionOnly / Off).
     pub allow_detection_only: bool,
@@ -294,6 +304,7 @@ where
     let mut max_held = None;
     let mut server_flags: Vec<(&'static str, String)> = Vec::new();
     let mut allow_detection_only = None;
+    let mut max_in_flight = None;
     let mut rules: Vec<PathBuf> = Vec::new();
 
     let mut args = args.into_iter().map(Into::into).peekable();
@@ -328,6 +339,14 @@ where
                 max_held = Some(bytes(
                     "--max-held-body-bytes",
                     inline.or_else(|| args.next()),
+                )?);
+            }
+            "--max-in-flight" => {
+                max_in_flight = Some(count(
+                    "--max-in-flight",
+                    inline
+                        .or_else(|| args.next())
+                        .ok_or(ConfigError::MissingValue("--max-in-flight"))?,
                 )?);
             }
             "--allow-detection-only" => {
@@ -442,6 +461,13 @@ where
             None => false,
         },
     };
+    let max_in_flight = match max_in_flight {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_IN_FLIGHT") {
+            Some(v) => count("EXT_PROC_MAX_IN_FLIGHT", v)?,
+            None => DEFAULT_MAX_IN_FLIGHT,
+        },
+    };
     Ok(Command::Run(Config {
         listen,
         metrics_listen,
@@ -449,6 +475,7 @@ where
         body_reply,
         limits,
         server,
+        max_in_flight,
         allow_detection_only,
     }))
 }
@@ -714,6 +741,7 @@ mod tests {
         assert_eq!(c.limits.duplex_idle_timeout, DEFAULT_DUPLEX_IDLE_TIMEOUT);
         assert_eq!(c.limits.duplex_total_timeout, DEFAULT_DUPLEX_TOTAL_TIMEOUT);
         assert_eq!(c.server, ServerLimits::default());
+        assert_eq!(c.max_in_flight, DEFAULT_MAX_IN_FLIGHT);
         assert!(!c.allow_detection_only);
 
         let env = |k: &str| match k {
@@ -758,6 +786,32 @@ mod tests {
         )
         .expect("parse");
         assert!(!c.allow_detection_only, "CLI beats env");
+    }
+
+    #[test]
+    fn max_in_flight_cli_and_env() {
+        let c = run(
+            &["--modsec-rules", "a.conf", "--max-in-flight", "2"],
+            no_env,
+        )
+        .expect("parse");
+        assert_eq!(c.max_in_flight, 2);
+        let env = |k: &str| match k {
+            "MODSEC_RULES" => Some("env.conf".into()),
+            "EXT_PROC_MAX_IN_FLIGHT" => Some("7".into()),
+            _ => None,
+        };
+        let c = run(&[], env).expect("parse");
+        assert_eq!(c.max_in_flight, 7);
+        let c = run(&["--modsec-rules", "a.conf", "--max-in-flight=3"], env).expect("parse");
+        assert_eq!(c.max_in_flight, 3, "CLI beats env");
+        assert!(matches!(
+            run(
+                &["--modsec-rules", "a.conf", "--max-in-flight", "0"],
+                no_env
+            ),
+            Err(ConfigError::InvalidCount { .. })
+        ));
     }
 
     #[test]

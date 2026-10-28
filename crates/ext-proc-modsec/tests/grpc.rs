@@ -21,7 +21,7 @@ use ext_proc_modsec::pb::envoy::service::ext_proc::v3::{
     ProtocolConfiguration,
 };
 use ext_proc_modsec::pb::google::protobuf::{value::Kind, Struct, Value};
-use ext_proc_modsec::{metrics_server, BodyReply, Limits, ModSecProcessor};
+use ext_proc_modsec::{metrics_server, BodyReply, Limits, ModSecProcessor, DEFAULT_MAX_IN_FLIGHT};
 use modsec_engine::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -71,16 +71,17 @@ fn modes(request: BodySendMode, response: BodySendMode) -> ProtocolConfiguration
 }
 
 fn processor() -> ModSecProcessor {
-    processor_with(BodyReply::Common, Limits::default())
+    processor_with(BodyReply::Common, Limits::default(), DEFAULT_MAX_IN_FLIGHT)
 }
 
-fn processor_with(body_reply: BodyReply, limits: Limits) -> ModSecProcessor {
+fn processor_with(body_reply: BodyReply, limits: Limits, max_in_flight: u32) -> ModSecProcessor {
     let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
-    ModSecProcessor::with_limits(
+    ModSecProcessor::with_limits_and_admission(
         engine,
         Arc::new(ConnectorMetrics::default()),
         body_reply,
         limits,
+        max_in_flight,
     )
 }
 
@@ -94,7 +95,16 @@ async fn start_duplex() -> Harness {
 }
 
 async fn start_with(body_reply: BodyReply, limits: Limits) -> Harness {
-    serve(processor_with(body_reply, limits)).await
+    serve(processor_with(body_reply, limits, DEFAULT_MAX_IN_FLIGHT)).await
+}
+
+async fn start_with_admission(max_in_flight: u32) -> Harness {
+    serve(processor_with(
+        BodyReply::Common,
+        Limits::default(),
+        max_in_flight,
+    ))
+    .await
 }
 
 async fn serve(processor: ModSecProcessor) -> Harness {
@@ -127,6 +137,12 @@ struct Stream {
 impl Stream {
     /// A stream that sends no `protocol_config` (see [`Harness::stream`]).
     async fn open(addr: SocketAddr) -> Self {
+        Self::try_open(addr).await.expect("process")
+    }
+
+    /// Like [`Self::open`], but returns the gRPC status when Process is refused
+    /// (e.g. admission over-cap → ResourceExhausted).
+    async fn try_open(addr: SocketAddr) -> Result<Self, tonic::Status> {
         let channel = Channel::from_shared(format!("http://{addr}"))
             .expect("uri")
             .connect()
@@ -139,14 +155,13 @@ impl Stream {
         let (tx, rx) = mpsc::channel(8);
         let rx = client
             .process(ReceiverStream::new(rx))
-            .await
-            .expect("process")
+            .await?
             .into_inner();
-        Self {
+        Ok(Self {
             tx,
             rx,
             config: None,
-        }
+        })
     }
 
     fn stamp(&mut self, mut req: ProcessingRequest) -> ProcessingRequest {
@@ -2231,4 +2246,78 @@ async fn idle_and_duplex_deadlines_answer_504() {
     assert_timed_out(&r, "duplex total");
     assert!(started.elapsed() >= Duration::from_millis(350));
     assert_eq!(d.metrics.fail_closed_total(), 1);
+}
+
+// --- Process-wide admission (P0) --------------------------------------------
+// Over-cap must refuse the new Process with a non-OK status (Envoy → 500,
+// origin untouched). Under-cap must still allow a full exchange.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_over_cap_refuses_process_never_allow() {
+    let h = start_with_admission(1).await;
+    let mut held = h.stream().await;
+    // Occupy the single admission slot with an unfinished POST (body still
+    // open → request not settled → allow stays 0).
+    assert_continue(&held.send(form_post()).await.unwrap(), "held headers");
+    assert_eq!(h.metrics.allow_total(), 0);
+    assert_eq!(h.metrics.admission_refused_total(), 0);
+
+    // Second Process must be refused before any ModSec work / Continue.
+    let err = match Stream::try_open(h.addr).await {
+        Err(e) => e,
+        Ok(_) => panic!("over-cap Process must be refused"),
+    };
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted, "{err:?}");
+    assert!(
+        err.message().contains("admission"),
+        "want admission in message, got {err:?}"
+    );
+    assert_eq!(h.metrics.admission_refused_total(), 1);
+    assert_eq!(
+        h.metrics.allow_total(),
+        0,
+        "refused stream must never count as allow (origin untouched)"
+    );
+    assert_eq!(h.metrics.requests_total(), 1, "only the held stream counted");
+
+    // Free the slot: drop the held stream (releases the permit), then a new
+    // Process may enter and complete an allow path.
+    drop(held);
+
+    let mut s = h.stream().await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "after free",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], true)).await.unwrap(),
+        "after free response",
+    );
+    assert_eq!(h.metrics.allow_total(), 1);
+    assert_eq!(h.metrics.admission_refused_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_under_cap_allows_exchange() {
+    let h = start_with_admission(2).await;
+    let mut a = h.stream().await;
+    let mut b = h.stream().await;
+    assert_continue(
+        &a.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "a headers",
+    );
+    assert_continue(
+        &b.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "b headers",
+    );
+    assert_continue(
+        &a.send(resp_headers("200", &[], true)).await.unwrap(),
+        "a response",
+    );
+    assert_continue(
+        &b.send(resp_headers("200", &[], true)).await.unwrap(),
+        "b response",
+    );
+    assert_eq!(h.metrics.allow_total(), 2);
+    assert_eq!(h.metrics.admission_refused_total(), 0);
 }

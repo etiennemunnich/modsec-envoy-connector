@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Latency samples through the live demo (Envoy → ext_proc → libmodsecurity+CRS → origin).
+# Latency samples through the live demo hop (ext_proc or DEPLOY=dm) → libmodsecurity+CRS → origin.
 # Not an SLO — records p50/p99 so empty or wrong-status runs cannot look green.
 #
 #   ./demo/scripts/up.sh
 #   ./demo/scripts/perf.sh              # default PERF_N=40
 #   PERF_N=20 ./demo/scripts/perf.sh    # shorter local pass
+#   DEPLOY=dm ./demo/scripts/up.sh && PERF_N=20 ./demo/scripts/perf.sh
 #
 # Floors (fail-closed for the harness itself):
 #   - PERF_N ≥ MIN_PERF_N (default 10)
@@ -12,7 +13,7 @@
 #   - ≥ MIN_PERF_PATHS completed WAF paths (default 6)
 # Fail-closed traffic behaviour is unchanged — this only times allow/deny paths.
 #
-# Env: PERF_N, MIN_PERF_N, MIN_PERF_PATHS, SKIP_ECHO=1, ORIGIN_HTTP
+# Env: PERF_N, MIN_PERF_N, MIN_PERF_PATHS, SKIP_ECHO=1, ORIGIN_HTTP, DEPLOY
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -25,6 +26,7 @@ OUT_DIR="${RUN}/perf"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${OUT_DIR}/latency-${STAMP}.txt"
 HOST="$(uname -s)-$(uname -m)"
+ADMIN="http://127.0.0.1:${ENVOY_ADMIN_PORT}"
 
 if ! [[ "${N}" =~ ^[1-9][0-9]*$ ]] || [[ "${N}" -lt "${MIN_N}" ]]; then
   echo "PERF FAILED: PERF_N=${N} must be an integer ≥ MIN_PERF_N=${MIN_N}" >&2
@@ -35,10 +37,17 @@ wait_http "${BASE}/" 50 || {
   echo "demo not up at ${BASE} — run ./demo/scripts/up.sh" >&2
   exit 2
 }
-wait_http "${METRICS}/healthz" 25 || {
-  echo "connector /healthz not ready" >&2
-  exit 2
-}
+if [[ "${DEPLOY}" == "dm" ]]; then
+  wait_http "${ADMIN}/ready" 25 || {
+    echo "Envoy admin /ready not ready (DEPLOY=dm)" >&2
+    exit 2
+  }
+else
+  wait_http "${METRICS}/healthz" 25 || {
+    echo "connector /healthz not ready" >&2
+    exit 2
+  }
+fi
 
 mkdir -p "${OUT_DIR}"
 
@@ -182,12 +191,16 @@ sample_post() {
 
 {
   echo "# demo latency samples — not an SLO"
-  echo "# path: Envoy→ext_proc→libmodsecurity+CRS (BUFFERED bodies)→demo origin"
-  echo "# stamp=${STAMP} host=${HOST} body_mode=${BODY_MODE} base=${BASE} origin=${ORIGIN_HTTP}"
+  if [[ "${DEPLOY}" == "dm" ]]; then
+    echo "# path: Envoy→modsec-dm (in-process)→libmodsecurity+CRS (BUFFERED bodies)→demo origin"
+  else
+    echo "# path: Envoy→ext_proc→libmodsecurity+CRS (BUFFERED bodies)→demo origin"
+  fi
+  echo "# stamp=${STAMP} host=${HOST} deploy=${DEPLOY} body_mode=${BODY_MODE} base=${BASE} origin=${ORIGIN_HTTP}"
   echo "# floors: PERF_N≥${MIN_N} status_match==N on ≥${MIN_PATHS} WAF paths"
 } >"${OUT}"
 
-echo "==> body_mode=${BODY_MODE} host=${HOST} N=${N}"
+echo "==> deploy=${DEPLOY} body_mode=${BODY_MODE} host=${HOST} N=${N}"
 echo "==> WAF path (security ON)"
 sample_get "waf_benign_get" "${BASE}/" "200"
 sample_get "waf_blocked_sqli_get" "${BASE}/search?q=1%27%20UNION%20SELECT%201,2--" "403"
@@ -218,4 +231,4 @@ if [[ "${FAIL}" -ne 0 ]]; then
   echo "PERF FAILED" >&2
   exit 1
 fi
-echo "PERF PASSED host=${HOST} body_mode=${BODY_MODE} paths=${PATHS_OK} n=${N}"
+echo "PERF PASSED host=${HOST} deploy=${DEPLOY} body_mode=${BODY_MODE} paths=${PATHS_OK} n=${N}"
