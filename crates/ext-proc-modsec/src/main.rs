@@ -97,8 +97,10 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         stream_idle_timeout_s = config.limits.stream_idle_timeout.as_secs_f64(),
         duplex_idle_timeout_s = config.limits.duplex_idle_timeout.as_secs_f64(),
         duplex_total_timeout_s = config.limits.duplex_total_timeout.as_secs_f64(),
+        engine_timeout_s = config.limits.engine_timeout.as_secs_f64(),
         max_concurrent_streams = config.server.max_concurrent_streams,
         max_in_flight = config.max_in_flight,
+        listen_public = config.listen_public,
         http2_keepalive_interval_s = config.server.http2_keepalive_interval.as_secs_f64(),
         http2_keepalive_timeout_s = config.server.http2_keepalive_timeout.as_secs_f64(),
         "ExternalProcessor serving (pair with Envoy failure_mode_allow: false)"

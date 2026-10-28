@@ -301,7 +301,16 @@ impl Driver {
                 Err(_) if self.exchange.verdict_complete() => return None,
                 Err(_) => return Some((Ok(self.exchange.timed_out(timer)), None)),
             };
-            return match run_blocking(|| self.exchange.on_message(msg)) {
+            let budget = self.exchange.limits.engine_timeout;
+            let t0 = Instant::now();
+            let step = run_blocking(|| self.exchange.on_message(msg));
+            // Soft engine budget: after a ModSec step that overran, never
+            // Continue — ImmediateResponse 504. A hung FFI still occupies a
+            // worker until it returns (documented honesty).
+            if t0.elapsed() > budget && !matches!(step, Step::Final(_) | Step::Abort(_)) {
+                return Some((Ok(self.exchange.timed_out(Timer::Engine)), None));
+            }
+            return match step {
                 Step::Reply(r) => Some((Ok(r), Some(self))),
                 Step::Replies(first, mut rest) => {
                     self.pending_out.append(&mut rest);
@@ -461,7 +470,10 @@ struct Modes {
 pub enum Timer {
     StreamIdle,
     DuplexIdle,
+    /// Absolute stream max lifetime (all body modes; CLI `--duplex-total-timeout`).
     DuplexTotal,
+    /// One ModSec evaluation step exceeded `--engine-timeout`.
+    Engine,
 }
 
 impl Timer {
@@ -470,6 +482,7 @@ impl Timer {
             Self::StreamIdle => "--stream-idle-timeout",
             Self::DuplexIdle => "--duplex-idle-timeout",
             Self::DuplexTotal => "--duplex-total-timeout",
+            Self::Engine => "--engine-timeout",
         }
     }
 }
@@ -607,11 +620,14 @@ impl Exchange {
     /// When the next inbound read gives up, and which deadline that is.
     pub fn read_deadline(&self, now: Instant) -> (Instant, Timer) {
         let mut next = (now + self.limits.stream_idle_timeout, Timer::StreamIdle);
-        if self.duplex() && !self.verdict_complete() {
+        // Absolute stream max lifetime applies to every body mode (not duplex-only).
+        if !self.verdict_complete() {
             let total = self.started + self.limits.duplex_total_timeout;
             if total < next.0 {
                 next = (total, Timer::DuplexTotal);
             }
+        }
+        if self.duplex() && !self.verdict_complete() {
             let idle = now + self.limits.duplex_idle_timeout;
             if self.unanswered_body().is_some() && idle < next.0 {
                 next = (idle, Timer::DuplexIdle);

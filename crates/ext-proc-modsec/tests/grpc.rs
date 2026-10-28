@@ -2291,6 +2291,52 @@ async fn idle_and_duplex_deadlines_answer_504() {
     assert_eq!(d.metrics.fail_closed_total(), 1);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_max_lifetime_applies_outside_duplex() {
+    // Absolute lifetime is not duplex-only: common/STREAMED also 504.
+    let h = start_with(
+        BodyReply::Common,
+        Limits {
+            duplex_total_timeout: Duration::from_millis(300),
+            stream_idle_timeout: Duration::from_secs(30),
+            ..Limits::default()
+        },
+    )
+    .await;
+    let mut s = h.stream().await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    let started = std::time::Instant::now();
+    // No further messages: stream_idle is 30s, so absolute lifetime must win.
+    let r = s.next().await.expect("timeout reply").expect("reply");
+    assert_timed_out(&r, "non-duplex stream max lifetime");
+    assert!(started.elapsed() >= Duration::from_millis(250));
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_timeout_after_slow_step_never_continue() {
+    // Calibrated path: injected sleep past --engine-timeout → 504, never Continue.
+    // Sleep on a mid-chunk append (before request settle) so allow stays 0.
+    let h = start_with(
+        BodyReply::Common,
+        Limits {
+            engine_timeout: Duration::from_millis(50),
+            ..Limits::default()
+        },
+    )
+    .await;
+    let mut s = h.stream().await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    h.processor
+        .engine()
+        .inject_sleep_next_transaction_step(Duration::from_millis(200));
+    let r = s.send(req_body(b"name=alice&", false)).await.unwrap();
+    assert_timed_out(&r, "engine timeout");
+    s.expect_closed().await;
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
 // --- Process-wide admission (P0) --------------------------------------------
 // Over-cap must refuse the new Process with a non-OK status (Envoy → 500,
 // origin untouched). Under-cap must still allow a full exchange.

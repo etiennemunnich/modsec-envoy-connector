@@ -252,6 +252,10 @@ pub struct Engine {
     /// Test-only (`fail-inject` feature): next Transaction step panics.
     #[cfg(feature = "fail-inject")]
     panic_next: AtomicBool,
+    /// Test-only (`fail-inject` feature): next Transaction step sleeps this
+    /// many milliseconds (for engine-timeout calibration tests).
+    #[cfg(feature = "fail-inject")]
+    sleep_next_ms: AtomicU64,
 }
 
 // SAFETY: after loading, `msc` and `rules` are only read by libmodsecurity
@@ -358,6 +362,8 @@ impl Engine {
                     fail_next: AtomicBool::new(false),
                     #[cfg(feature = "fail-inject")]
                     panic_next: AtomicBool::new(false),
+                    #[cfg(feature = "fail-inject")]
+                    sleep_next_ms: AtomicU64::new(0),
                 },
                 _ => {
                     // SAFETY: free whichever half was allocated.
@@ -462,10 +468,22 @@ impl Engine {
         self.panic_next.store(true, Ordering::SeqCst);
     }
 
+    /// Arm a one-shot sleep on the next Transaction API step (test builds with
+    /// `fail-inject` only), to exercise the connector engine-timeout path.
+    #[cfg(feature = "fail-inject")]
+    pub fn inject_sleep_next_transaction_step(&self, dur: std::time::Duration) {
+        let ms = u64::try_from(dur.as_millis()).unwrap_or(u64::MAX);
+        self.sleep_next_ms.store(ms.max(1), Ordering::SeqCst);
+    }
+
     #[cfg(feature = "fail-inject")]
     fn take_injected_fail(&self, what: &str) -> Result<(), EngineError> {
         if self.panic_next.swap(false, Ordering::SeqCst) {
             panic!("{what}: injected test panic");
+        }
+        let sleep_ms = self.sleep_next_ms.swap(0, Ordering::SeqCst);
+        if sleep_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
         }
         if self.fail_next.swap(false, Ordering::SeqCst) {
             Err(tx_err(format!("{what}: injected test failure")))

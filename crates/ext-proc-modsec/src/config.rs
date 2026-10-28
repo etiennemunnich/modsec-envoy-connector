@@ -52,9 +52,18 @@ Options:
                                not apply in that mode) → 504.
                                [env: EXT_PROC_DUPLEX_IDLE_TIMEOUT] [default: 30]
       --duplex-total-timeout <SECS>
-                               FULL_DUPLEX_STREAMED: longest a stream may run before
-                               its final verdict → 504.
+                               Absolute stream max lifetime (all body modes): longest
+                               a stream may run before its final verdict → 504.
+                               Also covers FULL_DUPLEX_STREAMED (name kept for compat).
                                [env: EXT_PROC_DUPLEX_TOTAL_TIMEOUT] [default: 300]
+      --engine-timeout <SECS>
+                               Longest one ModSec evaluation step (headers/body FFI)
+                               may take before the exchange fails closed with 504.
+                               Calibrated above tip CRS medium-body p99 (~11 ms e2e).
+                               [env: EXT_PROC_ENGINE_TIMEOUT] [default: 5]
+      --listen-public          Allow --listen / --metrics-listen on non-loopback
+                               addresses (default refuses 0.0.0.0 / non-loopback).
+                               [env: EXT_PROC_LISTEN_PUBLIC=1]
       --max-concurrent-streams <N>
                                HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS per Envoy
                                connection (Envoy opens more connections past it).
@@ -91,6 +100,9 @@ pub const REPLY_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_DUPLEX_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_DUPLEX_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Default ModSec step budget. Tip CRS medium-body e2e p99 ≈ 11 ms (2026-10-28);
+/// 5s leaves large margin without hanging forever on a stuck FFI call.
+pub const DEFAULT_ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 1024;
 pub const DEFAULT_HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 pub const DEFAULT_HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -156,6 +168,8 @@ pub struct Config {
     pub server: ServerLimits,
     /// Process-wide concurrent ModSec `Process` streams (admission).
     pub max_in_flight: u32,
+    /// Allow non-loopback listen addresses (bind gate opt-in).
+    pub listen_public: bool,
     /// Report ready although the rules do not enforce (`SecRuleEngine`
     /// DetectionOnly / Off).
     pub allow_detection_only: bool,
@@ -174,8 +188,10 @@ pub struct Limits {
     pub stream_idle_timeout: Duration,
     /// FULL_DUPLEX_STREAMED: longest gap between messages while a body is held.
     pub duplex_idle_timeout: Duration,
-    /// FULL_DUPLEX_STREAMED: longest a stream may run before its final verdict.
+    /// Absolute stream max lifetime (all body modes) before the final verdict.
     pub duplex_total_timeout: Duration,
+    /// Longest one blocking ModSec evaluation step may take → 504.
+    pub engine_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -186,6 +202,7 @@ impl Default for Limits {
             stream_idle_timeout: DEFAULT_STREAM_IDLE_TIMEOUT,
             duplex_idle_timeout: DEFAULT_DUPLEX_IDLE_TIMEOUT,
             duplex_total_timeout: DEFAULT_DUPLEX_TOTAL_TIMEOUT,
+            engine_timeout: DEFAULT_ENGINE_TIMEOUT,
         }
     }
 }
@@ -235,6 +252,8 @@ pub enum ConfigError {
     InvalidSeconds { flag: &'static str, value: String },
     InvalidCount { flag: &'static str, value: String },
     InvalidBool { flag: &'static str, value: String },
+    /// Non-loopback listen without `--listen-public`.
+    NonLoopbackListen { flag: &'static str, value: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -278,6 +297,11 @@ impl fmt::Display for ConfigError {
                     "invalid value '{value}' for {flag} (want 1|0|true|false)"
                 )
             }
+            Self::NonLoopbackListen { flag, value } => write!(
+                f,
+                "{flag} '{value}' is not loopback; pass --listen-public to bind publicly \
+                 (fail-closed bind gate)"
+            ),
         }
     }
 }
@@ -304,7 +328,9 @@ where
     let mut max_held = None;
     let mut server_flags: Vec<(&'static str, String)> = Vec::new();
     let mut allow_detection_only = None;
+    let mut listen_public = None;
     let mut max_in_flight = None;
+    let mut engine_timeout = None;
     let mut rules: Vec<PathBuf> = Vec::new();
 
     let mut args = args.into_iter().map(Into::into).peekable();
@@ -348,6 +374,20 @@ where
                         .or_else(|| args.next())
                         .ok_or(ConfigError::MissingValue("--max-in-flight"))?,
                 )?);
+            }
+            "--engine-timeout" => {
+                engine_timeout = Some(seconds(
+                    "--engine-timeout",
+                    inline
+                        .or_else(|| args.next())
+                        .ok_or(ConfigError::MissingValue("--engine-timeout"))?,
+                )?);
+            }
+            "--listen-public" => {
+                listen_public = Some(match inline {
+                    Some(v) => boolean("--listen-public", v)?,
+                    None => true,
+                });
             }
             "--allow-detection-only" => {
                 allow_detection_only = Some(match inline {
@@ -439,12 +479,20 @@ where
         Some((flag, v)) => seconds(flag, v),
         None => Ok(default),
     };
+    let engine_timeout = match engine_timeout {
+        Some(d) => d,
+        None => match env("EXT_PROC_ENGINE_TIMEOUT") {
+            Some(v) => seconds("EXT_PROC_ENGINE_TIMEOUT", v)?,
+            None => DEFAULT_ENGINE_TIMEOUT,
+        },
+    };
     let limits = Limits {
         max_grpc_message_bytes,
         max_held_body_bytes,
         stream_idle_timeout: secs_or(0, DEFAULT_STREAM_IDLE_TIMEOUT)?,
         duplex_idle_timeout: secs_or(1, DEFAULT_DUPLEX_IDLE_TIMEOUT)?,
         duplex_total_timeout: secs_or(2, DEFAULT_DUPLEX_TOTAL_TIMEOUT)?,
+        engine_timeout,
     };
     let server = ServerLimits {
         max_concurrent_streams: match raw(3) {
@@ -468,6 +516,15 @@ where
             None => DEFAULT_MAX_IN_FLIGHT,
         },
     };
+    let listen_public = match listen_public {
+        Some(b) => b,
+        None => match env("EXT_PROC_LISTEN_PUBLIC") {
+            Some(v) => boolean("EXT_PROC_LISTEN_PUBLIC", v)?,
+            None => false,
+        },
+    };
+    require_loopback_or_public("--listen", listen, listen_public)?;
+    require_loopback_or_public("--metrics-listen", metrics_listen, listen_public)?;
     Ok(Command::Run(Config {
         listen,
         metrics_listen,
@@ -476,8 +533,23 @@ where
         limits,
         server,
         max_in_flight,
+        listen_public,
         allow_detection_only,
     }))
+}
+
+fn require_loopback_or_public(
+    flag: &'static str,
+    addr: SocketAddr,
+    listen_public: bool,
+) -> Result<(), ConfigError> {
+    if listen_public || addr.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(ConfigError::NonLoopbackListen {
+        flag,
+        value: addr.to_string(),
+    })
 }
 
 fn seconds(flag: &'static str, value: String) -> Result<Duration, ConfigError> {
@@ -560,6 +632,7 @@ mod tests {
                 "a.conf,b.conf",
                 "--listen",
                 "0.0.0.0:9000",
+                "--listen-public",
             ],
             no_env,
         )
@@ -569,7 +642,31 @@ mod tests {
             vec![PathBuf::from("a.conf"), PathBuf::from("b.conf")]
         );
         assert_eq!(c.listen, "0.0.0.0:9000".parse().unwrap());
+        assert!(c.listen_public);
         assert_eq!(c.metrics_listen, DEFAULT_METRICS_LISTEN.parse().unwrap());
+    }
+
+    #[test]
+    fn bind_gate_rejects_non_loopback_without_listen_public() {
+        assert!(matches!(
+            run(
+                &["--modsec-rules", "a.conf", "--listen", "0.0.0.0:9000"],
+                no_env
+            ),
+            Err(ConfigError::NonLoopbackListen { .. })
+        ));
+        let c = run(
+            &[
+                "--modsec-rules",
+                "a.conf",
+                "--listen",
+                "127.0.0.1:9000",
+            ],
+            no_env,
+        )
+        .expect("loopback ok");
+        assert!(!c.listen_public);
+        assert_eq!(c.limits.engine_timeout, DEFAULT_ENGINE_TIMEOUT);
     }
 
     #[test]
