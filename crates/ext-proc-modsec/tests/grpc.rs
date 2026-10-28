@@ -770,6 +770,49 @@ async fn injected_engine_err_on_request_body_fails_closed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_mid_chunk_engine_err_never_continue() {
+    // Late-action honesty: after a STREAMED chunk was Continue'd (may already
+    // be toward origin), a later engine Err must still ImmediateResponse 500 —
+    // never Continue (connector-lie fail-open).
+    let h = start().await;
+    let mut s = h.stream().await;
+    assert_continue(&s.send(form_post()).await.unwrap(), "headers");
+    assert_continue(
+        &s.send(req_body(b"name=alice&", false)).await.unwrap(),
+        "chunk1 Continue (committed path)",
+    );
+    assert_eq!(h.metrics.allow_total(), 0);
+    h.processor.engine().inject_fail_next_transaction_step();
+    let r = s.send(req_body(b"note=more", true)).await.unwrap();
+    assert_fail_closed(&r, "mid-chunk Err after Continue");
+    s.expect_closed().await;
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn response_body_engine_err_after_request_allow_never_continue() {
+    // Request path already settled (allow counted); response-phase Err must
+    // still fail-closed — never Continue past the committed request.
+    let h = start().await;
+    let mut s = h.stream().await;
+    assert_continue(
+        &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
+        "req",
+    );
+    assert_continue(
+        &s.send(resp_headers("200", &[], false)).await.unwrap(),
+        "resp headers",
+    );
+    assert_eq!(h.metrics.allow_total(), 1);
+    h.processor.engine().inject_fail_next_transaction_step();
+    let r = s.send(resp_body(b"hello", true)).await.unwrap();
+    assert_fail_closed(&r, "response body Err after request allow");
+    s.expect_closed().await;
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn injected_engine_err_negative_control_continues() {
     // Same bytes as the inject test; without arming the hook, the path Continues.
     let h = start().await;

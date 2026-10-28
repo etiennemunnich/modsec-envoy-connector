@@ -759,9 +759,21 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
         if state.denied {
             return HS::StopIteration;
         }
-        let Some(session) = state.session.as_mut() else {
+        // Late-action honesty: if we opened a request phase but lost the
+        // session, never Continue. Envoy local replies that never hit our
+        // request path (e.g. CONNECT carve-out) still pass through.
+        if state.session.is_none() {
+            if state.headers_done {
+                self.fail_closed(
+                    &mut state,
+                    envoy_filter,
+                    &EngineError::Transaction("response without session".into()),
+                );
+                return HS::StopIteration;
+            }
             return HS::Continue;
-        };
+        }
+        let session = state.session.as_mut().expect("checked above");
 
         let (status, hdrs) = Self::collect_response_headers(envoy_filter);
         // Protocol string is informational for ModSec; reuse request protocol attr if present.
@@ -829,7 +841,16 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
         if self.body_policy == BodyPolicy::HeadersOnly || state.response_body_finished {
             return BS::Continue;
         }
+        // Late-action honesty: missing session after our request phase → 500 / reset.
         if state.session.is_none() {
+            if state.headers_done {
+                self.fail_closed(
+                    &mut state,
+                    envoy_filter,
+                    &EngineError::Transaction("response body without session".into()),
+                );
+                return BS::StopIterationNoBuffer;
+            }
             return BS::Continue;
         }
 
@@ -876,6 +897,14 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 // non-EOS frames were already appended; only append the EOS frame
                 // if it is not already in the decodingBuffer.
                 let Some(session) = state.session.as_mut() else {
+                    if state.headers_done {
+                        self.fail_closed(
+                            &mut state,
+                            envoy_filter,
+                            &EngineError::Transaction("response body EOS without session".into()),
+                        );
+                        return BS::StopIterationNoBuffer;
+                    }
                     return BS::Continue;
                 };
                 let eos_chunk = if envoy_filter.received_buffered_response_body() {
@@ -927,6 +956,14 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
             return TS::Continue;
         }
         if state.session.is_none() {
+            if state.headers_done {
+                self.fail_closed(
+                    &mut state,
+                    envoy_filter,
+                    &EngineError::Transaction("response trailers without session".into()),
+                );
+                return TS::StopIteration;
+            }
             return TS::Continue;
         }
 
@@ -1391,5 +1428,204 @@ SecRule REQUEST_URI "@unconditionalMatch" \
             }
         ));
         assert!(state.denied);
+    }
+
+    #[test]
+    fn late_action_engine_err_after_headers_forwarded_resets_never_continue() {
+        // Post-commit honesty: response already Continues'd → engine Err uses
+        // reset_stream (designed path), never a silent Continue.
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1007,phase:1,pass,nolog"
+"#,
+        );
+        let engine = Engine::load_files(&[rules.to_str().unwrap()]).expect("engine");
+        let filter = ModSecFilter {
+            engine,
+            label: "test".into(),
+            body_policy: BodyPolicy::StreamChunks,
+            partial_soft_limit_bytes: 1024,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: true,
+                body_finished: true,
+                response_body_finished: false,
+                response_headers_forwarded: true,
+                denied: false,
+            }),
+        };
+        let mut envoy = MockEnvoyHttpFilter::new();
+        envoy
+            .expect_reset_stream()
+            .withf(|reason, details| {
+                *reason
+                    == abi::envoy_dynamic_module_type_http_filter_stream_reset_reason::LocalReset
+                    && details == "modsec_dm_engine_error"
+            })
+            .returning(|_, _| {})
+            .times(1);
+        let mut state = filter.state.borrow_mut();
+        filter.fail_closed(
+            &mut state,
+            &mut envoy,
+            &EngineError::Transaction("late inject".into()),
+        );
+        assert!(state.denied);
+    }
+
+    #[test]
+    fn response_without_session_after_request_fails_closed_never_continue() {
+        // Lost tx after our request phase → fail closed (late-action).
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1008,phase:1,pass,nolog"
+"#,
+        );
+        let engine = Engine::load_files(&[rules.to_str().unwrap()]).expect("engine");
+        let filter = ModSecFilter {
+            engine,
+            label: "test".into(),
+            body_policy: BodyPolicy::BufferUntilEos,
+            partial_soft_limit_bytes: 1024,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: true,
+                body_finished: true,
+                response_body_finished: false,
+                response_headers_forwarded: false,
+                denied: false,
+            }),
+        };
+        let mut envoy = MockEnvoyHttpFilter::new();
+        envoy
+            .expect_send_response()
+            .withf(|status, _, _, details| {
+                *status == 500 && details == &Some("modsec_dm_engine_error")
+            })
+            .returning(|_, _, _, _| {})
+            .times(1);
+        let st = filter.on_response_headers(&mut envoy, true);
+        assert_eq!(
+            st,
+            abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::StopIteration
+        );
+        assert!(filter.state.borrow().denied);
+    }
+
+    #[test]
+    fn envoy_local_reply_without_request_phase_continues() {
+        // CONNECT carve-out / Envoy local reply: no request phase → Continue.
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1010,phase:1,pass,nolog"
+"#,
+        );
+        let engine = Engine::load_files(&[rules.to_str().unwrap()]).expect("engine");
+        let filter = ModSecFilter {
+            engine,
+            label: "test".into(),
+            body_policy: BodyPolicy::BufferUntilEos,
+            partial_soft_limit_bytes: 1024,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: false,
+                body_finished: false,
+                response_body_finished: false,
+                response_headers_forwarded: false,
+                denied: false,
+            }),
+        };
+        let mut envoy = MockEnvoyHttpFilter::new();
+        let st = filter.on_response_headers(&mut envoy, true);
+        assert_eq!(
+            st,
+            abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::Continue
+        );
+        assert!(!filter.state.borrow().denied);
+    }
+
+    #[test]
+    fn stream_chunks_mid_chunk_engine_err_never_continue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRequestBodyAccess On
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1009,phase:1,pass,nolog"
+"#,
+        );
+        let cfg = ModSecFilterConfig::from_bytes(
+            format!(
+                r#"{{"rules_path":"{}","body_policy":"stream_chunks"}}"#,
+                rules.display()
+            )
+            .as_bytes(),
+        )
+        .expect("config");
+
+        let mut envoy = MockEnvoyHttpFilter::new();
+        envoy.expect_get_request_headers().returning(|| {
+            vec![
+                (EnvoyBuffer::new(b":method"), EnvoyBuffer::new(b"POST")),
+                (EnvoyBuffer::new(b":path"), EnvoyBuffer::new(b"/post")),
+                (
+                    EnvoyBuffer::new(b"content-type"),
+                    EnvoyBuffer::new(b"application/x-www-form-urlencoded"),
+                ),
+                (EnvoyBuffer::new(b"host"), EnvoyBuffer::new(b"example.test")),
+            ]
+        });
+        envoy.expect_get_attribute_string().returning(|_| None);
+        envoy.expect_get_attribute_int().returning(|_| None);
+
+        let filter = cfg.new_http_filter(&mut envoy);
+        assert_eq!(
+            filter.on_request_headers(&mut envoy, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
+        );
+
+        // First chunk Continues (forward-before-deny / committed path).
+        envoy
+            .expect_get_received_request_body()
+            .returning(|| {
+                static mut BODY: [u8; 10] = *b"name=alice";
+                Some(vec![unsafe { EnvoyMutBuffer::new(&raw mut BODY) }])
+            })
+            .times(1);
+        assert_eq!(
+            filter.on_request_body(&mut envoy, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_body_status::Continue
+        );
+
+        // Late-action: Err on next chunk → 500, never Continue.
+        cfg.engine.inject_fail_next_transaction_step();
+        envoy
+            .expect_get_received_request_body()
+            .returning(|| {
+                static mut BODY: [u8; 9] = *b"note=more";
+                Some(vec![unsafe { EnvoyMutBuffer::new(&raw mut BODY) }])
+            })
+            .times(1);
+        envoy
+            .expect_send_response()
+            .withf(|status, _, _, details| {
+                *status == 500 && details == &Some("modsec_dm_engine_error")
+            })
+            .returning(|_, _, _, _| {})
+            .times(1);
+        assert_eq!(
+            filter.on_request_body(&mut envoy, true),
+            abi::envoy_dynamic_module_type_on_http_filter_request_body_status::StopIterationNoBuffer
+        );
     }
 }
