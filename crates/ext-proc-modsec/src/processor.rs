@@ -103,13 +103,7 @@ impl ModSecProcessor {
         body_reply: BodyReply,
         limits: Limits,
     ) -> Self {
-        Self::with_limits_and_admission(
-            engine,
-            metrics,
-            body_reply,
-            limits,
-            DEFAULT_MAX_IN_FLIGHT,
-        )
+        Self::with_limits_and_admission(engine, metrics, body_reply, limits, DEFAULT_MAX_IN_FLIGHT)
     }
 
     pub fn with_limits_and_admission(
@@ -823,7 +817,9 @@ impl Exchange {
             if total > cap {
                 return Some(self.fail_closed(
                     phase,
-                    format!("request header aggregate {total} bytes exceeds --max-header-bytes {cap}"),
+                    format!(
+                        "request header aggregate {total} bytes exceeds --max-header-bytes {cap}"
+                    ),
                 ));
             }
         }

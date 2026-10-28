@@ -267,15 +267,36 @@ pub enum ConfigError {
     MissingRules,
     MissingValue(&'static str),
     UnknownArgument(String),
-    InvalidAddress { flag: &'static str, value: String },
+    InvalidAddress {
+        flag: &'static str,
+        value: String,
+    },
     InvalidBodyReply(String),
-    InvalidBytes { flag: &'static str, value: String },
-    HeldBodyAboveMessageLimit { held: usize, message: usize },
-    InvalidSeconds { flag: &'static str, value: String },
-    InvalidCount { flag: &'static str, value: String },
-    InvalidBool { flag: &'static str, value: String },
+    InvalidBytes {
+        flag: &'static str,
+        value: String,
+    },
+    HeldBodyAboveMessageLimit {
+        held: usize,
+        message: usize,
+    },
+    InvalidSeconds {
+        flag: &'static str,
+        value: String,
+    },
+    InvalidCount {
+        flag: &'static str,
+        value: String,
+    },
+    InvalidBool {
+        flag: &'static str,
+        value: String,
+    },
     /// Non-loopback listen without `--listen-public`.
-    NonLoopbackListen { flag: &'static str, value: String },
+    NonLoopbackListen {
+        flag: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -421,10 +442,8 @@ where
                 });
             }
             "--max-header-bytes" => {
-                max_header_bytes = Some(bytes(
-                    "--max-header-bytes",
-                    inline.or_else(|| args.next()),
-                )?);
+                max_header_bytes =
+                    Some(bytes("--max-header-bytes", inline.or_else(|| args.next()))?);
             }
             "--max-declared-body-bytes" => {
                 let value = inline
@@ -740,12 +759,7 @@ mod tests {
             Err(ConfigError::NonLoopbackListen { .. })
         ));
         let c = run(
-            &[
-                "--modsec-rules",
-                "a.conf",
-                "--listen",
-                "127.0.0.1:9000",
-            ],
+            &["--modsec-rules", "a.conf", "--listen", "127.0.0.1:9000"],
             no_env,
         )
         .expect("loopback ok");

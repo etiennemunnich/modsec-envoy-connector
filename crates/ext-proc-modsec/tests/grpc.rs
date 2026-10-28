@@ -113,10 +113,7 @@ async fn start_with_admission(max_in_flight: u32) -> Harness {
     .await
 }
 
-async fn start_with_policy(
-    limits: Limits,
-    require_connection_attrs: bool,
-) -> Harness {
+async fn start_with_policy(limits: Limits, require_connection_attrs: bool) -> Harness {
     let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
     serve(ModSecProcessor::with_policy(
         engine,
@@ -140,13 +137,9 @@ async fn serve(processor: ModSecProcessor) -> Harness {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let join = tokio::spawn(async move {
         Server::builder()
-            .serve_with_incoming_shutdown(
-                svc,
-                TcpIncoming::from(listener),
-                async {
-                    let _ = shutdown_rx.await;
-                },
-            )
+            .serve_with_incoming_shutdown(svc, TcpIncoming::from(listener), async {
+                let _ = shutdown_rx.await;
+            })
             .await
             .expect("serve");
     });
@@ -186,10 +179,7 @@ impl Stream {
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX);
         let (tx, rx) = mpsc::channel(8);
-        let rx = client
-            .process(ReceiverStream::new(rx))
-            .await?
-            .into_inner();
+        let rx = client.process(ReceiverStream::new(rx)).await?.into_inner();
         Ok(Self {
             tx,
             rx,
@@ -2401,7 +2391,11 @@ async fn admission_over_cap_refuses_process_never_allow() {
         0,
         "refused stream must never count as allow (origin untouched)"
     );
-    assert_eq!(h.metrics.requests_total(), 1, "only the held stream counted");
+    assert_eq!(
+        h.metrics.requests_total(),
+        1,
+        "only the held stream counted"
+    );
 
     // Free the slot: drop the held stream (releases the permit), then a new
     // Process may enter and complete an allow path.
@@ -2425,10 +2419,7 @@ async fn require_connection_attrs_missing_fails_closed() {
     let h = start_with_policy(Limits::default(), true).await;
     let mut s = h.stream().await;
     // No attributes on the message → fail closed (no silent loopback).
-    let r = s
-        .send(req_headers("GET", "/", &[], true))
-        .await
-        .unwrap();
+    let r = s.send(req_headers("GET", "/", &[], true)).await.unwrap();
     assert_fail_closed(&r, "missing connection attrs");
     assert_eq!(h.metrics.fail_closed_total(), 1);
     assert_eq!(h.metrics.allow_total(), 0);
