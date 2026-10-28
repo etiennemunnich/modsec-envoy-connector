@@ -74,12 +74,13 @@ async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("bind metrics {}: {e}", config.metrics_listen))?;
 
     let metrics = Arc::new(ConnectorMetrics::default());
-    let processor = ModSecProcessor::with_limits_and_admission(
+    let processor = ModSecProcessor::with_policy(
         engine,
         metrics,
         config.body_reply,
         config.limits,
         config.max_in_flight,
+        config.require_connection_attrs,
     );
     tokio::spawn(metrics_server::serve(
         metrics_listener,

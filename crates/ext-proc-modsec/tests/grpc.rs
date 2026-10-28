@@ -5,8 +5,12 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// Admission tests share process-wide semaphore semantics that flake when
+/// many gRPC harnesses race under high `--test-threads`. Serialize them.
+static ADMISSION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use ext_proc_modsec::connection_meta::EXT_PROC_ATTR_NAMESPACE;
 use ext_proc_modsec::metrics::ConnectorMetrics;
@@ -42,6 +46,8 @@ struct Harness {
     addr: SocketAddr,
     metrics: Arc<ConnectorMetrics>,
     processor: ModSecProcessor,
+    _shutdown: tokio::sync::oneshot::Sender<()>,
+    _join: tokio::task::JoinHandle<()>,
 }
 
 impl Harness {
@@ -107,15 +113,40 @@ async fn start_with_admission(max_in_flight: u32) -> Harness {
     .await
 }
 
+async fn start_with_policy(
+    limits: Limits,
+    require_connection_attrs: bool,
+) -> Harness {
+    let engine = Engine::load_files(&[rules_path("connector-test.conf")]).expect("rules");
+    serve(ModSecProcessor::with_policy(
+        engine,
+        Arc::new(ConnectorMetrics::default()),
+        BodyReply::Common,
+        limits,
+        DEFAULT_MAX_IN_FLIGHT,
+        require_connection_attrs,
+    ))
+    .await
+}
+
 async fn serve(processor: ModSecProcessor) -> Harness {
     let metrics = Arc::clone(processor.metrics());
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     // Same service construction (message limits) as the product binary.
     let svc = processor.clone().into_server();
-    tokio::spawn(async move {
+    // Abort the server when the harness is dropped so ephemeral ports are not
+    // reused while a prior Process still holds an admission permit.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let join = tokio::spawn(async move {
         Server::builder()
-            .serve_with_incoming(svc, TcpIncoming::from(listener))
+            .serve_with_incoming_shutdown(
+                svc,
+                TcpIncoming::from(listener),
+                async {
+                    let _ = shutdown_rx.await;
+                },
+            )
             .await
             .expect("serve");
     });
@@ -123,6 +154,8 @@ async fn serve(processor: ModSecProcessor) -> Harness {
         addr,
         metrics,
         processor,
+        _shutdown: shutdown_tx,
+        _join: join,
     }
 }
 
@@ -2343,6 +2376,7 @@ async fn engine_timeout_after_slow_step_never_continue() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_over_cap_refuses_process_never_allow() {
+    let _guard = ADMISSION_TEST_LOCK.lock().unwrap();
     let h = start_with_admission(1).await;
     let mut held = h.stream().await;
     // Occupy the single admission slot with an unfinished POST (body still
@@ -2387,7 +2421,106 @@ async fn admission_over_cap_refuses_process_never_allow() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_connection_attrs_missing_fails_closed() {
+    let h = start_with_policy(Limits::default(), true).await;
+    let mut s = h.stream().await;
+    // No attributes on the message → fail closed (no silent loopback).
+    let r = s
+        .send(req_headers("GET", "/", &[], true))
+        .await
+        .unwrap();
+    assert_fail_closed(&r, "missing connection attrs");
+    assert_eq!(h.metrics.fail_closed_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_connection_attrs_present_allows() {
+    let h = start_with_policy(Limits::default(), true).await;
+    let mut s = h.stream().await;
+    let mut req = req_headers("GET", "/", &[], true);
+    let fields = HashMap::from([
+        (
+            "source.address".into(),
+            Value {
+                kind: Some(Kind::StringValue("203.0.113.9".into())),
+            },
+        ),
+        (
+            "source.port".into(),
+            Value {
+                kind: Some(Kind::NumberValue(44_321.0)),
+            },
+        ),
+    ]);
+    req.attributes = HashMap::from([(EXT_PROC_ATTR_NAMESPACE.to_owned(), Struct { fields })]);
+    assert_continue(&s.send(req).await.unwrap(), "with attrs");
+    assert_continue(
+        &s.send(resp_headers("200", &[], true)).await.unwrap(),
+        "resp",
+    );
+    assert_eq!(h.metrics.allow_total(), 1);
+    assert_eq!(h.metrics.fail_closed_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn header_aggregate_over_cap_fails_closed_before_allow() {
+    let h = start_with_policy(
+        Limits {
+            max_header_bytes: 32,
+            ..Limits::default()
+        },
+        false,
+    )
+    .await;
+    let mut s = h.stream().await;
+    let r = s
+        .send(req_headers(
+            "GET",
+            "/",
+            &[("x-long", "abcdefghijklmnopqrstuvwxyz0123456789")],
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_fail_closed(&r, "header aggregate over cap");
+    assert_eq!(h.metrics.allow_total(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declared_body_oversize_skips_modsec_tx_with_413() {
+    let h = start_with_policy(
+        Limits {
+            max_declared_body_bytes: 100,
+            ..Limits::default()
+        },
+        false,
+    )
+    .await;
+    let mut s = h.stream().await;
+    let r = s
+        .send(req_headers(
+            "POST",
+            "/post",
+            &[
+                ("content-type", "application/x-www-form-urlencoded"),
+                ("content-length", "9999"),
+            ],
+            false,
+        ))
+        .await
+        .unwrap();
+    let (code, details, _) = immediate(&r).expect("413");
+    assert_eq!(code, 413);
+    assert_eq!(details, "modsec_declared_oversize");
+    s.expect_closed().await;
+    assert_eq!(h.metrics.allow_total(), 0);
+    assert_eq!(h.metrics.deny_total(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_under_cap_allows_exchange() {
+    let _guard = ADMISSION_TEST_LOCK.lock().unwrap();
     let h = start_with_admission(2).await;
     let mut a = h.stream().await;
     let mut b = h.stream().await;

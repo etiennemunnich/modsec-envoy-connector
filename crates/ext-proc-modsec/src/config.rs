@@ -64,6 +64,19 @@ Options:
       --listen-public          Allow --listen / --metrics-listen on non-loopback
                                addresses (default refuses 0.0.0.0 / non-loopback).
                                [env: EXT_PROC_LISTEN_PUBLIC=1]
+      --require-connection-attrs
+                               Fail closed (500) when Envoy sends no connection
+                               attributes (no silent 127.0.0.1 fallback).
+                               [env: EXT_PROC_REQUIRE_CONNECTION_ATTRS=1]
+      --max-header-bytes <N>
+                               Aggregate request-header name+value bytes before
+                               ModSec FFI; past N → 500. [default: 65536]
+                               [env: EXT_PROC_MAX_HEADER_BYTES]
+      --max-declared-body-bytes <N>
+                               If Content-Length exceeds N, ImmediateResponse 413
+                               and skip the ModSec transaction (BUFFERED oversize
+                               short-circuit). 0 disables. [default: 0]
+                               [env: EXT_PROC_MAX_DECLARED_BODY_BYTES]
       --max-concurrent-streams <N>
                                HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS per Envoy
                                connection (Envoy opens more connections past it).
@@ -103,6 +116,7 @@ pub const DEFAULT_DUPLEX_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
 /// Default ModSec step budget. Tip CRS medium-body e2e p99 ≈ 11 ms (2026-10-28);
 /// 5s leaves large margin without hanging forever on a stuck FFI call.
 pub const DEFAULT_ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_MAX_HEADER_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 1024;
 pub const DEFAULT_HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 pub const DEFAULT_HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -170,6 +184,8 @@ pub struct Config {
     pub max_in_flight: u32,
     /// Allow non-loopback listen addresses (bind gate opt-in).
     pub listen_public: bool,
+    /// Fail closed when Envoy omits connection attributes.
+    pub require_connection_attrs: bool,
     /// Report ready although the rules do not enforce (`SecRuleEngine`
     /// DetectionOnly / Off).
     pub allow_detection_only: bool,
@@ -192,6 +208,10 @@ pub struct Limits {
     pub duplex_total_timeout: Duration,
     /// Longest one blocking ModSec evaluation step may take → 504.
     pub engine_timeout: Duration,
+    /// Aggregate request-header name+value bytes before FFI (0 disables).
+    pub max_header_bytes: usize,
+    /// Declared Content-Length over this → 413 without ModSec tx (0 disables).
+    pub max_declared_body_bytes: usize,
 }
 
 impl Default for Limits {
@@ -203,6 +223,8 @@ impl Default for Limits {
             duplex_idle_timeout: DEFAULT_DUPLEX_IDLE_TIMEOUT,
             duplex_total_timeout: DEFAULT_DUPLEX_TOTAL_TIMEOUT,
             engine_timeout: DEFAULT_ENGINE_TIMEOUT,
+            max_header_bytes: DEFAULT_MAX_HEADER_BYTES,
+            max_declared_body_bytes: 0,
         }
     }
 }
@@ -329,8 +351,11 @@ where
     let mut server_flags: Vec<(&'static str, String)> = Vec::new();
     let mut allow_detection_only = None;
     let mut listen_public = None;
+    let mut require_connection_attrs = None;
     let mut max_in_flight = None;
     let mut engine_timeout = None;
+    let mut max_header_bytes = None;
+    let mut max_declared_body_bytes = None;
     let mut rules: Vec<PathBuf> = Vec::new();
 
     let mut args = args.into_iter().map(Into::into).peekable();
@@ -388,6 +413,33 @@ where
                     Some(v) => boolean("--listen-public", v)?,
                     None => true,
                 });
+            }
+            "--require-connection-attrs" => {
+                require_connection_attrs = Some(match inline {
+                    Some(v) => boolean("--require-connection-attrs", v)?,
+                    None => true,
+                });
+            }
+            "--max-header-bytes" => {
+                max_header_bytes = Some(bytes(
+                    "--max-header-bytes",
+                    inline.or_else(|| args.next()),
+                )?);
+            }
+            "--max-declared-body-bytes" => {
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or(ConfigError::MissingValue("--max-declared-body-bytes"))?;
+                // 0 disables the short-circuit.
+                match value.trim().parse::<usize>() {
+                    Ok(n) => max_declared_body_bytes = Some(n),
+                    _ => {
+                        return Err(ConfigError::InvalidBytes {
+                            flag: "--max-declared-body-bytes",
+                            value,
+                        })
+                    }
+                }
             }
             "--allow-detection-only" => {
                 allow_detection_only = Some(match inline {
@@ -486,6 +538,28 @@ where
             None => DEFAULT_ENGINE_TIMEOUT,
         },
     };
+    let max_header_bytes = match max_header_bytes {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_HEADER_BYTES") {
+            Some(v) => bytes("EXT_PROC_MAX_HEADER_BYTES", Some(v))?,
+            None => DEFAULT_MAX_HEADER_BYTES,
+        },
+    };
+    let max_declared_body_bytes = match max_declared_body_bytes {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_DECLARED_BODY_BYTES") {
+            Some(v) => match v.trim().parse::<usize>() {
+                Ok(n) => n,
+                _ => {
+                    return Err(ConfigError::InvalidBytes {
+                        flag: "EXT_PROC_MAX_DECLARED_BODY_BYTES",
+                        value: v,
+                    })
+                }
+            },
+            None => 0,
+        },
+    };
     let limits = Limits {
         max_grpc_message_bytes,
         max_held_body_bytes,
@@ -493,6 +567,8 @@ where
         duplex_idle_timeout: secs_or(1, DEFAULT_DUPLEX_IDLE_TIMEOUT)?,
         duplex_total_timeout: secs_or(2, DEFAULT_DUPLEX_TOTAL_TIMEOUT)?,
         engine_timeout,
+        max_header_bytes,
+        max_declared_body_bytes,
     };
     let server = ServerLimits {
         max_concurrent_streams: match raw(3) {
@@ -523,6 +599,13 @@ where
             None => false,
         },
     };
+    let require_connection_attrs = match require_connection_attrs {
+        Some(b) => b,
+        None => match env("EXT_PROC_REQUIRE_CONNECTION_ATTRS") {
+            Some(v) => boolean("EXT_PROC_REQUIRE_CONNECTION_ATTRS", v)?,
+            None => false,
+        },
+    };
     require_loopback_or_public("--listen", listen, listen_public)?;
     require_loopback_or_public("--metrics-listen", metrics_listen, listen_public)?;
     Ok(Command::Run(Config {
@@ -534,6 +617,7 @@ where
         server,
         max_in_flight,
         listen_public,
+        require_connection_attrs,
         allow_detection_only,
     }))
 }
