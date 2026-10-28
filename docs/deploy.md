@@ -9,7 +9,7 @@ How to run **modsec-envoy-connector** next to an Envoy you operate. **Elect one 
 
 Do not stack both ModSec filters on one chain. The local demo ([getting-started.md](./getting-started.md)) wires ext_proc by default; `DEPLOY=dm ./demo/scripts/up.sh` exercises the DM path.
 
-Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.39.6, libmodsecurity v3.0.17, CRS v4.30.0. Other versions are tested weekly ([testing.md](./testing.md#workflows)) but are not supported.
+Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.40.2, libmodsecurity v3.0.17, CRS v4.30.0. Other versions are tested weekly ([testing.md](./testing.md#workflows)) but are not supported.
 
 ## 1. Get the connector
 
@@ -79,7 +79,7 @@ The binary finds the bundled `lib/libmodsecurity.so` through its RUNPATH `$ORIGI
 
 ### Alpha dynamic module from release artifacts
 
-Early testing only — not fail-closed absolute ([fail-closed-dm.md](./fail-closed-dm.md)). The module is built against `DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN` (today `v1.39.6`); rebuild or re-pull on every Envoy bump. Forbid `module.remote`. **First published tag:** `v0.1.0-alpha.4` (`v0.1.0-alpha.3` has no `.so`).
+Early testing only — not fail-closed absolute ([fail-closed-dm.md](./fail-closed-dm.md)). The module is built against `DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN` (today `v1.40.2`); rebuild or re-pull on every Envoy bump. Forbid `module.remote`. **First published tag:** `v0.1.0-alpha.4` (`v0.1.0-alpha.3` has no `.so`).
 
 From the **tarball** `lib/` directory (keep `libmodsec_dm.so` next to `libmodsecurity.so*`):
 

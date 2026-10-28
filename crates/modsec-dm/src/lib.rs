@@ -29,6 +29,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use envoy_proxy_dynamic_modules_rust_sdk::*;
@@ -130,21 +131,21 @@ impl<EHF: EnvoyHttpFilter> HttpFilterConfig<EHF> for ModSecFilterConfig {
             label: self.label.clone(),
             body_policy: self.body_policy,
             partial_soft_limit_bytes: self.partial_soft_limit_bytes,
-            session: None,
-            headers_done: false,
-            body_finished: false,
-            response_body_finished: false,
-            response_headers_forwarded: false,
-            denied: false,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: false,
+                body_finished: false,
+                response_body_finished: false,
+                response_headers_forwarded: false,
+                denied: false,
+            }),
         }))
     }
 }
 
-struct ModSecFilter {
-    engine: Arc<Engine>,
-    label: String,
-    body_policy: BodyPolicy,
-    partial_soft_limit_bytes: usize,
+/// Per-stream mutable ModSec state. Behind `RefCell` because Envoy 1.40+ HTTP
+/// hooks take `&self` (re-entrancy-safe); see SDK docs / envoy#46423.
+struct ModSecState {
     session: Option<InspectionSession>,
     headers_done: bool,
     body_finished: bool,
@@ -153,6 +154,14 @@ struct ModSecFilter {
     /// already be started downstream). Later deny/err must `reset_stream`.
     response_headers_forwarded: bool,
     denied: bool,
+}
+
+struct ModSecFilter {
+    engine: Arc<Engine>,
+    label: String,
+    body_policy: BodyPolicy,
+    partial_soft_limit_bytes: usize,
+    state: RefCell<ModSecState>,
 }
 
 fn new_http_filter_config_fn<EC: EnvoyHttpFilterConfig, EHF: EnvoyHttpFilter>(
@@ -188,15 +197,16 @@ impl ModSecFilter {
     /// Local reply if response headers not yet forwarded; otherwise reset the
     /// stream so a phase-4 deny cannot no-op into a client-visible 200.
     fn disrupt_downstream<EHF: EnvoyHttpFilter>(
-        &mut self,
+        &self,
+        state: &mut ModSecState,
         envoy: &mut EHF,
         status: u32,
         headers: &[(&str, &[u8])],
         body: Option<&[u8]>,
         details: &str,
     ) {
-        self.denied = true;
-        if self.response_headers_forwarded {
+        state.denied = true;
+        if state.response_headers_forwarded {
             eprintln!(
                 "modsec-dm[{}]: response already forwarded → reset_stream ({details})",
                 self.label
@@ -210,9 +220,15 @@ impl ModSecFilter {
         envoy.send_response(status, headers, body, Some(details));
     }
 
-    fn fail_closed<EHF: EnvoyHttpFilter>(&mut self, envoy: &mut EHF, err: &EngineError) {
+    fn fail_closed<EHF: EnvoyHttpFilter>(
+        &self,
+        state: &mut ModSecState,
+        envoy: &mut EHF,
+        err: &EngineError,
+    ) {
         eprintln!("modsec-dm[{}]: EngineError → 500: {err}", self.label);
         self.disrupt_downstream(
+            state,
             envoy,
             500,
             &[],
@@ -222,7 +238,8 @@ impl ModSecFilter {
     }
 
     fn settle_disruptive<EHF: EnvoyHttpFilter>(
-        &mut self,
+        &self,
+        state: &mut ModSecState,
         envoy: &mut EHF,
         decision: Decision,
     ) -> bool {
@@ -234,7 +251,14 @@ impl ModSecFilter {
                 } else {
                     403
                 };
-                self.disrupt_downstream(envoy, code, &[], Some(b"Forbidden\n"), "modsec_dm_deny");
+                self.disrupt_downstream(
+                    state,
+                    envoy,
+                    code,
+                    &[],
+                    Some(b"Forbidden\n"),
+                    "modsec_dm_deny",
+                );
                 true
             }
             Decision::Redirect { status, url, .. } => {
@@ -245,6 +269,7 @@ impl ModSecFilter {
                 };
                 let loc = url.into_bytes();
                 self.disrupt_downstream(
+                    state,
                     envoy,
                     code,
                     &[("location", loc.as_slice())],
@@ -254,7 +279,14 @@ impl ModSecFilter {
                 true
             }
             Decision::Drop { .. } => {
-                self.disrupt_downstream(envoy, 403, &[], Some(b"dropped\n"), "modsec_dm_drop");
+                self.disrupt_downstream(
+                    state,
+                    envoy,
+                    403,
+                    &[],
+                    Some(b"dropped\n"),
+                    "modsec_dm_drop",
+                );
                 true
             }
         }
@@ -379,13 +411,15 @@ impl ModSecFilter {
     /// Append + finish request body for hold / trailer EOS. Returns Stop* status
     /// when denied/err; `None` when allow (caller Continues).
     fn finish_held_request_body<EHF: EnvoyHttpFilter>(
-        &mut self,
+        &self,
+        state: &mut ModSecState,
         envoy: &mut EHF,
         body: &[u8],
     ) -> Option<abi::envoy_dynamic_module_type_on_http_filter_request_body_status> {
         use abi::envoy_dynamic_module_type_on_http_filter_request_body_status as BS;
-        let Some(mut session) = self.session.take() else {
+        let Some(mut session) = state.session.take() else {
             self.fail_closed(
+                state,
                 envoy,
                 &EngineError::Transaction("body without session".into()),
             );
@@ -393,61 +427,62 @@ impl ModSecFilter {
         };
         match session.append_request_body(body) {
             Ok(d) if d.is_disruptive() => {
-                self.settle_disruptive(envoy, d);
+                self.settle_disruptive(state, envoy, d);
                 return Some(BS::StopIterationNoBuffer);
             }
             Ok(_) => {}
             Err(e) => {
-                self.fail_closed(envoy, &e);
+                self.fail_closed(state, envoy, &e);
                 return Some(BS::StopIterationNoBuffer);
             }
         }
         match session.finish_request_body() {
             Ok(d) if d.is_disruptive() => {
-                self.settle_disruptive(envoy, d);
+                self.settle_disruptive(state, envoy, d);
                 Some(BS::StopIterationNoBuffer)
             }
             Ok(_) => {
-                self.body_finished = true;
-                self.session = Some(session);
+                state.body_finished = true;
+                state.session = Some(session);
                 None
             }
             Err(e) => {
-                self.fail_closed(envoy, &e);
+                self.fail_closed(state, envoy, &e);
                 Some(BS::StopIterationNoBuffer)
             }
         }
     }
 
     fn finish_held_response_body<EHF: EnvoyHttpFilter>(
-        &mut self,
+        &self,
+        state: &mut ModSecState,
         envoy: &mut EHF,
         body: &[u8],
     ) -> Option<abi::envoy_dynamic_module_type_on_http_filter_response_body_status> {
         use abi::envoy_dynamic_module_type_on_http_filter_response_body_status as BS;
-        let session = self.session.as_mut()?;
+        let session = state.session.as_mut()?;
         match session.append_response_body(body) {
             Ok(d) if d.is_disruptive() => {
-                self.settle_disruptive(envoy, d);
+                self.settle_disruptive(state, envoy, d);
                 return Some(BS::StopIterationNoBuffer);
             }
             Ok(_) => {}
             Err(e) => {
-                self.fail_closed(envoy, &e);
+                self.fail_closed(state, envoy, &e);
                 return Some(BS::StopIterationNoBuffer);
             }
         }
         match session.finish_response_body() {
             Ok(d) if d.is_disruptive() => {
-                self.settle_disruptive(envoy, d);
+                self.settle_disruptive(state, envoy, d);
                 Some(BS::StopIterationNoBuffer)
             }
             Ok(_) => {
-                self.response_body_finished = true;
+                state.response_body_finished = true;
                 None
             }
             Err(e) => {
-                self.fail_closed(envoy, &e);
+                self.fail_closed(state, envoy, &e);
                 Some(BS::StopIterationNoBuffer)
             }
         }
@@ -456,11 +491,12 @@ impl ModSecFilter {
 
 impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
     fn on_request_headers(
-        &mut self,
+        &self,
         envoy_filter: &mut EHF,
         end_of_stream: bool,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_request_headers_status {
         use abi::envoy_dynamic_module_type_on_http_filter_request_headers_status as HS;
+        let mut state = self.state.borrow_mut();
 
         let (method, path, hdrs) = Self::collect_request_headers(envoy_filter);
         let client_ip = Self::strip_ip(Self::attr_string(
@@ -504,7 +540,7 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
         let mut session = match self.engine.open_transaction(Some(rid.as_str())) {
             Ok(s) => s,
             Err(e) => {
-                self.fail_closed(envoy_filter, &e);
+                self.fail_closed(&mut state, envoy_filter, &e);
                 return HS::StopIteration;
             }
         };
@@ -520,34 +556,34 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
             &hdrs,
         ) {
             Ok(d) if d.is_disruptive() => {
-                self.settle_disruptive(envoy_filter, d);
+                self.settle_disruptive(&mut state, envoy_filter, d);
                 return HS::StopIteration;
             }
             Ok(_) => {}
             Err(e) => {
-                self.fail_closed(envoy_filter, &e);
+                self.fail_closed(&mut state, envoy_filter, &e);
                 return HS::StopIteration;
             }
         }
 
-        self.headers_done = true;
+        state.headers_done = true;
 
         let close_body_now = end_of_stream || self.body_policy == BodyPolicy::HeadersOnly;
         if close_body_now {
             match session.finish_request_body() {
                 Ok(d) if d.is_disruptive() => {
-                    self.settle_disruptive(envoy_filter, d);
+                    self.settle_disruptive(&mut state, envoy_filter, d);
                     return HS::StopIteration;
                 }
-                Ok(_) => self.body_finished = true,
+                Ok(_) => state.body_finished = true,
                 Err(e) => {
-                    self.fail_closed(envoy_filter, &e);
+                    self.fail_closed(&mut state, envoy_filter, &e);
                     return HS::StopIteration;
                 }
             }
         }
 
-        self.session = Some(session);
+        state.session = Some(session);
 
         if !end_of_stream
             && matches!(
@@ -562,19 +598,20 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
     }
 
     fn on_request_body(
-        &mut self,
+        &self,
         envoy_filter: &mut EHF,
         end_of_stream: bool,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_request_body_status {
         use abi::envoy_dynamic_module_type_on_http_filter_request_body_status as BS;
+        let mut state = self.state.borrow_mut();
 
-        if self.denied {
+        if state.denied {
             return BS::StopIterationNoBuffer;
         }
         if self.body_policy == BodyPolicy::HeadersOnly {
             return BS::Continue;
         }
-        if self.body_finished {
+        if state.body_finished {
             return BS::Continue;
         }
 
@@ -584,14 +621,15 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                     return BS::StopIterationAndBuffer;
                 }
                 let body = Self::copy_whole_request_body(envoy_filter);
-                if let Some(st) = self.finish_held_request_body(envoy_filter, &body) {
+                if let Some(st) = self.finish_held_request_body(&mut state, envoy_filter, &body) {
                     return st;
                 }
                 BS::Continue
             }
             BodyPolicy::StreamChunks => {
-                let Some(session) = self.session.as_mut() else {
+                let Some(session) = state.session.as_mut() else {
                     self.fail_closed(
+                        &mut state,
                         envoy_filter,
                         &EngineError::Transaction("body without session".into()),
                     );
@@ -600,24 +638,24 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 let chunk = Self::copy_received_request_body(envoy_filter);
                 match session.append_request_body(&chunk) {
                     Ok(d) if d.is_disruptive() => {
-                        self.settle_disruptive(envoy_filter, d);
+                        self.settle_disruptive(&mut state, envoy_filter, d);
                         return BS::StopIterationNoBuffer;
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        self.fail_closed(envoy_filter, &e);
+                        self.fail_closed(&mut state, envoy_filter, &e);
                         return BS::StopIterationNoBuffer;
                     }
                 }
                 if end_of_stream {
                     match session.finish_request_body() {
                         Ok(d) if d.is_disruptive() => {
-                            self.settle_disruptive(envoy_filter, d);
+                            self.settle_disruptive(&mut state, envoy_filter, d);
                             return BS::StopIterationNoBuffer;
                         }
-                        Ok(_) => self.body_finished = true,
+                        Ok(_) => state.body_finished = true,
                         Err(e) => {
-                            self.fail_closed(envoy_filter, &e);
+                            self.fail_closed(&mut state, envoy_filter, &e);
                             return BS::StopIterationNoBuffer;
                         }
                     }
@@ -641,7 +679,9 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 }
                 let body = Self::copy_whole_request_body(envoy_filter);
                 let n = body.len().min(soft);
-                if let Some(st) = self.finish_held_request_body(envoy_filter, &body[..n]) {
+                if let Some(st) =
+                    self.finish_held_request_body(&mut state, envoy_filter, &body[..n])
+                {
                     return st;
                 }
                 BS::Continue
@@ -651,15 +691,16 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
     }
 
     fn on_request_trailers(
-        &mut self,
+        &self,
         envoy_filter: &mut EHF,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_request_trailers_status {
         use abi::envoy_dynamic_module_type_on_http_filter_request_trailers_status as TS;
+        let mut state = self.state.borrow_mut();
 
-        if self.denied {
+        if state.denied {
             return TS::StopIteration;
         }
-        if self.body_policy == BodyPolicy::HeadersOnly || self.body_finished {
+        if self.body_policy == BodyPolicy::HeadersOnly || state.body_finished {
             return TS::Continue;
         }
 
@@ -675,14 +716,15 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 } else {
                     body.as_slice()
                 };
-                if let Some(_st) = self.finish_held_request_body(envoy_filter, slice) {
+                if let Some(_st) = self.finish_held_request_body(&mut state, envoy_filter, slice) {
                     return TS::StopIteration;
                 }
                 TS::Continue
             }
             BodyPolicy::StreamChunks => {
-                let Some(session) = self.session.as_mut() else {
+                let Some(session) = state.session.as_mut() else {
                     self.fail_closed(
+                        &mut state,
                         envoy_filter,
                         &EngineError::Transaction("trailers without session".into()),
                     );
@@ -691,12 +733,12 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 // Prior DATA frames already appended; trailers only close phase 2.
                 match session.finish_request_body() {
                     Ok(d) if d.is_disruptive() => {
-                        self.settle_disruptive(envoy_filter, d);
+                        self.settle_disruptive(&mut state, envoy_filter, d);
                         return TS::StopIteration;
                     }
-                    Ok(_) => self.body_finished = true,
+                    Ok(_) => state.body_finished = true,
                     Err(e) => {
-                        self.fail_closed(envoy_filter, &e);
+                        self.fail_closed(&mut state, envoy_filter, &e);
                         return TS::StopIteration;
                     }
                 }
@@ -707,16 +749,17 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
     }
 
     fn on_response_headers(
-        &mut self,
+        &self,
         envoy_filter: &mut EHF,
         end_of_stream: bool,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_response_headers_status {
         use abi::envoy_dynamic_module_type_on_http_filter_response_headers_status as HS;
+        let mut state = self.state.borrow_mut();
 
-        if self.denied {
+        if state.denied {
             return HS::StopIteration;
         }
-        let Some(session) = self.session.as_mut() else {
+        let Some(session) = state.session.as_mut() else {
             return HS::Continue;
         };
 
@@ -729,12 +772,12 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
         );
         match session.process_response_headers(status, &proto, &hdrs) {
             Ok(d) if d.is_disruptive() => {
-                self.settle_disruptive(envoy_filter, d);
+                self.settle_disruptive(&mut state, envoy_filter, d);
                 return HS::StopIteration;
             }
             Ok(_) => {}
             Err(e) => {
-                self.fail_closed(envoy_filter, &e);
+                self.fail_closed(&mut state, envoy_filter, &e);
                 return HS::StopIteration;
             }
         }
@@ -743,12 +786,12 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
         if close_body_now {
             match session.finish_response_body() {
                 Ok(d) if d.is_disruptive() => {
-                    self.settle_disruptive(envoy_filter, d);
+                    self.settle_disruptive(&mut state, envoy_filter, d);
                     return HS::StopIteration;
                 }
-                Ok(_) => self.response_body_finished = true,
+                Ok(_) => state.response_body_finished = true,
                 Err(e) => {
-                    self.fail_closed(envoy_filter, &e);
+                    self.fail_closed(&mut state, envoy_filter, &e);
                     return HS::StopIteration;
                 }
             }
@@ -768,24 +811,25 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
         {
             return HS::StopIteration;
         }
-        self.response_headers_forwarded = true;
+        state.response_headers_forwarded = true;
         HS::Continue
     }
 
     fn on_response_body(
-        &mut self,
+        &self,
         envoy_filter: &mut EHF,
         end_of_stream: bool,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_response_body_status {
         use abi::envoy_dynamic_module_type_on_http_filter_response_body_status as BS;
+        let mut state = self.state.borrow_mut();
 
-        if self.denied {
+        if state.denied {
             return BS::StopIterationNoBuffer;
         }
-        if self.body_policy == BodyPolicy::HeadersOnly || self.response_body_finished {
+        if self.body_policy == BodyPolicy::HeadersOnly || state.response_body_finished {
             return BS::Continue;
         }
-        if self.session.is_none() {
+        if state.session.is_none() {
             return BS::Continue;
         }
 
@@ -801,7 +845,7 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 } else {
                     raw
                 };
-                if let Some(st) = self.finish_held_response_body(envoy_filter, &body) {
+                if let Some(st) = self.finish_held_response_body(&mut state, envoy_filter, &body) {
                     return st;
                 }
                 BS::Continue
@@ -811,18 +855,18 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 // still send_response. Per-DATA append into ModSec; do not Continue
                 // early (that would commonContinue held headers downstream).
                 if !end_of_stream {
-                    let Some(session) = self.session.as_mut() else {
+                    let Some(session) = state.session.as_mut() else {
                         return BS::StopIterationAndBuffer;
                     };
                     let chunk = Self::copy_received_response_body(envoy_filter);
                     match session.append_response_body(&chunk) {
                         Ok(d) if d.is_disruptive() => {
-                            self.settle_disruptive(envoy_filter, d);
+                            self.settle_disruptive(&mut state, envoy_filter, d);
                             return BS::StopIterationNoBuffer;
                         }
                         Ok(_) => {}
                         Err(e) => {
-                            self.fail_closed(envoy_filter, &e);
+                            self.fail_closed(&mut state, envoy_filter, &e);
                             return BS::StopIterationNoBuffer;
                         }
                     }
@@ -831,7 +875,7 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 // EOS: ingest whole body (buffered ∪ this frame) once — prior
                 // non-EOS frames were already appended; only append the EOS frame
                 // if it is not already in the decodingBuffer.
-                let Some(session) = self.session.as_mut() else {
+                let Some(session) = state.session.as_mut() else {
                     return BS::Continue;
                 };
                 let eos_chunk = if envoy_filter.received_buffered_response_body() {
@@ -842,24 +886,24 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 if !eos_chunk.is_empty() {
                     match session.append_response_body(&eos_chunk) {
                         Ok(d) if d.is_disruptive() => {
-                            self.settle_disruptive(envoy_filter, d);
+                            self.settle_disruptive(&mut state, envoy_filter, d);
                             return BS::StopIterationNoBuffer;
                         }
                         Ok(_) => {}
                         Err(e) => {
-                            self.fail_closed(envoy_filter, &e);
+                            self.fail_closed(&mut state, envoy_filter, &e);
                             return BS::StopIterationNoBuffer;
                         }
                     }
                 }
                 match session.finish_response_body() {
                     Ok(d) if d.is_disruptive() => {
-                        self.settle_disruptive(envoy_filter, d);
+                        self.settle_disruptive(&mut state, envoy_filter, d);
                         return BS::StopIterationNoBuffer;
                     }
-                    Ok(_) => self.response_body_finished = true,
+                    Ok(_) => state.response_body_finished = true,
                     Err(e) => {
-                        self.fail_closed(envoy_filter, &e);
+                        self.fail_closed(&mut state, envoy_filter, &e);
                         return BS::StopIterationNoBuffer;
                     }
                 }
@@ -870,18 +914,19 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
     }
 
     fn on_response_trailers(
-        &mut self,
+        &self,
         envoy_filter: &mut EHF,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_response_trailers_status {
         use abi::envoy_dynamic_module_type_on_http_filter_response_trailers_status as TS;
+        let mut state = self.state.borrow_mut();
 
-        if self.denied {
+        if state.denied {
             return TS::StopIteration;
         }
-        if self.body_policy == BodyPolicy::HeadersOnly || self.response_body_finished {
+        if self.body_policy == BodyPolicy::HeadersOnly || state.response_body_finished {
             return TS::Continue;
         }
-        if self.session.is_none() {
+        if state.session.is_none() {
             return TS::Continue;
         }
 
@@ -895,23 +940,23 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 } else {
                     raw
                 };
-                if let Some(_st) = self.finish_held_response_body(envoy_filter, &body) {
+                if let Some(_st) = self.finish_held_response_body(&mut state, envoy_filter, &body) {
                     return TS::StopIteration;
                 }
                 TS::Continue
             }
             BodyPolicy::StreamChunks => {
-                let Some(session) = self.session.as_mut() else {
+                let Some(session) = state.session.as_mut() else {
                     return TS::Continue;
                 };
                 match session.finish_response_body() {
                     Ok(d) if d.is_disruptive() => {
-                        self.settle_disruptive(envoy_filter, d);
+                        self.settle_disruptive(&mut state, envoy_filter, d);
                         return TS::StopIteration;
                     }
-                    Ok(_) => self.response_body_finished = true,
+                    Ok(_) => state.response_body_finished = true,
                     Err(e) => {
-                        self.fail_closed(envoy_filter, &e);
+                        self.fail_closed(&mut state, envoy_filter, &e);
                         return TS::StopIteration;
                     }
                 }
@@ -941,6 +986,16 @@ mod tests {
     pub extern "C" fn envoy_dynamic_module_callback_log(
         _level: abi::envoy_dynamic_module_type_log_level,
         _message: abi::envoy_dynamic_module_type_module_buffer,
+    ) {
+    }
+
+    // SDK 1.40+ logging macros call log_v2 (source file + line).
+    #[no_mangle]
+    pub extern "C" fn envoy_dynamic_module_callback_log_v2(
+        _level: abi::envoy_dynamic_module_type_log_level,
+        _message: abi::envoy_dynamic_module_type_module_buffer,
+        _source_file: abi::envoy_dynamic_module_type_module_buffer,
+        _source_line: u32,
     ) {
     }
 
@@ -1005,7 +1060,7 @@ SecRule REQUEST_URI "@beginsWith /admin" \
             .returning(|_, _, _, _| {})
             .times(1);
 
-        let mut filter = cfg.new_http_filter(&mut envoy);
+        let filter = cfg.new_http_filter(&mut envoy);
         let st = filter.on_request_headers(&mut envoy, true);
         assert_eq!(
             st,
@@ -1053,7 +1108,7 @@ SecRule REQUEST_URI "@unconditionalMatch" \
             .returning(|_, _, _, _| {})
             .times(1);
 
-        let mut filter = cfg.new_http_filter(&mut envoy);
+        let filter = cfg.new_http_filter(&mut envoy);
         let st = filter.on_request_headers(&mut envoy, true);
         assert_eq!(
             st,
@@ -1095,7 +1150,7 @@ SecRule REQUEST_BODY "@contains UNION SELECT" \
         envoy.expect_get_attribute_string().returning(|_| None);
         envoy.expect_get_attribute_int().returning(|_| None);
 
-        let mut filter = cfg.new_http_filter(&mut envoy);
+        let filter = cfg.new_http_filter(&mut envoy);
         let st = filter.on_request_headers(&mut envoy, false);
         assert_eq!(
             st,
@@ -1108,15 +1163,12 @@ SecRule REQUEST_BODY "@contains UNION SELECT" \
             abi::envoy_dynamic_module_type_on_http_filter_request_body_status::StopIterationAndBuffer
         );
 
-        // read_whole_request_body: buffered ∪ received unless received≡buffered.
+        // read_whole_request_body (SDK 1.40+): buffered ∪ received unless received≡buffered.
+        // Size comes from received_size + buffered chunk lengths (no get_buffered_*_size).
         // EOS frame lives only in received during the callback — must be ingested.
         envoy
             .expect_received_buffered_request_body()
             .returning(|| false)
-            .times(1);
-        envoy
-            .expect_get_buffered_request_body_size()
-            .returning(|| 0)
             .times(1);
         envoy
             .expect_get_received_request_body_size()
@@ -1181,7 +1233,7 @@ SecRule REQUEST_BODY "@contains UNION SELECT" \
         envoy.expect_get_attribute_string().returning(|_| None);
         envoy.expect_get_attribute_int().returning(|_| None);
 
-        let mut filter = cfg.new_http_filter(&mut envoy);
+        let filter = cfg.new_http_filter(&mut envoy);
         assert_eq!(
             filter.on_request_headers(&mut envoy, false),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
@@ -1195,10 +1247,6 @@ SecRule REQUEST_BODY "@contains UNION SELECT" \
         envoy
             .expect_received_buffered_request_body()
             .returning(|| true)
-            .times(1);
-        envoy
-            .expect_get_buffered_request_body_size()
-            .returning(|| 28)
             .times(1);
         envoy
             .expect_get_buffered_request_body()
@@ -1253,7 +1301,7 @@ SecRule RESPONSE_BODY "@contains SECRET" \
         envoy.expect_get_attribute_string().returning(|_| None);
         envoy.expect_get_attribute_int().returning(|_| None);
 
-        let mut filter = cfg.new_http_filter(&mut envoy);
+        let filter = cfg.new_http_filter(&mut envoy);
         assert_eq!(
             filter.on_request_headers(&mut envoy, true),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
@@ -1309,17 +1357,19 @@ SecRule REQUEST_URI "@unconditionalMatch" \
 "#,
         );
         let engine = Engine::load_files(&[rules.to_str().unwrap()]).expect("engine");
-        let mut filter = ModSecFilter {
+        let filter = ModSecFilter {
             engine,
             label: "test".into(),
             body_policy: BodyPolicy::StreamChunks,
             partial_soft_limit_bytes: 1024,
-            session: None,
-            headers_done: true,
-            body_finished: true,
-            response_body_finished: false,
-            response_headers_forwarded: true,
-            denied: false,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: true,
+                body_finished: true,
+                response_body_finished: false,
+                response_headers_forwarded: true,
+                denied: false,
+            }),
         };
         let mut envoy = MockEnvoyHttpFilter::new();
         envoy
@@ -1331,13 +1381,15 @@ SecRule REQUEST_URI "@unconditionalMatch" \
             })
             .returning(|_, _| {})
             .times(1);
+        let mut state = filter.state.borrow_mut();
         assert!(filter.settle_disruptive(
+            &mut state,
             &mut envoy,
             Decision::Block {
                 status: 403,
                 log: None,
             }
         ));
-        assert!(filter.denied);
+        assert!(state.denied);
     }
 }
