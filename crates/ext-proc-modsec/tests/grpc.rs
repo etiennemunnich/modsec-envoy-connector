@@ -5,12 +5,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
-
-/// Admission tests share process-wide semaphore semantics that flake when
-/// many gRPC harnesses race under high `--test-threads`. Serialize them.
-static ADMISSION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use ext_proc_modsec::connection_meta::EXT_PROC_ATTR_NAMESPACE;
 use ext_proc_modsec::metrics::ConnectorMetrics;
@@ -65,6 +61,18 @@ impl Harness {
         let mut s = Stream::open(self.addr).await;
         s.config = Some(modes(request, response));
         s
+    }
+
+    /// Like [`Self::stream`], but returns the gRPC status when Process is refused
+    /// (admission over-cap). Stamps the same `protocol_config` as `stream`.
+    async fn try_stream(&self) -> Result<Stream, tonic::Status> {
+        let mode = match self.processor.expected_protocol_config().request_body_mode {
+            m if m == BodySendMode::FullDuplexStreamed as i32 => BodySendMode::FullDuplexStreamed,
+            _ => BodySendMode::Streamed,
+        };
+        let mut s = Stream::try_open(self.addr).await?;
+        s.config = Some(modes(mode, mode));
+        Ok(s)
     }
 }
 
@@ -2366,7 +2374,7 @@ async fn engine_timeout_after_slow_step_never_continue() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_over_cap_refuses_process_never_allow() {
-    let _guard = ADMISSION_TEST_LOCK.lock().unwrap();
+    // Each harness owns its Admission; no cross-test lock needed.
     let h = start_with_admission(1).await;
     let mut held = h.stream().await;
     // Occupy the single admission slot with an unfinished POST (body still
@@ -2397,11 +2405,23 @@ async fn admission_over_cap_refuses_process_never_allow() {
         "only the held stream counted"
     );
 
-    // Free the slot: drop the held stream (releases the permit), then a new
-    // Process may enter and complete an allow path.
+    // Free the slot. Client drop only frees the permit after the server drops
+    // Driver — immediate open can still see ResourceExhausted. Retry bounded.
     drop(held);
-
-    let mut s = h.stream().await;
+    let mut s = None;
+    for _ in 0..50 {
+        match h.try_stream().await {
+            Ok(stream) => {
+                s = Some(stream);
+                break;
+            }
+            Err(e) if e.code() == tonic::Code::ResourceExhausted => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(e) => panic!("unexpected Process error after free: {e:?}"),
+        }
+    }
+    let mut s = s.expect("admission slot freed within retry budget");
     assert_continue(
         &s.send(req_headers("GET", "/", &[], true)).await.unwrap(),
         "after free",
@@ -2411,7 +2431,8 @@ async fn admission_over_cap_refuses_process_never_allow() {
         "after free response",
     );
     assert_eq!(h.metrics.allow_total(), 1);
-    assert_eq!(h.metrics.admission_refused_total(), 1);
+    // Retries during free may bump the counter; at least the over-cap refuse.
+    assert!(h.metrics.admission_refused_total() >= 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2511,7 +2532,6 @@ async fn declared_body_oversize_skips_modsec_tx_with_413() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admission_under_cap_allows_exchange() {
-    let _guard = ADMISSION_TEST_LOCK.lock().unwrap();
     let h = start_with_admission(2).await;
     let mut a = h.stream().await;
     let mut b = h.stream().await;
