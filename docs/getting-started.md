@@ -25,25 +25,46 @@ export PATH="$HOME/.local/bin:$PATH"          # Linux: Envoy and go-ftw are inst
 
 The demo scripts find a libmodsecurity in `~/.local` on their own. For `cargo` outside them, `install-libmodsecurity.sh` prints the `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` to export.
 
+## Elect one hop
+
+This project keeps **two** early-testing options. Pick **one** ModSec hop per Envoy filter chain — do not run both on the same chain.
+
+| Pick | How you start the demo | Smoke | Fail-closed drill |
+|------|------------------------|-------|-------------------|
+| **ext_proc** (default) | `./demo/scripts/up.sh` | `./demo/scripts/smoke.sh` | `./demo/scripts/fail-closed.sh` — absolute model ([fail-closed.md](./fail-closed.md)) |
+| **dynamic module** | `DEPLOY=dm ./demo/scripts/up.sh` | `DEPLOY=dm ./demo/scripts/smoke-dm.sh` | `DEPLOY=dm ./demo/scripts/fail-closed-dm.sh` — weaker / different model ([fail-closed-dm.md](./fail-closed-dm.md)) |
+
+Both paths use the same install steps and the same pinned Envoy / libmodsecurity / CRS from [`versions.lock.md`](../versions.lock.md). The module path builds `libmodsec_dm.so` against `DYNAMIC_MODULES_SDK_REV` (= `ENVOY_PIN`); rebuild or re-pull the `.so` whenever Envoy moves.
+
+Use the **matching** fail-closed script for the hop you elected. `fail-closed.sh` is not DM proof; `fail-closed-dm.sh` is not the ext_proc absolute gate.
+
 ## 3. Start the demo
+
+**ext_proc**
 
 ```bash
 ./demo/scripts/up.sh
 ```
 
-`up.sh` writes the ModSecurity rules file under `demo/.run/`, builds the connector, and starts the origin, the connector and Envoy in the background. It first stops a demo it started earlier, then refuses to start if another process holds one of its ports.
+**dynamic module**
+
+```bash
+DEPLOY=dm ./demo/scripts/up.sh
+```
+
+`up.sh` writes the ModSecurity rules file under `demo/.run/`, builds the elected hop, and starts the origin and Envoy in the background (plus the connector sidecar on the ext_proc path). It first stops a demo it started earlier, then refuses to start if another process holds one of its ports.
 
 | Port | Process |
 |------|---------|
 | 18080 | Envoy, application traffic |
-| 18081 | connector gRPC |
-| 18082 | connector `/metrics` and `/healthz` |
+| 18081 | connector gRPC (ext_proc only) |
+| 18082 | connector `/metrics` and `/healthz` (ext_proc only) |
 | 18089 | Envoy admin (`/ready`) |
 | 18098 | demo origin |
 
-`DEMO_PORT_BASE=18380 ./demo/scripts/up.sh` moves every port by the same offset (Envoy on the base, the connector on base + 1, metrics + 2, Envoy admin + 9, origin + 18); use the same `DEMO_PORT_BASE` for the scripts below and change the URLs to match.
+`DEMO_PORT_BASE=18380 ./demo/scripts/up.sh` moves every port by the same offset (Envoy on the base, the connector on base + 1, metrics + 2, Envoy admin + 9, origin + 18); use the same `DEMO_PORT_BASE` for the scripts below and change the URLs to match. Under DM there is no connector gRPC sidecar on 18081 / 18082; Envoy loads the module via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH` and still serves application traffic on 18080 (or your base).
 
-By hand:
+By hand (ext_proc demo):
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/                                           # 200
@@ -56,27 +77,59 @@ curl -s http://127.0.0.1:18082/metrics | grep -E '^ext_proc_(requests|allow|deny
 
 ## 4. Run the checks
 
+Keep `DEPLOY=dm` for the DM checks (the scripts refuse the wrong hop).
+
+**ext_proc**
+
 ```bash
 ./demo/scripts/smoke.sh
 ./demo/scripts/fail-closed.sh
 ```
 
+**dynamic module**
+
+```bash
+DEPLOY=dm ./demo/scripts/smoke-dm.sh
+DEPLOY=dm ./demo/scripts/fail-closed-dm.sh
+```
+
 | Script | Passes when |
 |--------|-------------|
-| `smoke.sh` | benign GET, form and JSON requests get **200** and reach the origin; SQLi, XSS and path traversal in the URL or the body get **403** and never reach the origin; the response-body rule gets **403**; CONNECT gets **403** |
-| `fail-closed.sh` | connector killed → **500**; connector frozen → **504** after 2 s; connector restarted with broken rules → **500**; the origin receives nothing during any failure, and traffic is **200** again after restore |
+| `smoke.sh` | benign GET, form and JSON get **200** and reach the origin; SQLi, XSS and path traversal in the URL or body get **403** and never reach the origin (BUFFERED); response-body rule **403**; CONNECT **403** |
+| `fail-closed.sh` | connector killed → **500**; connector frozen → **504** after 2 s; broken rules → **500**; origin untouched during failures; traffic **200** again after restore |
+| `smoke-dm.sh` | same class of benign / deny checks for `DEPLOY=dm`; STREAMED body denies keep origin-delta honesty (`0` or `1`); NONE documents body bypass |
+| `fail-closed-dm.sh` | missing `.so` → Envoy does not leave origin OK as **200**; bad / zero rules at filter init → reject / no OK-to-origin; FULL_DUPLEX config rejected; baseline allow after restore. Does **not** claim kill-sidecar **500** or hang→**504** via `message_timeout` |
 
 Each ends with `PASSED` and a count; any `FAIL` line means it did not pass. Logs: `demo/.run/{envoy,connector,origin}.log` and the ModSecurity audit log `demo/.run/modsec-audit.log`.
 
-More checks against the same running demo:
+Optional DM footgun drill (local): `DEPLOY=dm ./demo/scripts/fail-closed-dm-negctl.sh` shows why enforcement configs must **forbid** `module.remote` (remote fetch fail can omit the filter → unfiltered traffic).
+
+### Protocols (H1 / H2 / lab H3)
+
+Product-facing checks for the elected hop:
 
 ```bash
-./demo/scripts/fail-modes.sh                  # every failure class over HTTP/1.1 and HTTP/2
+# HTTP/1.1 + HTTP/2 failure classes (ext_proc demo)
+./demo/scripts/fail-modes.sh
+
+# Hop trace example (ext_proc)
+./demo/scripts/hop-trace.sh --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
+
 ./demo/scripts/h2-trailers.sh                 # HTTP/2 bodies and queries that end in trailers
 ./demo/scripts/install-go-ftw.sh              # go-ftw, the CRS regression runner, into ~/.local/bin
 ./demo/scripts/go-ftw.sh smoke                # CRS regression tests, HTTP/1.x only
-./demo/scripts/hop-trace.sh --expect-status 403 --expect-origin no '/search?q=1%27%20UNION%20SELECT%201--'
 ```
+
+**Lab HTTP/3** is optional and **lab only** — not a product HTTP/3 WAF claim. Needs `pip install aioquic`:
+
+```bash
+BODY_MODE=NONE ./demo/scripts/up.sh   # or let the H3 helpers bring NONE up
+./demo/scripts/h3-probe.sh            # QUIC lab hop + Cookie; demo-only
+./demo/scripts/cookie-protocols.sh    # H1 + H2 + lab H3 Cookie / crumb checks
+./demo/scripts/fail-modes.sh --class cookie   # H1+H2 Cookie class only
+```
+
+go-ftw remains **HTTP/1.x CRS fidelity** only. Do not read a green go-ftw run as HTTP/2 or HTTP/3 WAF proof.
 
 What each test proves: [testing.md](./testing.md).
 
@@ -89,16 +142,7 @@ BODY_MODE=STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh && ./demo/scr
 BODY_MODE=FULL_DUPLEX_STREAMED ./demo/scripts/up.sh && ./demo/scripts/smoke.sh && ./demo/scripts/fail-closed.sh
 ```
 
-Under FULL_DUPLEX_STREAMED the frozen-connector check is reported as `SKIP`: Envoy does not apply `message_timeout` in that mode. NONE and BUFFERED_PARTIAL are limited modes: [body-modes.md](./body-modes.md). `DEMO_CRS=0 ./demo/scripts/up.sh` runs without CRS.
-
-Optional **lab HTTP/3** and **Cookie crumb** suites (not product H3 WAF; H3 needs `pip install aioquic`):
-
-```bash
-BODY_MODE=NONE ./demo/scripts/up.sh   # or let the scripts start NONE for you
-./demo/scripts/h3-probe.sh            # QUIC :18443; ≥14 PASS (hop + Cookie); demo-only
-./demo/scripts/cookie-protocols.sh    # H1 + H2 + lab H3 multi-Cookie / crumb CRS (≥13 PASS)
-./demo/scripts/fail-modes.sh --class cookie   # H1+H2 Cookie class only
-```
+Under FULL_DUPLEX_STREAMED the frozen-connector check is reported as `SKIP`: Envoy does not apply `message_timeout` in that mode. **DM rejects FULL_DUPLEX** at config time — use BUFFERED or STREAMED (or NONE / partial lab modes) on the module path. NONE and BUFFERED_PARTIAL are limited modes: [body-modes.md](./body-modes.md). `DEMO_CRS=0 ./demo/scripts/up.sh` runs without CRS.
 
 ## 6. Stop
 
@@ -106,17 +150,19 @@ BODY_MODE=NONE ./demo/scripts/up.sh   # or let the scripts start NONE for you
 ./demo/scripts/down.sh
 ```
 
-Logs and generated rules stay in `demo/.run/` until you delete it.
+Tear down with `./demo/scripts/down.sh` either way. Logs and generated rules stay in `demo/.run/` until you delete it.
 
-## Early-tester checklist
+## Early-tester checklist (beta dual option)
 
-For alpha testers (current pre-release: `v0.1.0-alpha.4`; formerly documented under `docs/modes/uat.md`, now this page):
+For early testers on the dual-option beta line (tag `v0.1.0-beta.1` when published; until then use the current pre-release in [`versions.lock.md`](../versions.lock.md)):
 
-- [ ] `envoy --version`, `pkg-config --modversion modsecurity` (on Linux with `PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig`) and `git -C demo/.crs describe --tags` match `versions.lock.md` (the install scripts check this)
-- [ ] BUFFERED: `smoke.sh` and `fail-closed.sh` pass
-- [ ] at least one of: `fail-modes.sh`, `go-ftw.sh smoke`, or STREAMED `smoke.sh` + `fail-closed.sh`
-- [ ] beside your own Envoy ([deploy.md](./deploy.md)): a benign request **200**, a SQLi **403**, connector stopped → **500**, and the origin saw nothing
-- [ ] no `failure_mode_allow: true` in any config you tested
-- [ ] results filed with the [bug template](https://github.com/etiennemunnich/modsec-envoy-connector/issues/new?template=bug.md): versions, OS and architecture, and the script output
+- [ ] `envoy --version`, `pkg-config --modversion modsecurity` (Linux: `PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig`) and `git -C demo/.crs describe --tags` match `versions.lock.md`
+- [ ] You elected **one** hop and did not stack both ModSec filters
+- [ ] **ext_proc:** BUFFERED `smoke.sh` + `fail-closed.sh` pass
+- [ ] **and/or DM:** `DEPLOY=dm` BUFFERED `smoke-dm.sh` + `fail-closed-dm.sh` pass (if you are exercising the module)
+- [ ] at least one of: `fail-modes.sh` (H1+H2), go-ftw smoke (H1 CRS only), or STREAMED smoke + the matching fail-closed script
+- [ ] beside your own Envoy ([deploy.md](./deploy.md)): benign **200**, SQLi **403**, and the fail behaviour that matches your hop (ext_proc: connector stopped → **500**, origin untouched; DM: see [fail-closed-dm.md](./fail-closed-dm.md))
+- [ ] no `failure_mode_allow: true` on ext_proc enforcement; no `module.remote` on DM enforcement
+- [ ] results filed with the [bug template](https://github.com/etiennemunnich/modsec-envoy-connector/issues/new?template=bug.md): versions, OS/arch, elected hop, script output
 
-This alpha does not claim production readiness, product HTTP/3 WAF support (there is only a lab `h3-probe.sh` hop), WebSocket-frame inspection, HTTP/2 coverage from go-ftw (it is HTTP/1.x only), or full CRS inspection under BUFFERED_PARTIAL or NONE. Envoy normalizes some headers (for example non-URI `Referer` and hop-by-hop `Connection`) before ModSecurity sees them; aim rules at what is still forwarded: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Open issues: [`CHANGELOG.md`](../CHANGELOG.md).
+This release line is **early testing**. It does not claim product HTTP/3 WAF support (lab `h3-probe.sh` / Cookie H3 only), WebSocket-frame inspection, HTTP/2 coverage from go-ftw, full CRS under BUFFERED_PARTIAL or NONE, or fail-closed absolute for the dynamic module. Envoy may normalize some headers before ModSecurity sees them: [crs-and-envoy-limits.md](./crs-and-envoy-limits.md). Open issues: [`CHANGELOG.md`](../CHANGELOG.md).

@@ -1,22 +1,50 @@
 # Run it beside your own Envoy
 
-How to run **modsec-envoy-connector** next to an Envoy you operate. **Elect one hop** (alpha dual option, early testing):
+How to run **modsec-envoy-connector** next to an Envoy you operate. **Elect one hop** (early testing dual option):
 
 | Election | Artifact | Fail-closed model |
 |----------|----------|-------------------|
 | **ext_proc** (default) | `ext-proc-modsec` sidecar + HTTP/2 cluster | Absolute — [`fail-closed.md`](./fail-closed.md) |
-| **dynamic module** (alpha) | `libmodsec_dm.so` via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH` | Weaker — [`fail-closed-dm.md`](./fail-closed-dm.md); forbid `module.remote`; rebuild `.so` on every Envoy bump (`DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN`) |
+| **dynamic module** | `libmodsec_dm.so` via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH` | Weaker — [`fail-closed-dm.md`](./fail-closed-dm.md); forbid `module.remote`; rebuild `.so` on every Envoy bump (`DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN`) |
 
-Do not stack both ModSec filters on one chain. The local demo ([getting-started.md](./getting-started.md)) wires ext_proc by default; `DEPLOY=dm ./demo/scripts/up.sh` exercises the DM path.
+Do not stack both ModSec filters on one chain.
+
+### Short path A — ext_proc beside your Envoy
+
+1. Get the connector: GHCR image `ghcr.io/etiennemunnich/modsec-envoy-connector:<tag>` (pin digest from [`versions.lock.md`](../versions.lock.md)), Linux release tarball `bin/ext-proc-modsec`, or `cargo build --release --locked -p ext-proc-modsec`.
+2. Run the sidecar on loopback with your rules file (`--listen`, `--metrics-listen`, `--modsec-rules` — see flag table below).
+3. Add the `ext_proc` filter **before** the router: HTTP/2 cluster to the connector, `failure_mode_allow: false`, trailer modes `SEND` when a body mode is not NONE.
+4. Check: benign **200**, SQLi **403**, stop the connector → **500** and origin untouched.
+
+Local twin of that gate: `./demo/scripts/up.sh` then `smoke.sh` + `fail-closed.sh`.
+
+### Short path B — dynamic module beside your Envoy
+
+Early testing only; **not** the absolute fail-closed model.
+
+1. Obtain `libmodsec_dm.so` next to matching `libmodsecurity.so*` from the same release tarball / image (`/usr/local/lib/` in the image), or `cargo build --release --locked -p modsec-dm`. The `.so` must match your Envoy tag (`DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN`).
+2. `export ENVOY_DYNAMIC_MODULES_SEARCH_PATH=<dir-with-libmodsec_dm.so>`.
+3. Configure Envoy’s dynamic-modules HTTP filter for local module name `modsec_dm` (see `demo/scripts/mk-envoy-dm-yaml.py` / `DEPLOY=dm` demo YAML). **Forbid `module.remote`.**
+4. Body policy: BUFFERED or STREAMED (or limited NONE / partial lab modes). **FULL_DUPLEX is rejected** on this path.
+5. Check: benign **200**, SQLi **403**; missing module or bad rules must not leave origin OK as unfiltered **200**. Use [fail-closed-dm.md](./fail-closed-dm.md) — do not cite `fail-closed.sh`.
+
+Local twin: `DEPLOY=dm ./demo/scripts/up.sh` then `smoke-dm.sh` + `fail-closed-dm.sh`.
+
+### Protocols beside your own Envoy
+
+- **HTTP/1.1 and HTTP/2:** exercise allow/deny and your hop’s failure classes the same way the demo does (`fail-modes.sh` on the demo; your own curls / load tools against the elected filter).
+- **Lab HTTP/3:** optional demo-only helpers (`h3-probe.sh`, `cookie-protocols.sh`). Useful for hop honesty in the lab; **not** a product HTTP/3 WAF claim for either hop.
+
+The local demo ([getting-started.md](./getting-started.md)) wires ext_proc by default; `DEPLOY=dm ./demo/scripts/up.sh` exercises the DM path. First published `.so` tag was `v0.1.0-alpha.4`; beta artifacts keep shipping connector **and** `.so` in the same image/tarball. CatchUnwind covers Rust panics only; native libmodsecurity faults share Envoy’s address space. Document which hop you run when filing issues.
 
 Tested versions are in [`versions.lock.md`](../versions.lock.md): Envoy v1.40.2, libmodsecurity v3.0.17, CRS v4.30.0. Other versions are tested weekly ([testing.md](./testing.md#workflows)) but are not supported.
 
 ## 1. Get the connector
 
-Supported paths from `v0.1.0-alpha.2` on (current pre-release `v0.1.0-alpha.4`; do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)):
+Supported paths from `v0.1.0-alpha.2` on (current pre-release `v0.1.0-beta.1`; do not use `v0.1.0-alpha.1`, see [Known issues](#known-issues)):
 
-1. **Container (primary for operators):** pull the multi-arch release image from GHCR (ext_proc sidecar; from `v0.1.0-alpha.4` also carries alpha `libmodsec_dm.so` under `/usr/local/lib/`).
-2. **Release tarball:** Linux `ext-proc-modsec` + bundled `libmodsecurity` + (from `v0.1.0-alpha.4`) alpha `lib/libmodsec_dm.so`. `v0.1.0-alpha.3` tarballs have no `.so`.
+1. **Container (primary for operators):** pull the multi-arch release image from GHCR (ext_proc sidecar; from `v0.1.0-alpha.4` also carries `libmodsec_dm.so` under `/usr/local/lib/`).
+2. **Release tarball:** Linux `ext-proc-modsec` + bundled `libmodsecurity` + (from `v0.1.0-alpha.4`) `lib/libmodsec_dm.so`. `v0.1.0-alpha.3` tarballs have no `.so`.
 3. **From source / demo:** `cargo build` or [`./demo/scripts/up.sh`](../demo/scripts/up.sh) (`DEPLOY=dm` for the module path).
 
 ### Container image (GHCR)
@@ -29,7 +57,7 @@ Pin the current release by **digest** as well as tag (digest is the lock in [`ve
 
 ```bash
 # Tag (multi-arch; Docker picks amd64 or arm64 for the host)
-docker pull ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.4
+docker pull ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-beta.1
 
 # Or pin the exact index digest from the connector row in versions.lock.md
 # (filled in after the release workflow publishes the multi-arch image).
@@ -43,12 +71,12 @@ echo "$TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 
 When the **GHCR package** is made public (owner step; independent of repo visibility), anonymous `docker pull` of release tags works without login. The install commands above keep working either way.
 
-Pull **release tags** (`v0.1.0-alpha.4`, …), not a floating `latest`. Images are published only by the `release` workflow on git tags (not on every PR or `main` push), which keeps Actions minutes and GHCR storage lean. Maintainers can list/delete allowlisted stale package versions with [`scripts/ghcr-delete-stale.sh`](../scripts/ghcr-delete-stale.sh) (dry-run by default).
+Pull **release tags** (`v0.1.0-beta.1`, …), not a floating `latest`. Images are published only by the `release` workflow on git tags (not on every PR or `main` push), which keeps Actions minutes and GHCR storage lean. Maintainers can list/delete allowlisted stale package versions with [`scripts/ghcr-delete-stale.sh`](../scripts/ghcr-delete-stale.sh) (dry-run by default).
 
 ```bash
 docker run --rm -p 127.0.0.1:18081:18081 -p 127.0.0.1:18082:18082 \
   -v /etc/modsecurity:/etc/modsecurity:ro -v /etc/crs:/etc/crs:ro \
-  ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.4 \
+  ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-beta.1 \
   --modsec-rules /etc/modsecurity/main.conf
 ```
 
@@ -62,10 +90,10 @@ Fail-closed behaviour is unchanged: use `failure_mode_allow: false` on the Envoy
 
 ### Release tarball
 
-Linux x86_64 and aarch64. From `v0.1.0-alpha.4` the tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, alpha `lib/libmodsec_dm.so`, `LICENSE`, `NOTICE` and `versions.lock.md` (`v0.1.0-alpha.3` has no `.so`). It needs Ubuntu 24.04's runtime libraries. Release assets on a public repository download without login (browser or `gh`); if you use `gh` against a private fork or mirror, `gh auth login` first.
+Linux x86_64 and aarch64. From `v0.1.0-alpha.4` the tarball holds `bin/ext-proc-modsec`, `lib/libmodsecurity.so*`, `lib/libmodsec_dm.so`, `LICENSE`, `NOTICE` and `versions.lock.md` (`v0.1.0-alpha.3` has no `.so`). It needs Ubuntu 24.04's runtime libraries. Release assets on a public repository download without login (browser or `gh`); if you use `gh` against a private fork or mirror, `gh auth login` first.
 
 ```bash
-VER=v0.1.0-alpha.4 ARCH=x86_64          # or aarch64
+VER=v0.1.0-beta.1 ARCH=x86_64          # or aarch64
 gh release download "$VER" -R etiennemunnich/modsec-envoy-connector -p "ext-proc-modsec-$VER-linux-$ARCH.tar.gz*"
 sha256sum -c "ext-proc-modsec-$VER-linux-$ARCH.tar.gz.sha256"
 tar xzf "ext-proc-modsec-$VER-linux-$ARCH.tar.gz"
@@ -77,9 +105,9 @@ ls -l "$DIR/lib/libmodsec_dm.so"
 
 The binary finds the bundled `lib/libmodsecurity.so` through its RUNPATH `$ORIGIN/../lib`: keep `bin/` and `lib/` side by side, and no `LD_LIBRARY_PATH` is needed. `libmodsec_dm.so` finds sibling `libmodsecurity` through RUNPATH `$ORIGIN`.
 
-### Alpha dynamic module from release artifacts
+### Dynamic module from release artifacts
 
-Early testing only — not fail-closed absolute ([fail-closed-dm.md](./fail-closed-dm.md)). The module is built against `DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN` (today `v1.40.2`); rebuild or re-pull on every Envoy bump. Forbid `module.remote`. **First published tag:** `v0.1.0-alpha.4` (`v0.1.0-alpha.3` has no `.so`).
+Early testing only — not fail-closed absolute ([fail-closed-dm.md](./fail-closed-dm.md)). The module is built against `DYNAMIC_MODULES_SDK_REV` = `ENVOY_PIN` (today `v1.40.2`); rebuild or re-pull on every Envoy bump. Forbid `module.remote`. **First published tag:** `v0.1.0-alpha.4` (`v0.1.0-alpha.3` has no `.so`); beta continues to ship the `.so`.
 
 From the **tarball** `lib/` directory (keep `libmodsec_dm.so` next to `libmodsecurity.so*`):
 
@@ -91,7 +119,7 @@ export ENVOY_DYNAMIC_MODULES_SEARCH_PATH="$DIR/lib"
 From the **GHCR image** (same package as the sidecar; ENTRYPOINT is still `ext-proc-modsec`):
 
 ```bash
-cid="$(docker create ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.4)"
+cid="$(docker create ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-beta.1)"
 mkdir -p ./dm-modules
 docker cp "$cid:/usr/local/lib/libmodsec_dm.so" ./dm-modules/
 docker cp "$cid:/usr/local/lib/libmodsecurity.so.3" ./dm-modules/
@@ -109,7 +137,7 @@ On Linux or macOS. libmodsecurity **3.0.13 or newer** must be visible to `pkg-co
 export PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig LD_LIBRARY_PATH=$HOME/.local/lib   # Linux, after install-libmodsecurity.sh
 cargo build --release --locked -p ext-proc-modsec
 ./target/release/ext-proc-modsec --version
-# Alpha DM (needs libclang for the Envoy SDK bindgen):
+# Dynamic module (needs libclang for the Envoy SDK bindgen):
 cargo build --release --locked -p modsec-dm
 ls target/release/libmodsec_dm.so
 ```
@@ -122,7 +150,7 @@ For development only. [`packaging/Dockerfile`](../packaging/Dockerfile) expects 
 
 ```bash
 docker build -f packaging/Dockerfile -t modsec-envoy-connector:local \
-  "ext-proc-modsec-v0.1.0-alpha.4-linux-x86_64"
+  "ext-proc-modsec-v0.1.0-beta.1-linux-x86_64"
 ```
 
 Prefer the GHCR release image above for normal deploys.
