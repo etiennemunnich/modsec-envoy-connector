@@ -8,17 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.1.0-beta.1] — 2026-11-01
+
+Early beta pre-release (early testing only — not production). Pins: Envoy `v1.40.2`,
+libmodsecurity `v3.0.17`, CRS `v4.30.0` (see [`versions.lock.md`](./versions.lock.md)).
+Dual elect-one hops kept; DM is **not** fail-closed absolute.
+
+### Added
+
+- **Process-wide stream admission** (`--max-in-flight`, default 1024): over-cap refuses with `resource_exhausted` so Envoy fail-closed keeps origin untouched.
+- **Late-action honesty:** after a committed allow/deny, ModSec / FFI `Err` never maps to `Continue` (ext_proc → ImmediateResponse **500**; DM → fail-closed / `reset_stream` as documented).
+- **Engine soft timeout** (`--engine-timeout`), absolute stream lifetime on all body modes, and a **bind gate** (non-loopback listen requires `--listen-public`).
+- **Require connection attrs**, aggregate header-byte caps, and declared `Content-Length` oversize → **413** without opening a ModSec transaction.
+- **Lab HTTP/3 twin** for the dynamic-module hop (`DEPLOY=dm` + `h3-probe.sh`) — lab honesty only; not a product HTTP/3 WAF claim.
+- Operator docs: elect-one short paths in [getting-started.md](./docs/getting-started.md) and [deploy.md](./docs/deploy.md).
+
 ### Fixed
 
+- gRPC admission over-cap free-path test: remove unnecessary test lock; bounded retry after `Driver` drop so the harness does not flake.
 - gRPC test `probe_exchange_logs_below_info_and_keeps_metrics_clean`: capturing subscriber registers `Interest::always` and rebuilds the interest cache under that subscriber (CI flake: expected ≥2 INFO got 1).
 - Dependabot cargo group no longer bumps `envoy-proxy-dynamic-modules-rust-sdk` away from `ENVOY_PIN` (ignore + `check-pins.sh` asserts lock `DYNAMIC_MODULES_SDK_REV` equals the `modsec-dm` Cargo.toml tag). Tokio → 1.54.1 only.
 - Resolve leftover merge-conflict markers in this changelog from the #43 squash.
 
 ### Changed
 
-- Envoy pin `v1.39.6` → `v1.40.2` (stable-candidate green on x86_64 + aarch64; see #44). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`. DM filter adapted for SDK 1.40 `&self` HTTP hooks (`RefCell` per-stream state; `mock` feature for unit tests; bindgen/`prettyplease` lock aligned).
-- Envoy pin `v1.39.4` → `v1.39.6` (stable-candidate green on x86_64 + aarch64; see #45). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`.
+- Crate version `0.1.0-beta.1` (product tag `v0.1.0-beta.1`).
+- Envoy pin `v1.39.6` → `v1.40.2` (stable-candidate green on x86_64 + aarch64; see #44 / #47). `DYNAMIC_MODULES_SDK_REV` and `modsec-dm` SDK git tag stay equal to `ENVOY_PIN`. DM filter adapted for SDK 1.40 `&self` HTTP hooks (`RefCell` per-stream state; `mock` feature for unit tests; bindgen/`prettyplease` lock aligned).
+- Envoy pin `v1.39.4` → `v1.39.6` (stable-candidate green on x86_64 + aarch64; see #45 / #46).
 - `scripts/test-ci-scripts.sh`: assert DM SDK pin alignment, Dependabot ignore, and no `observability_mode: true` in demo Envoy YAML.
+
+### Notes
+
+- **Older Envoy + DM:** tip `modsec-dm` is built for the pinned SDK (`ENVOY_PIN` = `v1.40.2`). Rebuilding the same tip sources against older Envoy dynamic-modules SDK lines (for example 1.39.x–1.36.x) does not compile without a dual-SDK shim; those matrix cells are documented **SKIP**. Product hop on older Envoy remains **ext_proc**. See [testing.md](./docs/testing.md).
 
 ## [v0.1.0-alpha.4] — 2026-10-24
 
@@ -29,7 +50,7 @@ alpha `libmodsec_dm.so` in the release tarball and GHCR image.
 ### Added
 
 - **Alpha dual option:** Envoy dynamic module path `crates/modsec-dm` (`libmodsec_dm.so`) alongside default ext_proc. Elect **one** hop; weaker fail-closed model ([fail-closed-dm.md](./docs/fail-closed-dm.md)). Lean CI cell `e2e-dm` × both arches. (#33)
-- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Alpha dynamic module from release artifacts](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package. (#36) **First published in this tag** (`v0.1.0-alpha.3` tarballs/images do not contain the `.so`).
+- **Alpha DM in release artifacts:** `release.yml` builds `libmodsec_dm.so` (SDK @ `ENVOY_PIN`) into `ext-proc-modsec-<ver>-linux-<arch>.tar.gz` `lib/` and the GHCR image `/usr/local/lib/` (ENTRYPOINT remains ext_proc). RUNPATH `$ORIGIN` so the module finds sibling `libmodsecurity`. Operator load path: [Deploy — Dynamic module from release artifacts](./docs/deploy.md#dynamic-module-from-release-artifacts). Early testing only; not fail-closed absolute; no separate GHCR module package. (#36) **First published in this tag** (`v0.1.0-alpha.3` tarballs/images do not contain the `.so`).
 
 ### Fixed
 
@@ -270,7 +291,8 @@ section.
 [UAT checklist](https://github.com/etiennemunnich/modsec-envoy-connector/blob/v0.1.0-alpha.1/docs/modes/uat.md). Local: `up.sh` → `smoke.sh` →
 `fail-closed.sh`. Hosted: `ci-ok` on both arches for the tag commit on `main`.
 
-[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.4...HEAD
+[Unreleased]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-beta.1...HEAD
+[v0.1.0-beta.1]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.4...v0.1.0-beta.1
 [v0.1.0-alpha.4]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.3...v0.1.0-alpha.4
 [v0.1.0-alpha.3]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [v0.1.0-alpha.2]: https://github.com/etiennemunnich/modsec-envoy-connector/compare/v0.1.0-alpha.1...v0.1.0-alpha.2

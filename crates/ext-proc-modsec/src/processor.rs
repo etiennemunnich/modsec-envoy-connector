@@ -38,10 +38,12 @@ use std::time::{Duration, Instant};
 
 use modsec_engine::{Decision, Engine, InspectionSession};
 use tokio::runtime::{Handle, RuntimeFlavor};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status, Streaming};
 use tracing::warn;
 
+use crate::admission::{Admission, DEFAULT_MAX_IN_FLIGHT};
 use crate::config::{BodyReply, Limits};
 use crate::connection_meta::ConnectionEndpoints;
 use crate::metrics::{ConnectorMetrics, Phase};
@@ -78,6 +80,8 @@ pub struct ModSecProcessor {
     metrics: Arc<ConnectorMetrics>,
     body_reply: BodyReply,
     limits: Limits,
+    admission: Admission,
+    require_connection_attrs: bool,
 }
 
 impl ModSecProcessor {
@@ -99,11 +103,34 @@ impl ModSecProcessor {
         body_reply: BodyReply,
         limits: Limits,
     ) -> Self {
+        Self::with_limits_and_admission(engine, metrics, body_reply, limits, DEFAULT_MAX_IN_FLIGHT)
+    }
+
+    pub fn with_limits_and_admission(
+        engine: Arc<Engine>,
+        metrics: Arc<ConnectorMetrics>,
+        body_reply: BodyReply,
+        limits: Limits,
+        max_in_flight: u32,
+    ) -> Self {
+        Self::with_policy(engine, metrics, body_reply, limits, max_in_flight, false)
+    }
+
+    pub fn with_policy(
+        engine: Arc<Engine>,
+        metrics: Arc<ConnectorMetrics>,
+        body_reply: BodyReply,
+        limits: Limits,
+        max_in_flight: u32,
+        require_connection_attrs: bool,
+    ) -> Self {
         Self {
             engine,
             metrics,
             body_reply,
             limits,
+            admission: Admission::new(max_in_flight),
+            require_connection_attrs,
         }
     }
 
@@ -119,6 +146,10 @@ impl ModSecProcessor {
         self.limits
     }
 
+    pub fn admission_limit(&self) -> u32 {
+        self.admission.limit()
+    }
+
     /// The tonic service with this processor's message-size limits applied.
     pub fn into_server(self) -> ExternalProcessorServer<Self> {
         let limits = self.limits;
@@ -129,12 +160,14 @@ impl ModSecProcessor {
 
     /// A fresh per-stream state, exactly as `Process` creates one.
     pub fn exchange(&self) -> Exchange {
-        Exchange::new(
+        let mut ex = Exchange::new(
             Arc::clone(&self.engine),
             Arc::clone(&self.metrics),
             self.body_reply,
             self.limits,
-        )
+        );
+        ex.require_connection_attrs = self.require_connection_attrs;
+        ex
     }
 
     /// A `protocol_config` that `--body-reply` accepts (for probes).
@@ -176,10 +209,26 @@ impl ExternalProcessor for ModSecProcessor {
         &self,
         request: Request<Streaming<ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
+        // Process-wide admission: over-cap refuses the stream before any
+        // ModSec work. Envoy with failure_mode_allow: false answers 500 and
+        // does not contact origin.
+        let Some(permit) = self.admission.try_enter() else {
+            self.metrics.inc_admission_refused();
+            warn!(
+                action = "admission_refused",
+                limit = self.admission.limit(),
+                "in-flight ModSec stream admission cap reached; refusing Process (fail-closed)"
+            );
+            return Err(Status::resource_exhausted(format!(
+                "admission limit: too many in-flight ModSec streams (cap {}); fail-closed",
+                self.admission.limit()
+            )));
+        };
         let driver = Driver {
             exchange: self.exchange(),
             inbound: request.into_inner(),
             pending_out: VecDeque::new(),
+            _admission: permit,
         };
         Ok(Response::new(Box::pin(Outbound {
             next: Some(Box::pin(driver.step())),
@@ -225,6 +274,8 @@ struct Driver {
     /// Extra replies queued after a multi-message duplex finalize (body then
     /// trailers). Drained before the next inbound read.
     pending_out: VecDeque<ProcessingResponse>,
+    /// Held for the life of this Process stream; drop frees an admission slot.
+    _admission: OwnedSemaphorePermit,
 }
 
 impl Driver {
@@ -256,7 +307,16 @@ impl Driver {
                 Err(_) if self.exchange.verdict_complete() => return None,
                 Err(_) => return Some((Ok(self.exchange.timed_out(timer)), None)),
             };
-            return match run_blocking(|| self.exchange.on_message(msg)) {
+            let budget = self.exchange.limits.engine_timeout;
+            let t0 = Instant::now();
+            let step = run_blocking(|| self.exchange.on_message(msg));
+            // Soft engine budget: after a ModSec step that overran, never
+            // Continue — ImmediateResponse 504. A hung FFI still occupies a
+            // worker until it returns (documented honesty).
+            if t0.elapsed() > budget && !matches!(step, Step::Final(_) | Step::Abort(_)) {
+                return Some((Ok(self.exchange.timed_out(Timer::Engine)), None));
+            }
+            return match step {
                 Step::Reply(r) => Some((Ok(r), Some(self))),
                 Step::Replies(first, mut rest) => {
                     self.pending_out.append(&mut rest);
@@ -416,7 +476,10 @@ struct Modes {
 pub enum Timer {
     StreamIdle,
     DuplexIdle,
+    /// Absolute stream max lifetime (all body modes; CLI `--duplex-total-timeout`).
     DuplexTotal,
+    /// One ModSec evaluation step exceeded `--engine-timeout`.
+    Engine,
 }
 
 impl Timer {
@@ -425,6 +488,7 @@ impl Timer {
             Self::StreamIdle => "--stream-idle-timeout",
             Self::DuplexIdle => "--duplex-idle-timeout",
             Self::DuplexTotal => "--duplex-total-timeout",
+            Self::Engine => "--engine-timeout",
         }
     }
 }
@@ -461,6 +525,8 @@ pub struct Exchange {
     resp_held: Option<Vec<u8>>,
     /// Readiness probe: DEBUG-level phase logs.
     probe: bool,
+    /// Fail closed when Envoy omits connection attributes.
+    require_connection_attrs: bool,
 }
 
 impl Drop for Exchange {
@@ -496,6 +562,7 @@ impl Exchange {
             req_held: None,
             resp_held: None,
             probe: false,
+            require_connection_attrs: false,
         }
     }
 
@@ -562,11 +629,14 @@ impl Exchange {
     /// When the next inbound read gives up, and which deadline that is.
     pub fn read_deadline(&self, now: Instant) -> (Instant, Timer) {
         let mut next = (now + self.limits.stream_idle_timeout, Timer::StreamIdle);
-        if self.duplex() && !self.verdict_complete() {
+        // Absolute stream max lifetime applies to every body mode (not duplex-only).
+        if !self.verdict_complete() {
             let total = self.started + self.limits.duplex_total_timeout;
             if total < next.0 {
                 next = (total, Timer::DuplexTotal);
             }
+        }
+        if self.duplex() && !self.verdict_complete() {
             let idle = now + self.limits.duplex_idle_timeout;
             if self.unanswered_body().is_some() && idle < next.0 {
                 next = (idle, Timer::DuplexIdle);
@@ -705,6 +775,12 @@ impl Exchange {
             return Step::Final(responses::block(403, DENY_BODY, "connect_rejected"));
         }
 
+        // Header aggregate + declared-body short-circuit before opening a tx.
+        let hdrs_preview: Vec<(String, Vec<u8>)> = regular_headers(headers).collect();
+        if let Some(step) = self.preflight_headers(&hdrs_preview, attributes) {
+            return step;
+        }
+
         let t0 = Instant::now();
         let mut session = match self.engine.open_transaction(self.request_id.as_deref()) {
             Ok(s) => s,
@@ -713,6 +789,65 @@ impl Exchange {
         let step = self.request_headers_in(&mut session, headers, attributes, &method, &path, t0);
         self.session = Some(session);
         step
+    }
+
+    /// Attrs / header caps / declared Content-Length short-circuit before FFI.
+    fn preflight_headers(
+        &mut self,
+        hdrs: &[(String, Vec<u8>)],
+        attributes: &HashMap<String, Struct>,
+    ) -> Option<Step> {
+        let phase = Phase::RequestHeaders;
+        self.endpoints = ConnectionEndpoints::from_ext_proc_attributes(attributes);
+        if self.require_connection_attrs && self.endpoints.source != "attrs" {
+            return Some(self.fail_closed(
+                phase,
+                "connection attributes required but missing (no silent fallback)",
+            ));
+        }
+        let cap = self.limits.max_header_bytes;
+        if cap > 0 {
+            let total: usize = hdrs
+                .iter()
+                .map(|(k, v)| k.len().saturating_add(v.len()))
+                .sum();
+            if total > cap {
+                return Some(self.fail_closed(
+                    phase,
+                    format!(
+                        "request header aggregate {total} bytes exceeds --max-header-bytes {cap}"
+                    ),
+                ));
+            }
+        }
+        let body_cap = self.limits.max_declared_body_bytes;
+        if body_cap > 0 {
+            if let Some(cl) = hdrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, v)| std::str::from_utf8(v).ok())
+                .and_then(|s| s.trim().parse::<usize>().ok())
+            {
+                if cl > body_cap {
+                    self.metrics.inc_deny();
+                    phase_info!(
+                        self,
+                        request_id = self.rid(),
+                        phase = phase.as_str(),
+                        action = "deny",
+                        content_length = cl,
+                        cap = body_cap,
+                        "declared body oversize; skipping ModSec transaction"
+                    );
+                    return Some(Step::Final(responses::block(
+                        413,
+                        b"Payload Too Large\n",
+                        "modsec_declared_oversize",
+                    )));
+                }
+            }
+        }
+        None
     }
 
     fn request_headers_in(
@@ -735,7 +870,10 @@ impl Exchange {
             }
         }
 
-        self.endpoints = ConnectionEndpoints::from_ext_proc_attributes(attributes);
+        // Endpoints already parsed in preflight; refresh if attrs arrived here only.
+        if self.endpoints.source != "attrs" {
+            self.endpoints = ConnectionEndpoints::from_ext_proc_attributes(attributes);
+        }
         let ep = &self.endpoints;
         let decision = match session.process_request_headers(
             &ep.client_ip,

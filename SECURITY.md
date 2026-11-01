@@ -3,12 +3,13 @@
 ## Supported Versions
 
 Security fixes land on the latest release of **modsec-envoy-connector** and on `main`.
-While the project is in **0.1 alpha**, treat tags as early-testing artifacts: fixes prefer `main` tip; see [`CHANGELOG.md`](./CHANGELOG.md).
+While the project is in **0.1 early beta**, treat tags as early-testing artifacts: fixes prefer `main` tip; see [`CHANGELOG.md`](./CHANGELOG.md).
 
 | Version | Supported |
 | ------- | --------- |
 | Latest release | :white_check_mark: |
 | `main` tip | :white_check_mark: (pre-release / development) |
+| `v0.1.0-beta.1` and later 0.1 betas | :white_check_mark: (early testing only; not production) |
 | `v0.1.0-alpha.4` and later alphas | :white_check_mark: (early testing only; not production) |
 | `v0.1.0-alpha.3` | :white_check_mark: (early testing only; not production; no `libmodsec_dm.so` in artifacts) |
 | `v0.1.0-alpha.2` | :white_check_mark: (early testing only; not production) |

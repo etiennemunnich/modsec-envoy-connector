@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod admission;
 pub mod config;
 pub mod connection_meta;
 pub mod logging;
@@ -20,5 +21,6 @@ pub mod pb;
 pub mod processor;
 pub mod responses;
 
+pub use admission::{Admission, DEFAULT_MAX_IN_FLIGHT};
 pub use config::{BodyReply, Config, Limits};
 pub use processor::ModSecProcessor;

@@ -2,14 +2,14 @@
 
 Protect HTTP workloads behind [Envoy Proxy](https://www.envoyproxy.io/) with **ModSecurity** and the **OWASP Core Rule Set (CRS)**.
 
-Envoy does not run ModSecurity by itself. This project offers an **alpha dual option** (early testing only — elect **one** hop per chain):
+Envoy does not run ModSecurity by itself. This project offers an **early-testing dual option** — elect **one** hop per chain:
 
 1. **Default:** a Rust **External Processing** (`ext_proc`) sidecar that inspects with **libmodsecurity** (+ optional CRS) out of process and tells Envoy to allow or block.
-2. **Alpha / lab:** an in-process Envoy **dynamic module** (`crates/modsec-dm`, `libmodsec_dm.so`) that drives the same `modsec-engine`. Same-process trust: **not** fail-closed absolute; HTTP filter is not hardened. See [`docs/fail-closed-dm.md`](./docs/fail-closed-dm.md).
+2. **Dynamic module:** an in-process Envoy module (`crates/modsec-dm`, `libmodsec_dm.so`) that drives the same `modsec-engine`. Same-process trust: **not** fail-closed absolute; HTTP filter is not hardened. See [`docs/fail-closed-dm.md`](./docs/fail-closed-dm.md).
 
-Envoy alone forwards traffic to your origin, and only after the elected path allows it. Do not run both ModSec filters on one chain.
+Envoy alone forwards traffic to your origin, and only after the elected path allows it. Do not run both ModSec filters on one chain. Getting started and Deploy show short paths for each hop.
 
-**Status:** early testing only; not a production release. Current pre-release: `v0.1.0-alpha.4`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.40.2, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
+**Status:** early testing only; early beta, not a production release. Current pre-release: `v0.1.0-beta.1`. Do not use `v0.1.0-alpha.1`: it can forward uninspected requests (a body over 4 MiB, or a body that ends in trailers). Open issues and release notes: [`CHANGELOG.md`](./CHANGELOG.md). Tested with Envoy v1.40.2, libmodsecurity v3.0.17 and CRS v4.30.0 ([`versions.lock.md`](./versions.lock.md)). DM SDK pin = `ENVOY_PIN` (`DYNAMIC_MODULES_SDK_REV`).
 
 ## How it decides
 
@@ -38,7 +38,7 @@ curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:18080/search?q=1'%20U
 ./demo/scripts/fail-closed.sh       # kill → 500, hang → 504, bad rules → 500
 ./demo/scripts/down.sh
 
-# Alpha dynamic module (optional; weaker fail-closed model — see docs/fail-closed-dm.md)
+# Dynamic module (optional; weaker fail-closed model — see docs/fail-closed-dm.md)
 DEPLOY=dm ./demo/scripts/up.sh
 DEPLOY=dm ./demo/scripts/smoke-dm.sh
 DEPLOY=dm ./demo/scripts/fail-closed-dm.sh
@@ -49,9 +49,9 @@ Full walkthrough, other body modes and the early-tester checklist: [Getting star
 
 ## Run it beside your own Envoy
 
-1. Get the connector: pull `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-alpha.4` (multi-arch; pin by digest in [`versions.lock.md`](./versions.lock.md)), or a Linux release tarball, or `cargo build --release -p ext-proc-modsec`. From `v0.1.0-alpha.4` on, release tarballs and the image also carry alpha `lib/libmodsec_dm.so` (load via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH`; not a separate GHCR package). `v0.1.0-alpha.3` does **not** include the `.so`. Details and auth while the package is private: [Deploy](./docs/deploy.md).
+1. Get the connector: pull `ghcr.io/etiennemunnich/modsec-envoy-connector:v0.1.0-beta.1` (multi-arch; pin by digest in [`versions.lock.md`](./versions.lock.md)), or a Linux release tarball, or `cargo build --release -p ext-proc-modsec`. From `v0.1.0-alpha.4` on, release tarballs and the image also carry `lib/libmodsec_dm.so` (load via `ENVOY_DYNAMIC_MODULES_SEARCH_PATH`; not a separate GHCR package). `v0.1.0-alpha.3` does **not** include the `.so`. Details and auth while the package is private: [Deploy](./docs/deploy.md).
 2. Write one rules entry file, for example `/etc/modsecurity/main.conf`, that `Include`s the engine settings, `crs-setup.conf` and `rules/*.conf`.
-3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf` (or the equivalent `docker run` from Deploy). For the alpha DM hop instead, point Envoy at the bundled `.so` ([Deploy](./docs/deploy.md#alpha-dynamic-module-from-release-artifacts)) — do not stack both.
+3. Start it on loopback: `ext-proc-modsec --listen 127.0.0.1:18081 --metrics-listen 127.0.0.1:18082 --modsec-rules /etc/modsecurity/main.conf` (or the equivalent `docker run` from Deploy). For the DM hop instead, point Envoy at the bundled `.so` ([Deploy](./docs/deploy.md#dynamic-module-from-release-artifacts)) — do not stack both.
 4. Add the `ext_proc` filter before the router, with an HTTP/2 cluster to the connector and `failure_mode_allow: false`. With any body mode other than NONE, also set `request_trailer_mode: SEND` and `response_trailer_mode: SEND`; `SKIP` lets the request reach origin before the body phase runs.
 5. Check: `/healthz` is 200, a SQLi gets 403, and with the connector stopped requests get 500.
 

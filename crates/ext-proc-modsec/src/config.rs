@@ -7,6 +7,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::admission::DEFAULT_MAX_IN_FLIGHT;
+
 pub const USAGE: &str = "\
 Envoy ExternalProcessor that inspects HTTP traffic with libmodsecurity (fail-closed)
 
@@ -50,13 +52,41 @@ Options:
                                not apply in that mode) → 504.
                                [env: EXT_PROC_DUPLEX_IDLE_TIMEOUT] [default: 30]
       --duplex-total-timeout <SECS>
-                               FULL_DUPLEX_STREAMED: longest a stream may run before
-                               its final verdict → 504.
+                               Absolute stream max lifetime (all body modes): longest
+                               a stream may run before its final verdict → 504.
+                               Also covers FULL_DUPLEX_STREAMED (name kept for compat).
                                [env: EXT_PROC_DUPLEX_TOTAL_TIMEOUT] [default: 300]
+      --engine-timeout <SECS>
+                               Longest one ModSec evaluation step (headers/body FFI)
+                               may take before the exchange fails closed with 504.
+                               Calibrated above tip CRS medium-body p99 (~11 ms e2e).
+                               [env: EXT_PROC_ENGINE_TIMEOUT] [default: 5]
+      --listen-public          Allow --listen / --metrics-listen on non-loopback
+                               addresses (default refuses 0.0.0.0 / non-loopback).
+                               [env: EXT_PROC_LISTEN_PUBLIC=1]
+      --require-connection-attrs
+                               Fail closed (500) when Envoy sends no connection
+                               attributes (no silent 127.0.0.1 fallback).
+                               [env: EXT_PROC_REQUIRE_CONNECTION_ATTRS=1]
+      --max-header-bytes <N>
+                               Aggregate request-header name+value bytes before
+                               ModSec FFI; past N → 500. [default: 65536]
+                               [env: EXT_PROC_MAX_HEADER_BYTES]
+      --max-declared-body-bytes <N>
+                               If Content-Length exceeds N, ImmediateResponse 413
+                               and skip the ModSec transaction (BUFFERED oversize
+                               short-circuit). 0 disables. [default: 0]
+                               [env: EXT_PROC_MAX_DECLARED_BODY_BYTES]
       --max-concurrent-streams <N>
                                HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS per Envoy
                                connection (Envoy opens more connections past it).
                                [env: EXT_PROC_MAX_CONCURRENT_STREAMS] [default: 1024]
+      --max-in-flight <N>
+                               Process-wide ModSec stream admission cap. A new
+                               Process past N is refused (gRPC resource_exhausted →
+                               Envoy 500 with failure_mode_allow: false; origin
+                               untouched). Distinct from --max-concurrent-streams.
+                               [env: EXT_PROC_MAX_IN_FLIGHT] [default: 1024]
       --http2-keepalive-interval <SECS>
                                HTTP/2 PING interval on idle Envoy connections.
                                [env: EXT_PROC_HTTP2_KEEPALIVE_INTERVAL] [default: 30]
@@ -83,6 +113,10 @@ pub const REPLY_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 pub const DEFAULT_DUPLEX_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_DUPLEX_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+/// Default ModSec step budget. Tip CRS medium-body e2e p99 ≈ 11 ms (2026-10-28);
+/// 5s leaves large margin without hanging forever on a stuck FFI call.
+pub const DEFAULT_ENGINE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_MAX_HEADER_BYTES: usize = 64 * 1024;
 pub const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 1024;
 pub const DEFAULT_HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 pub const DEFAULT_HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -146,6 +180,12 @@ pub struct Config {
     pub body_reply: BodyReply,
     pub limits: Limits,
     pub server: ServerLimits,
+    /// Process-wide concurrent ModSec `Process` streams (admission).
+    pub max_in_flight: u32,
+    /// Allow non-loopback listen addresses (bind gate opt-in).
+    pub listen_public: bool,
+    /// Fail closed when Envoy omits connection attributes.
+    pub require_connection_attrs: bool,
     /// Report ready although the rules do not enforce (`SecRuleEngine`
     /// DetectionOnly / Off).
     pub allow_detection_only: bool,
@@ -164,8 +204,14 @@ pub struct Limits {
     pub stream_idle_timeout: Duration,
     /// FULL_DUPLEX_STREAMED: longest gap between messages while a body is held.
     pub duplex_idle_timeout: Duration,
-    /// FULL_DUPLEX_STREAMED: longest a stream may run before its final verdict.
+    /// Absolute stream max lifetime (all body modes) before the final verdict.
     pub duplex_total_timeout: Duration,
+    /// Longest one blocking ModSec evaluation step may take → 504.
+    pub engine_timeout: Duration,
+    /// Aggregate request-header name+value bytes before FFI (0 disables).
+    pub max_header_bytes: usize,
+    /// Declared Content-Length over this → 413 without ModSec tx (0 disables).
+    pub max_declared_body_bytes: usize,
 }
 
 impl Default for Limits {
@@ -176,6 +222,9 @@ impl Default for Limits {
             stream_idle_timeout: DEFAULT_STREAM_IDLE_TIMEOUT,
             duplex_idle_timeout: DEFAULT_DUPLEX_IDLE_TIMEOUT,
             duplex_total_timeout: DEFAULT_DUPLEX_TOTAL_TIMEOUT,
+            engine_timeout: DEFAULT_ENGINE_TIMEOUT,
+            max_header_bytes: DEFAULT_MAX_HEADER_BYTES,
+            max_declared_body_bytes: 0,
         }
     }
 }
@@ -208,7 +257,8 @@ impl Limits {
 /// Outcome of parsing the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Run(Config),
+    /// Boxed: `Config` is large relative to Help/Version (clippy `large_enum_variant`).
+    Run(Box<Config>),
     Help,
     Version,
 }
@@ -218,13 +268,36 @@ pub enum ConfigError {
     MissingRules,
     MissingValue(&'static str),
     UnknownArgument(String),
-    InvalidAddress { flag: &'static str, value: String },
+    InvalidAddress {
+        flag: &'static str,
+        value: String,
+    },
     InvalidBodyReply(String),
-    InvalidBytes { flag: &'static str, value: String },
-    HeldBodyAboveMessageLimit { held: usize, message: usize },
-    InvalidSeconds { flag: &'static str, value: String },
-    InvalidCount { flag: &'static str, value: String },
-    InvalidBool { flag: &'static str, value: String },
+    InvalidBytes {
+        flag: &'static str,
+        value: String,
+    },
+    HeldBodyAboveMessageLimit {
+        held: usize,
+        message: usize,
+    },
+    InvalidSeconds {
+        flag: &'static str,
+        value: String,
+    },
+    InvalidCount {
+        flag: &'static str,
+        value: String,
+    },
+    InvalidBool {
+        flag: &'static str,
+        value: String,
+    },
+    /// Non-loopback listen without `--listen-public`.
+    NonLoopbackListen {
+        flag: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -268,6 +341,11 @@ impl fmt::Display for ConfigError {
                     "invalid value '{value}' for {flag} (want 1|0|true|false)"
                 )
             }
+            Self::NonLoopbackListen { flag, value } => write!(
+                f,
+                "{flag} '{value}' is not loopback; pass --listen-public to bind publicly \
+                 (fail-closed bind gate)"
+            ),
         }
     }
 }
@@ -294,6 +372,12 @@ where
     let mut max_held = None;
     let mut server_flags: Vec<(&'static str, String)> = Vec::new();
     let mut allow_detection_only = None;
+    let mut listen_public = None;
+    let mut require_connection_attrs = None;
+    let mut max_in_flight = None;
+    let mut engine_timeout = None;
+    let mut max_header_bytes = None;
+    let mut max_declared_body_bytes = None;
     let mut rules: Vec<PathBuf> = Vec::new();
 
     let mut args = args.into_iter().map(Into::into).peekable();
@@ -329,6 +413,53 @@ where
                     "--max-held-body-bytes",
                     inline.or_else(|| args.next()),
                 )?);
+            }
+            "--max-in-flight" => {
+                max_in_flight = Some(count(
+                    "--max-in-flight",
+                    inline
+                        .or_else(|| args.next())
+                        .ok_or(ConfigError::MissingValue("--max-in-flight"))?,
+                )?);
+            }
+            "--engine-timeout" => {
+                engine_timeout = Some(seconds(
+                    "--engine-timeout",
+                    inline
+                        .or_else(|| args.next())
+                        .ok_or(ConfigError::MissingValue("--engine-timeout"))?,
+                )?);
+            }
+            "--listen-public" => {
+                listen_public = Some(match inline {
+                    Some(v) => boolean("--listen-public", v)?,
+                    None => true,
+                });
+            }
+            "--require-connection-attrs" => {
+                require_connection_attrs = Some(match inline {
+                    Some(v) => boolean("--require-connection-attrs", v)?,
+                    None => true,
+                });
+            }
+            "--max-header-bytes" => {
+                max_header_bytes =
+                    Some(bytes("--max-header-bytes", inline.or_else(|| args.next()))?);
+            }
+            "--max-declared-body-bytes" => {
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or(ConfigError::MissingValue("--max-declared-body-bytes"))?;
+                // 0 disables the short-circuit.
+                match value.trim().parse::<usize>() {
+                    Ok(n) => max_declared_body_bytes = Some(n),
+                    _ => {
+                        return Err(ConfigError::InvalidBytes {
+                            flag: "--max-declared-body-bytes",
+                            value,
+                        })
+                    }
+                }
             }
             "--allow-detection-only" => {
                 allow_detection_only = Some(match inline {
@@ -420,12 +551,44 @@ where
         Some((flag, v)) => seconds(flag, v),
         None => Ok(default),
     };
+    let engine_timeout = match engine_timeout {
+        Some(d) => d,
+        None => match env("EXT_PROC_ENGINE_TIMEOUT") {
+            Some(v) => seconds("EXT_PROC_ENGINE_TIMEOUT", v)?,
+            None => DEFAULT_ENGINE_TIMEOUT,
+        },
+    };
+    let max_header_bytes = match max_header_bytes {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_HEADER_BYTES") {
+            Some(v) => bytes("EXT_PROC_MAX_HEADER_BYTES", Some(v))?,
+            None => DEFAULT_MAX_HEADER_BYTES,
+        },
+    };
+    let max_declared_body_bytes = match max_declared_body_bytes {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_DECLARED_BODY_BYTES") {
+            Some(v) => match v.trim().parse::<usize>() {
+                Ok(n) => n,
+                _ => {
+                    return Err(ConfigError::InvalidBytes {
+                        flag: "EXT_PROC_MAX_DECLARED_BODY_BYTES",
+                        value: v,
+                    })
+                }
+            },
+            None => 0,
+        },
+    };
     let limits = Limits {
         max_grpc_message_bytes,
         max_held_body_bytes,
         stream_idle_timeout: secs_or(0, DEFAULT_STREAM_IDLE_TIMEOUT)?,
         duplex_idle_timeout: secs_or(1, DEFAULT_DUPLEX_IDLE_TIMEOUT)?,
         duplex_total_timeout: secs_or(2, DEFAULT_DUPLEX_TOTAL_TIMEOUT)?,
+        engine_timeout,
+        max_header_bytes,
+        max_declared_body_bytes,
     };
     let server = ServerLimits {
         max_concurrent_streams: match raw(3) {
@@ -442,15 +605,55 @@ where
             None => false,
         },
     };
-    Ok(Command::Run(Config {
+    let max_in_flight = match max_in_flight {
+        Some(n) => n,
+        None => match env("EXT_PROC_MAX_IN_FLIGHT") {
+            Some(v) => count("EXT_PROC_MAX_IN_FLIGHT", v)?,
+            None => DEFAULT_MAX_IN_FLIGHT,
+        },
+    };
+    let listen_public = match listen_public {
+        Some(b) => b,
+        None => match env("EXT_PROC_LISTEN_PUBLIC") {
+            Some(v) => boolean("EXT_PROC_LISTEN_PUBLIC", v)?,
+            None => false,
+        },
+    };
+    let require_connection_attrs = match require_connection_attrs {
+        Some(b) => b,
+        None => match env("EXT_PROC_REQUIRE_CONNECTION_ATTRS") {
+            Some(v) => boolean("EXT_PROC_REQUIRE_CONNECTION_ATTRS", v)?,
+            None => false,
+        },
+    };
+    require_loopback_or_public("--listen", listen, listen_public)?;
+    require_loopback_or_public("--metrics-listen", metrics_listen, listen_public)?;
+    Ok(Command::Run(Box::new(Config {
         listen,
         metrics_listen,
         modsec_rules: rules,
         body_reply,
         limits,
         server,
+        max_in_flight,
+        listen_public,
+        require_connection_attrs,
         allow_detection_only,
-    }))
+    })))
+}
+
+fn require_loopback_or_public(
+    flag: &'static str,
+    addr: SocketAddr,
+    listen_public: bool,
+) -> Result<(), ConfigError> {
+    if listen_public || addr.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(ConfigError::NonLoopbackListen {
+        flag,
+        value: addr.to_string(),
+    })
 }
 
 fn seconds(flag: &'static str, value: String) -> Result<Duration, ConfigError> {
@@ -511,7 +714,7 @@ mod tests {
 
     fn run(args: &[&str], env: impl Fn(&str) -> Option<String>) -> Result<Config, ConfigError> {
         match parse(args.iter().copied(), env)? {
-            Command::Run(c) => Ok(c),
+            Command::Run(c) => Ok(*c),
             other => panic!("expected Run, got {other:?}"),
         }
     }
@@ -533,6 +736,7 @@ mod tests {
                 "a.conf,b.conf",
                 "--listen",
                 "0.0.0.0:9000",
+                "--listen-public",
             ],
             no_env,
         )
@@ -542,7 +746,26 @@ mod tests {
             vec![PathBuf::from("a.conf"), PathBuf::from("b.conf")]
         );
         assert_eq!(c.listen, "0.0.0.0:9000".parse().unwrap());
+        assert!(c.listen_public);
         assert_eq!(c.metrics_listen, DEFAULT_METRICS_LISTEN.parse().unwrap());
+    }
+
+    #[test]
+    fn bind_gate_rejects_non_loopback_without_listen_public() {
+        assert!(matches!(
+            run(
+                &["--modsec-rules", "a.conf", "--listen", "0.0.0.0:9000"],
+                no_env
+            ),
+            Err(ConfigError::NonLoopbackListen { .. })
+        ));
+        let c = run(
+            &["--modsec-rules", "a.conf", "--listen", "127.0.0.1:9000"],
+            no_env,
+        )
+        .expect("loopback ok");
+        assert!(!c.listen_public);
+        assert_eq!(c.limits.engine_timeout, DEFAULT_ENGINE_TIMEOUT);
     }
 
     #[test]
@@ -714,6 +937,7 @@ mod tests {
         assert_eq!(c.limits.duplex_idle_timeout, DEFAULT_DUPLEX_IDLE_TIMEOUT);
         assert_eq!(c.limits.duplex_total_timeout, DEFAULT_DUPLEX_TOTAL_TIMEOUT);
         assert_eq!(c.server, ServerLimits::default());
+        assert_eq!(c.max_in_flight, DEFAULT_MAX_IN_FLIGHT);
         assert!(!c.allow_detection_only);
 
         let env = |k: &str| match k {
@@ -758,6 +982,32 @@ mod tests {
         )
         .expect("parse");
         assert!(!c.allow_detection_only, "CLI beats env");
+    }
+
+    #[test]
+    fn max_in_flight_cli_and_env() {
+        let c = run(
+            &["--modsec-rules", "a.conf", "--max-in-flight", "2"],
+            no_env,
+        )
+        .expect("parse");
+        assert_eq!(c.max_in_flight, 2);
+        let env = |k: &str| match k {
+            "MODSEC_RULES" => Some("env.conf".into()),
+            "EXT_PROC_MAX_IN_FLIGHT" => Some("7".into()),
+            _ => None,
+        };
+        let c = run(&[], env).expect("parse");
+        assert_eq!(c.max_in_flight, 7);
+        let c = run(&["--modsec-rules", "a.conf", "--max-in-flight=3"], env).expect("parse");
+        assert_eq!(c.max_in_flight, 3, "CLI beats env");
+        assert!(matches!(
+            run(
+                &["--modsec-rules", "a.conf", "--max-in-flight", "0"],
+                no_env
+            ),
+            Err(ConfigError::InvalidCount { .. })
+        ));
     }
 
     #[test]
