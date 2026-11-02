@@ -33,4 +33,4 @@ RUN ldconfig \
 
 USER 65532:65532
 EXPOSE 18081 18082
-ENTRYPOINT ["/usr/local/bin/ext-proc-modsec"]
+ENTRYPOINT ["/usr/local/bin/ext-proc-modsec", "--listen", "0.0.0.0:18081", "--metrics-listen", "0.0.0.0:18082"]
