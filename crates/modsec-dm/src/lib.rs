@@ -1,4 +1,4 @@
-//! Envoy **dynamic module** HTTP filter for ModSecurity (alpha).
+//! Envoy **dynamic module** HTTP filter for ModSecurity (early beta dual option).
 //!
 //! In-process `cdylib` loaded by `envoy.filters.http.dynamic_modules`. Drives
 //! [`modsec_engine`] on Envoy worker threads. **Not** the ext_proc sidecar:
@@ -24,8 +24,11 @@
 //! deny uses `reset_stream` so send_response cannot no-op into leak→200.
 //!
 //! Forbid `module.remote` for enforcement (fetch fail → filter omitted = fail-open).
+//! Filter load rejects `SecRuleEngine` DetectionOnly / Off unless JSON
+//! `allow_detection_only` is true (parity with ext_proc `/healthz` +
+//! `--allow-detection-only`).
 //!
-//! Status: early testing / alpha dual option — not production-ready.
+//! Status: early testing / early beta dual option — not production-ready.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -33,7 +36,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use envoy_proxy_dynamic_modules_rust_sdk::*;
-use modsec_engine::{Decision, Engine, EngineError, InspectionSession};
+use modsec_engine::{Decision, Engine, EngineError, EngineMode, InspectionSession};
 use serde::Deserialize;
 
 declare_init_functions!(init, new_http_filter_config_fn);
@@ -80,6 +83,10 @@ struct FilterConfigJson {
     body_policy: String,
     #[serde(default = "default_soft_limit")]
     partial_soft_limit_bytes: usize,
+    /// When false (default), filter load fails unless `SecRuleEngine` is On —
+    /// parity with ext_proc `/healthz` staying 503 unless `--allow-detection-only`.
+    #[serde(default)]
+    allow_detection_only: bool,
 }
 
 fn default_body_policy() -> String {
@@ -115,6 +122,21 @@ impl ModSecFilterConfig {
                 return None;
             }
         };
+        if engine.mode() != EngineMode::On && !cfg.allow_detection_only {
+            eprintln!(
+                "modsec-dm: SecRuleEngine is {} (not On): refusing filter load \
+                 (set allow_detection_only=true to opt in; non-disruptive interventions map to Allow)",
+                engine.mode().as_str()
+            );
+            return None;
+        }
+        if engine.mode() != EngineMode::On {
+            eprintln!(
+                "modsec-dm: SecRuleEngine is {} with allow_detection_only=true: \
+                 traffic is not blocked",
+                engine.mode().as_str()
+            );
+        }
         Some(Self {
             engine,
             label: cfg.label.unwrap_or_else(|| "modsec".into()),
@@ -460,7 +482,14 @@ impl ModSecFilter {
         body: &[u8],
     ) -> Option<abi::envoy_dynamic_module_type_on_http_filter_response_body_status> {
         use abi::envoy_dynamic_module_type_on_http_filter_response_body_status as BS;
-        let session = state.session.as_mut()?;
+        let Some(mut session) = state.session.take() else {
+            self.fail_closed(
+                state,
+                envoy,
+                &EngineError::Transaction("response body without session".into()),
+            );
+            return Some(BS::StopIterationNoBuffer);
+        };
         match session.append_response_body(body) {
             Ok(d) if d.is_disruptive() => {
                 self.settle_disruptive(state, envoy, d);
@@ -479,6 +508,7 @@ impl ModSecFilter {
             }
             Ok(_) => {
                 state.response_body_finished = true;
+                state.session = Some(session);
                 None
             }
             Err(e) => {
@@ -1060,6 +1090,80 @@ mod tests {
     #[test]
     fn bad_json_rejected() {
         assert!(ModSecFilterConfig::from_bytes(b"not-json").is_none());
+    }
+
+    #[test]
+    fn detection_only_rules_rejected_unless_allow_detection_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("detection.conf");
+        std::fs::write(
+            &path,
+            r#"
+SecRuleEngine DetectionOnly
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:920001,phase:1,deny,status:403,log,msg:'detect-only deny'"
+"#,
+        )
+        .unwrap();
+        let json = format!(
+            r#"{{"rules_path":"{}","body_policy":"headers_only"}}"#,
+            path.display()
+        );
+        assert!(
+            ModSecFilterConfig::from_bytes(json.as_bytes()).is_none(),
+            "DetectionOnly must refuse filter load by default"
+        );
+        let opt_in = format!(
+            r#"{{"rules_path":"{}","body_policy":"headers_only","allow_detection_only":true}}"#,
+            path.display()
+        );
+        let cfg = ModSecFilterConfig::from_bytes(opt_in.as_bytes())
+            .expect("allow_detection_only opts into DetectionOnly load");
+        assert_eq!(cfg.engine.mode(), EngineMode::DetectionOnly);
+    }
+
+    #[test]
+    fn finish_held_response_body_without_session_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1011,phase:1,pass,nolog"
+"#,
+        );
+        let engine = Engine::load_files(&[rules.to_str().unwrap()]).expect("engine");
+        let filter = ModSecFilter {
+            engine,
+            label: "test".into(),
+            body_policy: BodyPolicy::BufferUntilEos,
+            partial_soft_limit_bytes: 1024,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: true,
+                body_finished: true,
+                response_body_finished: false,
+                response_headers_forwarded: false,
+                denied: false,
+            }),
+        };
+        let mut envoy = MockEnvoyHttpFilter::new();
+        envoy
+            .expect_send_response()
+            .withf(|status, _, _, details| {
+                *status == 500 && details == &Some("modsec_dm_engine_error")
+            })
+            .returning(|_, _, _, _| {})
+            .times(1);
+        let mut state = filter.state.borrow_mut();
+        let st = filter.finish_held_response_body(&mut state, &mut envoy, b"body");
+        assert_eq!(
+            st,
+            Some(
+                abi::envoy_dynamic_module_type_on_http_filter_response_body_status::StopIterationNoBuffer
+            )
+        );
+        assert!(state.denied);
     }
 
     #[test]

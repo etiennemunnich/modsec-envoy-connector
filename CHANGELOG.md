@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **DM DetectionOnly honesty:** filter load rejects `SecRuleEngine` DetectionOnly / Off unless JSON `allow_detection_only: true` (parity with ext_proc `/healthz` + `--allow-detection-only`).
+- **DM missing-session symmetry:** `finish_held_response_body` fail-closes like the request twin when no session is present.
+- Docs: fail-closed-dm status off “alpha draft”; getting-started checklist uses published `v0.1.0-beta.1`; README “How it decides” covers both hops and links [fail-closed-dm.md](./docs/fail-closed-dm.md); Drop status diverge (DM **403** vs ext_proc **500**) noted; testing.md softens “alpha DM”.
+
 ## [v0.1.0-beta.1] — 2026-11-01
 
 Early beta pre-release (early testing only — not production). Pins: Envoy `v1.40.2`,
