@@ -407,8 +407,7 @@ pub enum Step {
     /// Several answers for one inbound, in order (FULL_DUPLEX finalize:
     /// `StreamedBodyResponse` then trailers Continue). Never empty.
     Replies(ProcessingResponse, VecDeque<ProcessingResponse>),
-    /// Observability-mode message: Envoy expects no answer.
-    /// Also used while holding FULL_DUPLEX body chunks before EOS/trailers.
+    /// No answer yet: a FULL_DUPLEX body chunk is held until EOS/trailers.
     Silent,
     /// Answer with a terminal `ImmediateResponse` and close the stream.
     Final(ProcessingResponse),
@@ -584,20 +583,22 @@ impl Exchange {
         }
     }
 
-    fn mode(&self, dir: Direction) -> BodyMode {
-        let modes = self
-            .modes
-            .expect("modes are adopted before any handler runs");
-        match dir {
+    /// The direction's body mode. `None` only when no `protocol_config` was
+    /// adopted — `dispatch` adopts modes (or fails closed) before any handler
+    /// runs, so `None` means a broken connector invariant; callers fail
+    /// closed instead of panicking.
+    fn mode(&self, dir: Direction) -> Option<BodyMode> {
+        let modes = self.modes?;
+        Some(match dir {
             Direction::Request => modes.request,
             Direction::Response => modes.response,
-        }
+        })
     }
 
     /// FULL_DUPLEX_STREAMED answers body messages with `StreamedBodyResponse`
     /// and holds them until the verdict.
     fn streamed_reply(&self, dir: Direction) -> bool {
-        self.mode(dir) == BodyMode::FullDuplexStreamed
+        self.mode(dir) == Some(BodyMode::FullDuplexStreamed)
     }
 
     fn duplex(&self) -> bool {
@@ -719,13 +720,13 @@ impl Exchange {
     fn dispatch(&mut self, msg: ProcessingRequest) -> Step {
         if msg.observability_mode {
             // Envoy does not wait for answers in observability mode, so the
-            // connector cannot enforce anything; enforcement configs must not
-            // enable it.
-            warn!(
-                request_id = self.rid(),
-                "observability_mode message ignored (cannot enforce)"
+            // connector cannot enforce anything there. On this enforcement
+            // build the message fails closed rather than being skipped: one
+            // YAML flip must not become an uninspected path to origin.
+            return self.fail_closed(
+                Phase::RequestHeaders,
+                "observability_mode message on an enforcement connector (cannot enforce)",
             );
-            return Step::Silent;
         }
         if self.modes.is_none() {
             if let Err(e) = self.adopt_modes(msg.protocol_config.as_ref()) {
@@ -904,7 +905,13 @@ impl Exchange {
         }
 
         // NONE: Envoy sends no body, so phase 2 runs now on headers and URI.
-        if headers.end_of_stream || self.mode(Direction::Request) == BodyMode::None {
+        let Some(request_mode) = self.mode(Direction::Request) else {
+            return self.fail_closed(
+                phase,
+                "request body modes not adopted (connector invariant)",
+            );
+        };
+        if headers.end_of_stream || request_mode == BodyMode::None {
             let t1 = Instant::now();
             match session.finish_request_body() {
                 Ok(d) => {
@@ -924,7 +931,9 @@ impl Exchange {
             Direction::Request => Phase::RequestBody,
             Direction::Response => Phase::ResponseBody,
         };
-        let mode = self.mode(dir);
+        let Some(mode) = self.mode(dir) else {
+            return self.fail_closed(phase, "body modes not adopted (connector invariant)");
+        };
         if mode == BodyMode::None {
             return self.fail_closed(phase, "body message although Envoy declared body mode NONE");
         }
@@ -995,7 +1004,10 @@ impl Exchange {
         // BUFFERED / BUFFERED_PARTIAL send one body message, with
         // end_of_stream=false when trailers follow or (PARTIAL) when only
         // the inspected prefix is sent: it is the whole inspected body.
-        if body.end_of_stream || self.mode(dir).single_message() {
+        let Some(mode) = self.mode(dir) else {
+            return self.fail_closed(phase, "body modes not adopted (connector invariant)");
+        };
+        if body.end_of_stream || mode.single_message() {
             if let Some(step) = self.finish_body(session, dir, phase, t0, nbytes) {
                 return step;
             }
@@ -1145,7 +1157,13 @@ impl Exchange {
             // success must not reach the client on that basis. A 4xx/5xx is
             // usually Envoy's own local reply (413 buffer overflow, rejected
             // upgrade); it is inspected late, which can only tighten it.
-            let mode = self.mode(Direction::Request).as_str();
+            let Some(request_mode) = self.mode(Direction::Request) else {
+                return self.fail_closed(
+                    phase,
+                    "request body modes not adopted (connector invariant)",
+                );
+            };
+            let mode = request_mode.as_str();
             if status < 400 {
                 return self.fail_closed(
                     phase,
@@ -1178,7 +1196,13 @@ impl Exchange {
         // headers; reaching here means the request path was allowed.
         self.mark_request_allowed();
 
-        if headers.end_of_stream || self.mode(Direction::Response) == BodyMode::None {
+        let Some(response_mode) = self.mode(Direction::Response) else {
+            return self.fail_closed(
+                phase,
+                "response body modes not adopted (connector invariant)",
+            );
+        };
+        if headers.end_of_stream || response_mode == BodyMode::None {
             if let Some(step) = self.finish_body(
                 session,
                 Direction::Response,
@@ -1203,9 +1227,15 @@ impl Exchange {
         let phase = Phase::ResponseHeaders;
         match status {
             Some(code) if (400..=599).contains(&code) && !self.local_reply => {
+                let Some(response_mode) = self.mode(Direction::Response) else {
+                    return self.fail_closed(
+                        phase,
+                        "response body modes not adopted (connector invariant)",
+                    );
+                };
                 self.local_reply = true;
                 self.response_started = true;
-                if headers_eos || self.mode(Direction::Response) == BodyMode::None {
+                if headers_eos || response_mode == BodyMode::None {
                     self.response_done = true;
                 }
                 self.metrics.inc_local_reply_passthrough();
@@ -1333,4 +1363,81 @@ fn regular_headers(headers: &HttpHeaders) -> impl Iterator<Item = (String, Vec<u
         .flat_map(|m| m.headers.iter())
         .filter(|h| !h.key.starts_with(':'))
         .map(|h| (h.key.clone(), header_bytes(h)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pb::envoy::config::core::v3::HeaderMap;
+    use std::path::PathBuf;
+
+    /// A fresh exchange with no `protocol_config` adopted. `dispatch` always
+    /// adopts modes (or fails closed) before any handler runs, so handlers
+    /// never see this state; if one ever does, it must fail closed instead
+    /// of panicking (a panic is only a stream reset, not an answer).
+    fn exchange_without_modes() -> Exchange {
+        let rules =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules/connector-test.conf");
+        let engine = Engine::load_files(&[rules]).expect("rules load");
+        Exchange::new(
+            engine,
+            Arc::new(ConnectorMetrics::default()),
+            BodyReply::Common,
+            Limits::default(),
+        )
+    }
+
+    fn expect_final_500(step: Step, what: &str) {
+        let Step::Final(resp) = step else {
+            panic!("{what}: expected terminal fail-closed step, got {step:?}");
+        };
+        assert_eq!(responses::immediate_status(&resp), Some(500), "{what}");
+    }
+
+    fn headers_only(pairs: &[(&str, &str)], eos: bool) -> HttpHeaders {
+        HttpHeaders {
+            headers: Some(HeaderMap {
+                headers: pairs
+                    .iter()
+                    .map(|(k, v)| HeaderValue {
+                        key: (*k).into(),
+                        value: (*v).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            }),
+            end_of_stream: eos,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn body_before_modes_fails_closed_instead_of_panicking() {
+        let mut ex = exchange_without_modes();
+        let body = HttpBody {
+            body: b"x".to_vec(),
+            end_of_stream: true,
+            ..Default::default()
+        };
+        expect_final_500(ex.body(Direction::Request, &body), "body");
+        assert_eq!(ex.metrics.fail_closed_total(), 1);
+    }
+
+    #[test]
+    fn request_headers_before_modes_fails_closed_instead_of_panicking() {
+        let mut ex = exchange_without_modes();
+        let headers = headers_only(&[(":method", "GET"), (":path", "/")], true);
+        expect_final_500(
+            ex.request_headers(&headers, &HashMap::new()),
+            "request headers",
+        );
+    }
+
+    #[test]
+    fn local_reply_before_modes_fails_closed_instead_of_panicking() {
+        let mut ex = exchange_without_modes();
+        // eos=false so the response body-mode lookup actually runs.
+        let headers = headers_only(&[(":status", "400")], false);
+        expect_final_500(ex.response_headers(&headers), "local reply");
+    }
 }

@@ -208,6 +208,32 @@ fn truncated(s: &str, max: usize) -> &str {
     }
 }
 
+/// `log` with every `[data "..."]` tag value replaced by `[redacted]`: the
+/// data tag quotes the matched request bytes, which must not reach log
+/// drains even at DEBUG. Other tags (id, msg, severity, …) stay. An
+/// unterminated tag is over-redacted to the end of the line.
+fn redact_log_data(log: &str) -> String {
+    const OPEN: &str = "[data \"";
+    let mut out = String::with_capacity(log.len());
+    let mut rest = log;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start + OPEN.len()]);
+        rest = &rest[start + OPEN.len()..];
+        match rest.find("\"]") {
+            Some(end) => {
+                out.push_str("[redacted]");
+                rest = &rest[end..];
+            }
+            None => {
+                out.push_str("[redacted]\"]");
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn tx_err(e: impl fmt::Display) -> EngineError {
     EngineError::Transaction(e.to_string())
 }
@@ -903,7 +929,7 @@ impl InspectionSession {
                 "modsecurity pause intervention unsupported; ignoring pause"
             );
         }
-        let decision = map_intervention(disruptive, status, url.as_deref(), log);
+        let decision = map_intervention(disruptive, status, url.as_deref(), log)?;
         match &decision {
             Decision::Allow => {
                 debug!(
@@ -917,7 +943,8 @@ impl InspectionSession {
             Decision::Block { log, .. }
             | Decision::Redirect { log, .. }
             | Decision::Drop { log } => {
-                // The full log quotes matched request data; it stays at DEBUG.
+                // The full log line stays at DEBUG, with the [data "..."]
+                // tag (matched request bytes) redacted.
                 let log = log.as_deref().unwrap_or("");
                 warn!(
                     tx_id,
@@ -933,7 +960,7 @@ impl InspectionSession {
                     tx_id,
                     request_id = rid,
                     phase,
-                    log,
+                    log = %redact_log_data(log),
                     "modsecurity intervention log"
                 );
             }
@@ -950,6 +977,10 @@ impl InspectionSession {
 /// 3. `status == 0` → Drop
 /// 4. else → Block with status
 ///
+/// A redirect `url` containing CR, LF or NUL is rejected with
+/// [`EngineError::Transaction`] (the caller fails closed): both hops copy it
+/// into a `Location` header, where those bytes would split the response.
+///
 /// libmodsecurity v3.0.17 executes the SecLang `drop` action as deny/403, so
 /// the Drop branch is only reached if the engine reports status 0.
 pub fn map_intervention(
@@ -957,22 +988,27 @@ pub fn map_intervention(
     status: i32,
     url: Option<&str>,
     log: Option<String>,
-) -> Decision {
+) -> Result<Decision, EngineError> {
     if !disruptive {
-        return Decision::Allow;
+        return Ok(Decision::Allow);
     }
     if let Some(url) = url.filter(|u| !u.is_empty()) {
+        if url.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+            return Err(tx_err(
+                "intervention redirect URL contains CR/LF/NUL bytes; rejected (fail-closed)",
+            ));
+        }
         let redirect_status = if status > 0 { status } else { 302 };
-        return Decision::Redirect {
+        return Ok(Decision::Redirect {
             status: redirect_status,
             url: url.to_owned(),
             log,
-        };
+        });
     }
     if status == 0 {
-        return Decision::Drop { log };
+        return Ok(Decision::Drop { log });
     }
-    Decision::Block { status, log }
+    Ok(Decision::Block { status, log })
 }
 
 #[cfg(test)]
@@ -1163,6 +1199,31 @@ mod tests {
     }
 
     #[test]
+    fn intervention_debug_log_redacts_data_tag() {
+        let log = r#"ModSecurity: Access denied with code 403 (phase 2). Matched "Operator `Rx' with parameter `(?:union.*select)' against variable `ARGS:q' (Value: `1' union select password--' ) [file "/crs/rules/REQUEST-942.conf"] [line "88"] [id "942100"] [msg "SQL Injection Attack Detected via libinjection"] [data "Matched Data: secret=1' OR '1'='1 found within ARGS:q: 1' OR '1'='1"] [severity "CRITICAL"] [ver "OWASP_CRS/4.30.0"]"#;
+        let redacted = redact_log_data(log);
+        assert!(!redacted.contains("secret"), "{redacted}");
+        assert!(!redacted.contains("OR '1'"), "{redacted}");
+        assert!(redacted.contains(r#"[id "942100"]"#), "{redacted}");
+        assert!(
+            redacted.contains(r#"[msg "SQL Injection Attack Detected via libinjection"]"#),
+            "{redacted}"
+        );
+        assert!(redacted.contains(r#"[data "[redacted]"]"#), "{redacted}");
+        assert!(redacted.contains(r#"[severity "CRITICAL"]"#), "{redacted}");
+
+        // No data tag: the line is unchanged.
+        let plain = r#"ModSecurity: Warning. [id "1"] [msg "m"]"#;
+        assert_eq!(redact_log_data(plain), plain);
+        // Unterminated data tag: over-redact to end of line, never leak.
+        let unterminated = r#"prefix [data "Matched Data: secret"#;
+        assert_eq!(
+            redact_log_data(unterminated),
+            r#"prefix [data "[redacted]"]"#
+        );
+    }
+
+    #[test]
     fn rule_count_sums_every_file() {
         let one = Engine::load_files(&[testdata("phase1-deny-admin.conf")]).expect("load");
         let two = Engine::load_files(&[
@@ -1213,24 +1274,52 @@ mod tests {
 
     #[test]
     fn map_intervention_priorities() {
-        assert_eq!(map_intervention(false, 403, None, None), Decision::Allow);
         assert_eq!(
-            map_intervention(true, 0, None, Some("drop-me".into())),
+            map_intervention(false, 403, None, None).expect("allow"),
+            Decision::Allow
+        );
+        assert_eq!(
+            map_intervention(true, 0, None, Some("drop-me".into())).expect("drop"),
             Decision::Drop {
                 log: Some("drop-me".into())
             }
         );
         assert!(matches!(
-            map_intervention(true, 403, None, None),
+            map_intervention(true, 403, None, None).expect("block"),
             Decision::Block { status: 403, .. }
         ));
         assert!(matches!(
-            map_intervention(true, 0, Some("http://example.test/x"), None),
+            map_intervention(true, 0, Some("http://example.test/x"), None).expect("redirect"),
             Decision::Redirect { status: 302, url, .. } if url == "http://example.test/x"
         ));
         assert!(matches!(
-            map_intervention(true, 403, Some(""), None),
+            map_intervention(true, 403, Some(""), None).expect("empty url is not a redirect"),
             Decision::Block { status: 403, .. }
+        ));
+    }
+
+    #[test]
+    fn map_intervention_rejects_crlf_nul_redirect_urls() {
+        // The URL lands in a Location header on both hops; CR/LF would split
+        // the response. Reject (the caller fails closed), never sanitize.
+        for bad in [
+            "https://example.test/\r\nSet-Cookie: evil=1",
+            "https://example.test/\nLocation: https://evil.test/",
+            "https://example.test/\rinjected",
+            "https://example.test/\0nul",
+        ] {
+            assert!(
+                matches!(
+                    map_intervention(true, 302, Some(bad), None),
+                    Err(EngineError::Transaction(_))
+                ),
+                "must reject {bad:?}"
+            );
+        }
+        assert!(matches!(
+            map_intervention(true, 302, Some("https://example.test/ok?a=b&c=%20"), None)
+                .expect("clean url"),
+            Decision::Redirect { status: 302, .. }
         ));
     }
 

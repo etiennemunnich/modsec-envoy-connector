@@ -26,6 +26,22 @@ This page covers the **in-process** `modsec-dm` path (`DEPLOY=dm`). It is **not*
 | `failure_mode_allow: true` negctl | No first-class fail-open flip |
 | Process isolation from libmodsecurity SIGSEGV | Same address space as Envoy |
 | CatchUnwind = ModSec containment | C++ UB still kills/stalls Envoy |
+| Process-wide admission cap | ext_proc has `--max-in-flight`; DM has none ([below](#no-process-wide-admission)) |
+
+## No process-wide admission
+
+The ext_proc connector caps concurrent ModSec streams process-wide
+(`--max-in-flight`, default 1024) and refuses over-cap streams before any
+engine work. The DM has **no equivalent**: inspections run synchronously on
+Envoy worker threads, bounded only by Envoy's own concurrency controls
+(downstream connection / stream limits, circuit breakers). A surge of
+CPU-bound inspections (CRS on large bodies) competes with proxying itself
+and can stall the worker — an availability risk, not a fail-open.
+
+Mitigation is configuration, not a connector knob: set Envoy concurrency
+limits deliberately, keep bodies small (buffer limits), and **elect the
+ext_proc hop** when load patterns make unbounded in-process inspection
+unacceptable.
 
 Hung FFI on a worker is an **Envoy availability** risk (route/stream idle timeouts may fire with an observed status that is **not** necessarily 504). Document observed status; do not rename it as mapped absolute class 5.
 
