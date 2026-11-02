@@ -154,7 +154,7 @@ Tear down with `./demo/scripts/down.sh` either way. Logs and generated rules sta
 
 ## Early-tester checklist (beta dual option)
 
-For early testers on the dual-option beta line (tag `v0.1.0-beta.1` when published; until then use the current pre-release in [`versions.lock.md`](../versions.lock.md)):
+For early testers on the dual-option beta line (current tag `v0.1.0-beta.1`; pins and digests in [`versions.lock.md`](../versions.lock.md)):
 
 - [ ] `envoy --version`, `pkg-config --modversion modsecurity` (Linux: `PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig`) and `git -C demo/.crs describe --tags` match `versions.lock.md`
 - [ ] You elected **one** hop and did not stack both ModSec filters

@@ -13,12 +13,23 @@ Envoy alone forwards traffic to your origin, and only after the elected path all
 
 ## How it decides
 
+Elect **one** hop; classes differ:
+
+**ext_proc (default)**
+
 - **Allow:** Envoy forwards the request to the origin.
 - **Rule deny:** **403** (or the rule's 4xx/5xx status); the origin is not contacted.
 - **Connector down, or an engine error:** **500**; the origin is not contacted.
 - **Connector hung:** **504** after Envoy's `message_timeout` (not under the FULL_DUPLEX_STREAMED body mode).
 
 Details: [fail-closed](./docs/fail-closed.md).
+
+**Dynamic module**
+
+- Same engine allow / rule-deny mapping in process; **no** sidecar kill→500 or hang→504 via `message_timeout`.
+- Engine / FFI error → local **500** (or `reset_stream` once response headers were already forwarded).
+- Drop intervention → local **403** today (ext_proc maps Drop → Envoy **500**).
+- Weaker model overall: [fail-closed-dm](./docs/fail-closed-dm.md).
 
 ## Try it locally
 
