@@ -33,7 +33,7 @@ Settings that must not be relaxed on a protecting filter:
 
 - `failure_mode_allow: false`: connector down or stream error → Envoy local **500**;
 - `message_timeout` (demo: 2 s): connector hung → Envoy local **504**. Envoy does not apply it under FULL_DUPLEX_STREAMED;
-- never `observability_mode`: Envoy does not wait for the answers.
+- never `observability_mode`: Envoy does not wait for the answers, so the connector cannot enforce there — an `observability_mode` message fails closed (**500**) instead of being skipped.
 
 ## Request path
 

@@ -21,6 +21,7 @@ use ext_proc_modsec::pb::envoy::service::ext_proc::v3::{
     ProtocolConfiguration,
 };
 use ext_proc_modsec::pb::google::protobuf::{value::Kind, Struct, Value};
+use ext_proc_modsec::responses;
 use ext_proc_modsec::{metrics_server, BodyReply, Limits, ModSecProcessor, DEFAULT_MAX_IN_FLIGHT};
 use modsec_engine::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1424,23 +1425,29 @@ async fn drop_intervention_aborts_stream() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn observability_mode_messages_get_no_answer() {
-    // Envoy does not wait for answers in observability mode; the connector
-    // must not answer (a deny would be meaningless and desync the stream).
+async fn observability_mode_fails_closed() {
+    // Envoy does not wait for answers in observability mode, so the
+    // connector cannot enforce anything there. On this enforcement build the
+    // message fails closed (ImmediateResponse 500) instead of being silently
+    // skipped: one YAML flip must not become an uninspected path to origin.
     let h = start().await;
     let mut s = h.stream().await;
     let mut observed = req_headers("GET", "/admin", &[], true);
     observed.observability_mode = true;
     // Envoy sends no protocol_config in observability mode.
-    s.tx.send(observed).await.expect("send");
-    let r = s.send(req_headers("GET", "/", &[], true)).await.unwrap();
-    assert!(
-        matches!(r.response, Some(ProcResponse::RequestHeaders(_))),
-        "first answer belongs to the non-observability message, got {:?}",
-        r.response
-    );
+    s.push(observed).await;
+    let r = s
+        .next()
+        .await
+        .expect("stream answered")
+        .expect("reply, not a gRPC error");
+    let (code, details, _) = immediate(&r).expect("fail-closed ImmediateResponse");
+    assert_eq!(code, 500);
+    assert_eq!(details, responses::DETAILS_FAIL_CLOSED);
+    s.expect_closed().await;
+    assert_eq!(h.metrics.fail_closed_total(), 1);
     assert_eq!(h.metrics.deny_total(), 0);
-    assert_eq!(h.metrics.allow_total(), 1);
+    assert_eq!(h.metrics.allow_total(), 0);
 }
 
 // --- Response trailers --------------------------------------------------------

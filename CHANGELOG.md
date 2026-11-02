@@ -8,11 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **`observability_mode` no longer silently disables enforcement (ext_proc).** A `ProcessingRequest` with `observability_mode` set was skipped with no answer; Envoy does not wait for answers in that mode, so one YAML flip turned the filter into an uninspected path to origin. The connector now fails closed (`ImmediateResponse` **500**, details `modsec_fail_closed`) on any observability-mode message.
+- **Container image no longer binds `0.0.0.0`.** The published ENTRYPOINT passed `--listen 0.0.0.0:18081 --metrics-listen 0.0.0.0:18082`, which the `v0.1.0-beta.1` bind gate refuses at boot. The image now keeps the binary's loopback defaults (`127.0.0.1`); a non-loopback bind requires the explicit operator opt-in `--listen-public` / `EXT_PROC_LISTEN_PUBLIC=1`. [deploy.md](./docs/deploy.md) gains mesh / `NetworkPolicy` guidance for the gRPC and metrics ports.
+- **Rule-supplied redirect URLs are validated.** An intervention `url` containing CR, LF or NUL is rejected as an engine error (both hops fail closed) instead of being copied into a `Location` header.
+- **DEBUG intervention logs redact `[data "..."]`.** The full ModSecurity log line at DEBUG no longer carries the matched request bytes; the other tags (id, msg, severity, …) stay.
+
+### Fixed
+
+- ext_proc: a broken body-modes invariant inside a handler now fails closed instead of panicking (`expect` removed from the hot path).
+- DM: an unparseable response `:status` fails closed (parity with ext_proc; was `unwrap_or(200)`).
+- DM: the response-trailers `stream_chunks` arm fails closed on a missing session (was a defensive `Continue`; unreachable under the outer session guard, kept safe against its removal).
+
 ### Changed
 
 - **DM DetectionOnly honesty:** filter load rejects `SecRuleEngine` DetectionOnly / Off unless JSON `allow_detection_only: true` (parity with ext_proc `/healthz` + `--allow-detection-only`).
 - **DM missing-session symmetry:** `finish_held_response_body` fail-closes like the request twin when no session is present.
 - Docs: fail-closed-dm status off “alpha draft”; getting-started checklist uses published `v0.1.0-beta.1`; README “How it decides” covers both hops and links [fail-closed-dm.md](./docs/fail-closed-dm.md); Drop status diverge (DM **403** vs ext_proc **500**) noted; testing.md softens “alpha DM”.
+- Docs: [fail-closed-dm.md](./docs/fail-closed-dm.md) and [deploy.md](./docs/deploy.md) document that the DM has no process-wide admission cap (rely on Envoy concurrency limits; elect ext_proc under load).
 
 ## [v0.1.0-beta.1] — 2026-11-01
 

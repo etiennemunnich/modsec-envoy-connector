@@ -374,14 +374,21 @@ impl ModSecFilter {
         (method, path, hdrs)
     }
 
-    fn collect_response_headers<EHF: EnvoyHttpFilter>(envoy: &EHF) -> (i32, HeaderPairs) {
+    /// Response `:status` + header pairs. An unparseable `:status` is an
+    /// inspection lie (wrong phase-3 input): error so the caller fails
+    /// closed — parity with ext_proc, never a silent `unwrap_or(200)`.
+    fn collect_response_headers<EHF: EnvoyHttpFilter>(
+        envoy: &EHF,
+    ) -> Result<(i32, HeaderPairs), EngineError> {
         let mut status: i32 = 200;
         let mut hdrs: HeaderPairs = Vec::new();
         for (k, v) in envoy.get_response_headers() {
             let key = k.as_slice();
             let val = v.as_slice().to_vec();
             if key == b":status" {
-                status = String::from_utf8_lossy(&val).parse().unwrap_or(200);
+                status = String::from_utf8_lossy(&val).parse().map_err(|_| {
+                    EngineError::Transaction("invalid response :status (fail-closed)".into())
+                })?;
                 continue;
             }
             if key.starts_with(b":") {
@@ -389,7 +396,7 @@ impl ModSecFilter {
             }
             hdrs.push((key.to_vec(), val));
         }
-        (status, hdrs)
+        Ok((status, hdrs))
     }
 
     /// Full request message-body octets at EOS / trailers: SDK buffered ∪ received
@@ -803,9 +810,15 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
             }
             return HS::Continue;
         }
+        let (status, hdrs) = match Self::collect_response_headers(envoy_filter) {
+            Ok(v) => v,
+            Err(e) => {
+                self.fail_closed(&mut state, envoy_filter, &e);
+                return HS::StopIteration;
+            }
+        };
         let session = state.session.as_mut().expect("checked above");
 
-        let (status, hdrs) = Self::collect_response_headers(envoy_filter);
         // Protocol string is informational for ModSec; reuse request protocol attr if present.
         let proto = Self::attr_string(
             envoy_filter,
@@ -1013,8 +1026,15 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for ModSecFilter {
                 TS::Continue
             }
             BodyPolicy::StreamChunks => {
+                // Unreachable under the session guard above; keep fail_closed
+                // here so removing that guard cannot reintroduce a Continue.
                 let Some(session) = state.session.as_mut() else {
-                    return TS::Continue;
+                    self.fail_closed(
+                        &mut state,
+                        envoy_filter,
+                        &EngineError::Transaction("response trailers without session".into()),
+                    );
+                    return TS::StopIteration;
                 };
                 match session.finish_response_body() {
                     Ok(d) if d.is_disruptive() => {
@@ -1655,6 +1675,116 @@ SecRule REQUEST_URI "@unconditionalMatch" \
             abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::Continue
         );
         assert!(!filter.state.borrow().denied);
+    }
+
+    #[test]
+    fn invalid_response_status_fails_closed_never_continue() {
+        // Parity with ext_proc: an unparseable :status is an inspection lie;
+        // fail closed (500), never unwrap_or(200) into phase 3.
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1012,phase:1,pass,nolog"
+"#,
+        );
+        let cfg = ModSecFilterConfig::from_bytes(
+            format!(
+                r#"{{"rules_path":"{}","body_policy":"headers_only"}}"#,
+                rules.display()
+            )
+            .as_bytes(),
+        )
+        .expect("config");
+
+        let mut envoy = MockEnvoyHttpFilter::new();
+        envoy.expect_get_request_headers().returning(|| {
+            vec![
+                (EnvoyBuffer::new(b":method"), EnvoyBuffer::new(b"GET")),
+                (EnvoyBuffer::new(b":path"), EnvoyBuffer::new(b"/")),
+                (EnvoyBuffer::new(b"host"), EnvoyBuffer::new(b"example.test")),
+            ]
+        });
+        envoy.expect_get_attribute_string().returning(|_| None);
+        envoy.expect_get_attribute_int().returning(|_| None);
+
+        let filter = cfg.new_http_filter(&mut envoy);
+        assert_eq!(
+            filter.on_request_headers(&mut envoy, true),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
+        );
+
+        envoy.expect_get_response_headers().returning(|| {
+            vec![
+                (
+                    EnvoyBuffer::new(b":status"),
+                    EnvoyBuffer::new(b"not-a-status"),
+                ),
+                (
+                    EnvoyBuffer::new(b"content-type"),
+                    EnvoyBuffer::new(b"text/plain"),
+                ),
+            ]
+        });
+        envoy
+            .expect_send_response()
+            .withf(|status, _, _, details| {
+                *status == 500 && details == &Some("modsec_dm_engine_error")
+            })
+            .returning(|_, _, _, _| {})
+            .times(1);
+
+        let st = filter.on_response_headers(&mut envoy, true);
+        assert_eq!(
+            st,
+            abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::StopIteration
+        );
+    }
+
+    #[test]
+    fn stream_chunks_response_trailers_without_session_fails_closed() {
+        // Lost tx after our request phase → fail closed at trailers, never a
+        // defensive Continue. (Today the hook's outer session guard fires
+        // first; the StreamChunks arm keeps its own fail_closed so removing
+        // that guard cannot reintroduce the Continue.)
+        let tmp = tempfile::tempdir().unwrap();
+        let rules = write_rules(
+            tmp.path(),
+            r#"
+SecRule REQUEST_URI "@unconditionalMatch" \
+  "id:1013,phase:1,pass,nolog"
+"#,
+        );
+        let engine = Engine::load_files(&[rules.to_str().unwrap()]).expect("engine");
+        let filter = ModSecFilter {
+            engine,
+            label: "test".into(),
+            body_policy: BodyPolicy::StreamChunks,
+            partial_soft_limit_bytes: 1024,
+            state: RefCell::new(ModSecState {
+                session: None,
+                headers_done: true,
+                body_finished: true,
+                response_body_finished: false,
+                response_headers_forwarded: false,
+                denied: false,
+            }),
+        };
+        let mut envoy = MockEnvoyHttpFilter::new();
+        envoy
+            .expect_send_response()
+            .withf(|status, _, _, details| {
+                *status == 500 && details == &Some("modsec_dm_engine_error")
+            })
+            .returning(|_, _, _, _| {})
+            .times(1);
+        let st = filter.on_response_trailers(&mut envoy);
+        assert_eq!(
+            st,
+            abi::envoy_dynamic_module_type_on_http_filter_response_trailers_status::StopIteration
+        );
+        assert!(filter.state.borrow().denied);
     }
 
     #[test]

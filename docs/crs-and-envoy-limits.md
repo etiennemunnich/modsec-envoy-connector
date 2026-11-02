@@ -54,7 +54,7 @@ Default product path is **BUFFERED**. Lab modes: [body-modes.md](./body-modes.md
 ### Misconfiguration (BYO Envoy)
 
 - Missing `request_attributes` → client IP/protocol often fall back (e.g. `127.0.0.1`); GEO / IP rules miss.
-- `observability_mode` or DetectionOnly / `--allow-detection-only` → no real enforcement.
+- `observability_mode` or DetectionOnly / `--allow-detection-only` → no real enforcement (the connector answers **500** to an `observability_mode` message; the other two are operator-chosen).
 - Trailer mode `SKIP` with a body mode other than NONE → body phase may never finish; request can reach origin.
 
 ---

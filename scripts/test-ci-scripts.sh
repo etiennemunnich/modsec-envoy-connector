@@ -417,6 +417,15 @@ check "dependabot: ignores envoy-proxy-dynamic-modules-rust-sdk" 0 "${ok}"
 if grep -R --include='*.yaml' -n 'observability_mode:\s*true' "${ROOT}/demo/envoy/" >/dev/null 2>&1; then ok=1; else ok=0; fi
 check "demo: no observability_mode: true in envoy YAML" 0 "${ok}"
 
+# Image bind gate: the published ENTRYPOINT keeps the loopback default;
+# a non-loopback bind stays an explicit operator opt-in (--listen-public).
+if grep -E '^ENTRYPOINT' "${ROOT}/packaging/Dockerfile" | grep -q '0\.0\.0\.0'; then ok=1; else ok=0; fi
+check "image: ENTRYPOINT keeps loopback default (no 0.0.0.0)" 0 "${ok}"
+if grep -E '^ENTRYPOINT' "${ROOT}/packaging/Dockerfile" | grep -q -- '--listen-public'; then ok=1; else ok=0; fi
+check "image: ENTRYPOINT does not pre-open the bind gate" 0 "${ok}"
+grep -q -- '--listen-public' "${ROOT}/docs/deploy.md" && ok=0 || ok=1
+check "docs: deploy.md documents the --listen-public opt-in" 0 "${ok}"
+
 # Thin presence hook for WS frame-bound artifacts.
 [[ -x "${ROOT}/demo/scripts/hop-trace-ws-frames.sh" ]] && ok=0 || ok=1
 check "demo: hop-trace-ws-frames.sh executable" 0 "${ok}"
