@@ -1,5 +1,7 @@
 name: release
 
+# Etienne names every product tag (vX.Y.Z and any -alpha.N/-beta.N/-rc.N).
+# This workflow does not choose versions. Human SOP: CONTRIBUTING.md#releases.
 # Tag vX.Y.Z on main → gate (scripts/release-version.sh: the tag equals v +
 # every crate version, pre-release included; scripts/release-gate.sh: the tag
 # commit is on main, and a successful ci.yml run for that exact commit has

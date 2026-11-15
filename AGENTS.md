@@ -23,6 +23,8 @@ Read **`versions.lock.md`** before bumping anything. Four axes + product tag:
 
 Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 
+**Etienne names every product tag.** `vX.Y.Z` and any suffix (`-alpha.N`, `-beta.N`, `-rc.N`) are the same gate. Do not pick the next version, bump crate `version` / `PRODUCT_VERSION`, retag, or `git push origin v*` unless he named that exact tag and said to push it. Prepare the tree so a named tag could pass `release-gate.sh`, then **stop**. SOP: [`CONTRIBUTING.md` — Releases](./CONTRIBUTING.md#releases).
+
 ## Never
 
 - Set `failure_mode_allow: true` on enforcement paths.
@@ -34,6 +36,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 - Invent Envoy / ModSec / CRS tip flags or pins not in `versions.lock.md`.
 - Market go-ftw green as “H2 WAF proven” (go-ftw is **HTTP/1.x CRS fidelity** only).
 - Claim **battle-tested**, **production-ready**, **enterprise-grade**, or similar marketing certainty (or synonyms: prod-ready, “proven in production” without a cited run). Status is early testing only — match README; do not invent softer hype.
+- Choose or publish a product version. No crate/`PRODUCT_VERSION` bump, no `v*` tag, no `gh release create`, no tagged `release.yml` dispatch, until Etienne names that tag.
 
 ## Testing expectations
 
@@ -50,14 +53,14 @@ GitHub-hosted runners only — never add a self-hosted or Mac runner. Do not cla
 ## CI rules
 
 1. **A proof cites a run only after reading it.** For each run URL, record `event`, `conclusion` and `headSha` from `gh run view <id> --json event,conclusion,headSha`. Never label a `workflow_dispatch` run as "scheduled"; a schedule is proven only by a run with `event=schedule`.
-2. **Every new or changed check ships with a negative control.** Break it on a `cursor/ci-negctl-*` branch, run `gh workflow run ci.yml --ref <branch>` (branch pushes run no CI), link the red run, then link the green run on `main`. A check that never went red is unproven.
+2. **Every new or changed check ships with a negative control.** Break it on a `cursor/ci-negctl-*` branch, run `gh workflow run ci.yml --ref <branch>` (branch pushes run no CI), link the red run, then link the green run on `main`. A check that never went red is unproven. After the red run is on file, **close** the `[negctl]` PR. Never merge it. Never leave it open.
 3. **No vacuous passes.** No `|| true`, `continue-on-error` or soft asserts on assertion paths. Guards use `var="$(cmd)"`, never `echo "$(cmd)"`. Suites assert a minimum count (PASS ≥ N, tests selected > 0), not only "no failures". Never call functions as `cond && fn` under `set -e`.
 4. **Pin runners and toolchains; never float.** `ubuntu-24.04` / `ubuntu-24.04-arm` together, never `ubuntu-latest`. Rust comes from `rust-toolchain.toml`. Actions are pinned by full commit SHA with a `# vX.Y.Z` comment. No third-party actions in jobs with write scopes. (`scripts/check-workflows.sh` enforces the mechanical parts.)
 5. **Cache keys include everything that changes the output:** OS id + version, arch, upstream tag, the hash of the build script, the toolchain file.
 6. **Report jobs use `if: ${{ !cancelled() }}`, never `always()`.** A cancelled run must not file a failure issue.
 7. **`main` runs are never cancelled.** `cancel-in-progress: false` is not enough: a concurrency group always cancels its *pending* run when a newer one queues. Give each main run its own group (`ci-main-<run_id>`) and cancel only on other refs.
 8. **Watchers** propose the latest stable *and* the top patch on the pinned line, warn on release lines the pattern does not cover, dedupe only on a recorded result (never on "issue exists"), create tracking state only after the dispatch succeeded, and report their own failures.
-9. **Releases are gated.** The tag commit must be on `main` and the required `ci` checks green for that SHA before anything is pushed to GHCR or released.
+9. **Releases are gated twice.** Etienne names the tag (see Pins). Mechanically: that commit must be on `main` and the required `ci` checks **green, not skipped**, for that SHA before anything is pushed to GHCR or released (`scripts/release-gate.sh`). `ci-tested-tree` skip on `main` is not a release run — dispatch `ci.yml --ref main` first.
 10. **Workflow comments and docs match the triggers.** When you change `on:` or `if:`, update the workflow's header comment and `docs/testing.md` in the same commit.
 
 ## GitHub Actions minutes
@@ -86,10 +89,11 @@ Apache-2.0 — `Copyright (c) 2026 Etienne Munnich`. See `LICENSE` and `CONTRIBU
 **Remaining work lands via pull requests — not direct pushes to `main`.**
 
 1. Branch from current `main`: `cursor/<short-name>` (agents may use `cursor/<short-name>-…`).
-2. Commit + push the branch; open a PR against `main`.
+2. Commit + push the branch; open a PR against `main`. One concern per PR. Do not open a swarm of overlapping product PRs, or extra `[negctl]` PRs that will sit around.
 3. Wait for **`ci-ok` green on both arches** (x86_64 + aarch64) for that PR head SHA.
-4. **Squash-merge** only after the checklist below is satisfied.
+4. **Squash-merge** only after the checklist below is satisfied. In the squash dialog, **clear extra commit messages** so no old `[skip ci]` line lands on `main`.
 5. Do **not** push commits straight to `main` for product/docs/CI work unless Etienne explicitly overrides for an emergency.
+6. After squash-merge: delete the head branch (`git push origin --delete <branch>` — this repo does not auto-delete). Close superseded PRs; they do not merge.
 
 After a **validated** moderate slice on the feature branch: `git commit` + `git push` (to the branch). No force-push to shared branches unless Etienne asks. No secrets in commits.
 
@@ -106,6 +110,7 @@ Copy into the PR body (or tick the PR template). Skip rows that truly do not app
 - [ ] `ci-ok` green on the PR (both arches) before squash-merge
 - [ ] README stays product-only; agent/CI detail goes in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
 - [ ] Claims cite real runs (see CI rule 1) — never invent green
+- [ ] Product version unchanged, **or** Etienne named the exact tag for this PR
 
 ## Crate layout
 

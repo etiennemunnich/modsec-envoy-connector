@@ -13,6 +13,7 @@
 - [ ] **`ci-ok` green on both arches** for this PR head before squash-merge
 - [ ] README stays product-only; agent/CI detail in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
 - [ ] User-facing or release-facing doc change → `CHANGELOG.md` `[Unreleased]` updated when substantive
+- [ ] Product version / `PRODUCT_VERSION` / crate `version` unchanged, **or** Etienne named the exact tag for this PR
 
 ## Merge
 

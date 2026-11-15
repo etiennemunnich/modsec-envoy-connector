@@ -41,7 +41,8 @@ cargo test --workspace --locked
 1. Branch from current `main`: `cursor/<short-name>` (automation branches may append a short suffix).
 2. Keep the PR focused; one concern per PR when possible so CI can be judged in isolation.
 3. Open the PR, then wait for **`ci-ok` green on both architectures** for the PR head SHA.
-4. Bring the branch up to date with `main`, then **squash-merge**.
+4. Bring the branch up to date with `main`, then **squash-merge**. Clear extra squash commit messages so no `[skip ci]` line copies onto `main`.
+5. Delete the head branch after merge (`git push origin --delete <branch>`). This repository does not auto-delete merged branches. Close superseded PRs; they do not merge.
 
 - Use the [PR template](./.github/PULL_REQUEST_TEMPLATE.md) checklist.
 - Never put a workflow-skip token in a commit message, PR title or PR body: the squash commit on `main` would get no `ci` run and could not be released. `pin-check` fails such a PR. The only skips are the automatic ones described in [docs/testing.md](./docs/testing.md#when-ci-skips-the-heavy-jobs).
@@ -69,20 +70,41 @@ Supported container installs pull release tags from GHCR ([docs/deploy.md](./doc
 
 ## Versioning
 
-- **Product:** git tag `vX.Y.Z` (+ optional pre-release suffix) and a GitHub Release.
+- **Product:** git tag `vX.Y.Z` (+ optional pre-release suffix) and a GitHub Release. **Etienne names every such tag** — including `-alpha.N`, `-beta.N`, `-rc.N`. Agents and contributors do not pick the next string.
 - **Pins:** Envoy / libmodsecurity / CRS / connector in `versions.lock.md`, not issue labels.
 - Optional triage labels (`pin:envoy`, `fail-closed`, …) are fine for filtering only.
 
 ## Releases
 
-1. In a PR to `main`: set `version` in every `crates/*/Cargo.toml` to the tag without the `v`, pre-release included (`0.1.0-alpha.4` for `v0.1.0-alpha.4`), and refresh `Cargo.lock` (`cargo update -w`); give the version's heading in [`CHANGELOG.md`](./CHANGELOG.md) its date; set `PRODUCT_VERSION` in `versions.lock.md` to the tag. The release workflow refuses a tag that is not exactly `v` + the crate version ([`scripts/release-version.sh`](./scripts/release-version.sh)).
-2. Check that the commit has a successful `ci` run with every required check green. A merge that took the tested-tree skip does not: run `gh workflow run ci.yml --ref main` and wait for it first. `scripts/release-gate.sh` refuses the tag otherwise.
-3. Run the local early-tester checklist ([docs/getting-started.md](./docs/getting-started.md#early-tester-checklist)) on that commit.
-4. Tag it: `git tag -a v0.1.0-alpha.4 <sha> && git push origin v0.1.0-alpha.4`.
-5. The `release` workflow builds the Linux tarballs and the multi-arch GHCR image and creates the GitHub Release (pre-release for suffixed tags) with the pins and artifact notes. Paste the CHANGELOG section into the Release body.
-6. After the release, record the commit and image digest in the connector row of `versions.lock.md`.
+SOP for making a version *ready* and then cutting it. Mechanical checks: [docs/testing.md — Releases](./docs/testing.md#releases). Agent short form: [AGENTS.md — Pins](./AGENTS.md#pins-source-of-truth).
 
-A manual dispatch of `release` builds and tests the artifacts but publishes nothing. Do not market an alpha as production-ready.
+**Etienne names the tag.** Do not bump crate `version` / `PRODUCT_VERSION`, do not `git tag` / `git push origin v*`, do not `gh release create`, and do not dispatch `release.yml` on a tag, unless he named that exact tag and said to push it. Never retag, move, or reuse a version string.
+
+### Ready (before he names a tag)
+
+Land product work on `main` through squash-merged PRs. Do not invent a CHANGELOG version heading yet — keep new work under `[Unreleased]`.
+
+1. **One concern per PR.** Do not open a swarm of overlapping product PRs. Superseded PRs **close**; they do not merge.
+2. **Negative controls** (`cursor/ci-negctl-*`): dispatch `ci.yml` on the branch (branch pushes run no CI), link the red run, then **close** the PR. Never merge. Never leave it open.
+3. **Squash-merge** only with `ci-ok` green on both arches. Clear extra squash commit messages so no `[skip ci]` line copies onto `main`.
+4. **Delete the head branch** after merge (`git push origin --delete <branch>`). This repository does not auto-delete merged branches.
+5. **Do not point testers at an unpublished SHA as “the release”.** The last published tag is what GHCR and the tarballs are. If they need unreleased `main` fixes, say that explicitly (clone `main` / wait for the named tag).
+6. Record whether `main`'s latest `ci` run skipped heavy jobs (`ci-tested-tree`). A skipped run **cannot** be used to tag.
+
+### Cut (only after Etienne names the exact tag)
+
+Example: he says `v0.1.0-beta.2`. Then, and only then:
+
+1. **Version PR** to `main`: every `crates/*/Cargo.toml` `version` = the tag without `v` (so `0.1.0-beta.2`); `cargo update -w`; move `[Unreleased]` under that heading in [`CHANGELOG.md`](./CHANGELOG.md) with today's date; set `PRODUCT_VERSION` in `versions.lock.md`; update README / getting-started / deploy “current pre-release” to that tag. `./scripts/release-version.sh <tag>` must pass.
+2. Wait for **`ci-ok` both arches**. Squash-merge; extra squash messages empty.
+3. If that merge SHA's `ci` skipped rust-quality / e2e / …: `gh workflow run ci.yml --ref main`. Wait until `gh run view <id> --json event,conclusion,headSha` is `conclusion=success` and `headSha` is the merge SHA. [`scripts/release-gate.sh`](./scripts/release-gate.sh) requires the 15 named checks **green, not skipped**.
+4. Run the early-tester checklist ([docs/getting-started.md](./docs/getting-started.md#early-tester-checklist)) on that commit.
+5. **Stop** unless he also said to push the tag. Then: `git tag -a <tag> <sha> && git push origin <tag>`.
+6. The `release` workflow builds the Linux tarballs and the multi-arch GHCR image and creates the GitHub Release (pre-release for suffixed tags). Paste the CHANGELOG section into the Release body.
+7. **Follow-up PR:** connector D-row in `versions.lock.md` — git SHA, OCI digest, per-arch `libmodsec_dm.so` sha256 from that release run.
+8. **GHCR visibility** is an owner click, independent of repo public. Anonymous `docker pull` stays `401` until he makes the package public.
+
+A manual dispatch of `release` (no tag) is a build-only dry run: artifacts as run uploads, nothing published. Do not market a pre-release as production-ready.
 
 ## License
 
