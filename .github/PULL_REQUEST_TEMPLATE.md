@@ -14,6 +14,8 @@
 - [ ] README stays product-only; agent/CI detail in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
 - [ ] User-facing or release-facing doc change → `CHANGELOG.md` `[Unreleased]` updated when substantive
 - [ ] Product version / `PRODUCT_VERSION` / crate `version` unchanged, **or** Etienne named the exact tag for this PR
+- [ ] Tests run on this head SHA; evidence cited (command or Actions URL with `event`, `conclusion`, `headSha`)
+- [ ] No leftover PRs or remote branches from this work (closed / deleted, or none created)
 
 ## Merge
 

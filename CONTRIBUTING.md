@@ -44,6 +44,8 @@ cargo test --workspace --locked
 4. Bring the branch up to date with `main`, then **squash-merge**. Clear extra squash commit messages so no `[skip ci]` line copies onto `main`.
 5. Delete the head branch after merge (`git push origin --delete <branch>`). This repository does not auto-delete merged branches. Close superseded PRs; they do not merge.
 
+Leave the repo cleaner than you found it. Do not open overlapping PRs for the same slice, do not leave `[negctl]` PRs open after the red run is linked, and do not hand Etienne a cleanup list of PRs and branches you created. Commits: one logical change; subject is what changed, body is why; no workflow-skip tokens. Test the SHA you are shipping and cite the run (`event`, `conclusion`, `headSha`) — “should be fine” is not evidence. Agent short form: [AGENTS.md — Owner is not the janitor](./AGENTS.md#owner-is-not-the-janitor).
+
 - Use the [PR template](./.github/PULL_REQUEST_TEMPLATE.md) checklist.
 - Never put a workflow-skip token in a commit message, PR title or PR body: the squash commit on `main` would get no `ci` run and could not be released. `pin-check` fails such a PR. The only skips are the automatic ones described in [docs/testing.md](./docs/testing.md#when-ci-skips-the-heavy-jobs).
 - Update `README.md` only for product-facing behaviour. Contributor and agent detail lives here, in `AGENTS.md` and in `docs/`.

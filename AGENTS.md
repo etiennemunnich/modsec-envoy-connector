@@ -37,6 +37,7 @@ Versioning = **git tags + Releases + this lockfile**, not GitHub issue labels.
 - Market go-ftw green as “H2 WAF proven” (go-ftw is **HTTP/1.x CRS fidelity** only).
 - Claim **battle-tested**, **production-ready**, **enterprise-grade**, or similar marketing certainty (or synonyms: prod-ready, “proven in production” without a cited run). Status is early testing only — match README; do not invent softer hype.
 - Choose or publish a product version. No crate/`PRODUCT_VERSION` bump, no `v*` tag, no `gh release create`, no tagged `release.yml` dispatch, until Etienne names that tag.
+- Leave process debris for Etienne: open `[negctl]` or superseded PRs, undeleted merged head branches, or a pile of “owner, please close/delete/dispatch” steps you could have done.
 
 ## Testing expectations
 
@@ -97,6 +98,17 @@ Apache-2.0 — `Copyright (c) 2026 Etienne Munnich`. See `LICENSE` and `CONTRIBU
 
 After a **validated** moderate slice on the feature branch: `git commit` + `git push` (to the branch). No force-push to shared branches unless Etienne asks. No secrets in commits.
 
+## Owner is not the janitor
+
+Etienne reviews and names tags. He does not close leftover PRs, delete branches, clear squash `[skip ci]` lines, or reconstruct tests you did not run.
+
+- **You open it, you finish it.** Mergeable PR, `ci-ok` both arches, head branch deleted after merge, `[negctl]` and superseded PRs you opened closed by you.
+- **Inspect before you report.** A branch is leftover only after unique commits and a two-dot diff vs `origin/main` show no unmerged content. Do not list refs you have not read.
+- **One ship PR.** No overlapping product PRs for the same slice. No extra review-loop PRs. Fix on the open PR.
+- **Commits survive squash.** Subject = what changed; body = why. No skip tokens, no WIP on a mergeable PR, no debug leftovers. The PR says to clear extra squash messages — do not file that as a later owner chore.
+- **Test the SHA you ship.** Cargo for Rust, `check-workflows.sh` / `test-ci-scripts.sh` for CI files, live suites for fail-mode / demo / body-mode. Cite `event`, `conclusion`, `headSha` from a run you viewed. “Should be fine” is not evidence.
+- **Leave the repo cleaner than you found it.** When you stop: no extra open PRs or remote branches from this work. If a permission blocks you, name that one step — not a cleanup list of things you could have done.
+
 ### Test plan checklist (every PR)
 
 Copy into the PR body (or tick the PR template). Skip rows that truly do not apply and say why.
@@ -111,6 +123,8 @@ Copy into the PR body (or tick the PR template). Skip rows that truly do not app
 - [ ] README stays product-only; agent/CI detail goes in `AGENTS.md` / `CONTRIBUTING.md` / `docs/`
 - [ ] Claims cite real runs (see CI rule 1) — never invent green
 - [ ] Product version unchanged, **or** Etienne named the exact tag for this PR
+- [ ] Tests actually run on this head SHA; evidence cited (not “should be fine”)
+- [ ] No leftover PRs or remote branches from this work (closed / deleted, or none created)
 
 ## Crate layout
 
