@@ -85,7 +85,7 @@ CI-side checks, offline: `./scripts/check-pins.sh`, `./scripts/check-workflows.s
 | `ci` | pull requests, pushes to `main`, dispatch. Branch pushes run nothing; runs on `main` are never cancelled | `pin-check` (pins, workflow rules, shellcheck, CI-script tests, the skip decision, and on PRs the CI-skip-token guard); `rust-quality` × arch (fmt, clippy, test, build, all `--locked`; installs the CRS pin and sets `MODSEC_REQUIRE_CRS=1`, so the engine CRS test fails rather than skips); `msrv`; `supply-chain` (cargo-deny); `protos` (`gen-protos.sh --check`); `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch; `e2e-dm` × arch (`DEPLOY=dm` lean: BUFFERED smoke+fail-closed-dm, STREAMED smoke); `ci-ok`, the single verdict | check status |
 | `e2e-lab` | weekly (Mon 05:47 UTC), dispatch | BUFFERED_PARTIAL, NONE and the two asymmetric body modes | issue `e2e-lab: failing cells` |
 | `crs-full` | monthly (7th, 03:41 UTC), dispatch | `go-ftw.sh full` in BUFFERED, STREAMED, FULL_DUPLEX_STREAMED | issue `crs-full: go-ftw failing` |
-| `release-watch` | daily 05:17 UTC, dispatch | lists stable releases of each axis; the latest stable **and** the top patch of the pinned line, when newer than the pin, each get a `stable-candidate` dispatch; newer release lines the patterns do not cover are flagged; a tag is retested until its issue records a result | issue `stable-candidate: <axis> <tag>`; its own failures: `release-watch: failing` |
+| `release-watch` | Monday 05:17 UTC, dispatch | lists stable releases of each axis; the latest stable **and** the top patch of the pinned line, when newer than the pin, each get a `stable-candidate` dispatch; newer release lines the patterns do not cover are flagged; a tag is retested until its issue records a result; an older open stable-candidate issue on the same minor line is closed once a newer tag on that line has passed | issue `stable-candidate: <axis> <tag>`; its own failures: `release-watch: failing` |
 | `stable-candidate` | dispatch (by `release-watch` or by hand) | that axis at the candidate, the others at their pins: smoke, fail-closed, fail-modes, hop-trace, go-ftw smoke | comment on the candidate issue |
 | `stable-window` | weekly (Mon 04:23 UTC), dispatch | the last 3 stables of each axis, plus the CRS LTS when outside that window, one axis moved per cell; libmodsecurity below v3.0.13 is skipped | issue `stable-window: failing cells` |
 | `stable-one-year` | dispatch only | stables from the last ~12 months, one axis at a time by default ([`versions.one-year.yaml`](../versions.one-year.yaml), [`scripts/one-year-matrix.sh`](../scripts/one-year-matrix.sh)); a Cartesian product needs `confirm_cartesian=yes` | issue `stable-one-year: failing cells` |
@@ -118,7 +118,7 @@ A schedule is proven only by a run with `event=schedule` (read with `gh run view
 | Workflow | Cron (UTC) | Last `event=schedule` run in this repository |
 |----------|------------|-----------------------------------------------|
 | `stable-window` | `23 4 * * 1` | [38247631117](https://github.com/etiennemunnich/modsec-envoy-connector/actions/runs/38247631117): success, `b7751c4c61ee61dbffea807319db3f7ce45f492f` |
-| `release-watch` | `17 5 * * *` | — |
+| `release-watch` | `17 5 * * 1` | — |
 | `e2e-lab` | `47 5 * * 1` | — |
 | `ash` | `11 3 * * 1` | — |
 | `crs-full` | `41 3 7 * *` | — |

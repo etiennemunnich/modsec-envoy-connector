@@ -60,7 +60,7 @@ All CI runs on GitHub-hosted runners, natively on `ubuntu-24.04` (x86_64) and `u
 | `msrv`, `supply-chain` (cargo-deny), `protos` | same, unless skipped | `cargo deny check`, `./scripts/gen-protos.sh --check` |
 | Live smoke, fail-closed, fail-modes H1+H2, trailers, HTTP/2 trailers, hop-trace, go-ftw smoke | `e2e-pin` (BUFFERED), `e2e-streamed`, `e2e-full-duplex` × arch, unless skipped | `./scripts/ci-live-e2e.sh` or the `demo/scripts/` suites |
 | BUFFERED_PARTIAL, NONE, asymmetric modes | `e2e-lab` × arch (weekly) | `BODY_MODE=… ./demo/scripts/up.sh` |
-| New stable Envoy / libmodsecurity / CRS | `release-watch` (daily) → `stable-candidate` × arch → issue | `ENVOY_VERSION=… ./scripts/ci-live-e2e.sh` |
+| New stable Envoy / libmodsecurity / CRS | `release-watch` (weekly, Monday) → `stable-candidate` × arch → issue | `ENVOY_VERSION=… ./scripts/ci-live-e2e.sh` |
 | Last 3 stables per axis | `stable-window` × arch (weekly) | same, per cell |
 | Full CRS go-ftw | `crs-full` × arch (monthly) | `./demo/scripts/go-ftw.sh full` |
 | Release artifacts | `release` on a tag on `main` whose commit passed `ci` | — |

@@ -683,6 +683,134 @@ for f in demo/scripts/lib.sh demo/scripts/trailers.sh; do
 done
 
 
+# --- release-watch.sh: close an older open candidate on the same minor line ---
+# Pins match the fake release list, so the watch dispatches nothing and only the
+# superseded-issue close runs. gh is a fixture; no network.
+watch_close() { # watch_close <issues-json> [dry_run] -> dir with rc, out, err, gh.log
+  local dir="${TMP}/watch-${RANDOM}"
+  mkdir -p "${dir}/bin"
+  cat >"${dir}/lock" <<'EOF'
+ENVOY_PIN=v1.40.2
+MODSECURITY_PIN=v3.0.17
+CRS_TAG=v4.30.0
+EOF
+  printf '%s\n' "$1" >"${dir}/issues.json"
+  cat >"${dir}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+log="${GH_FAKE_LOG:?}"
+issues="${GH_FAKE_ISSUES:?}"
+cmd="$1"
+shift
+case "${cmd}" in
+  api)
+    q=""
+    url=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --paginate) shift ;;
+        -q|--jq) q="$2"; shift 2 ;;
+        *) url="$1"; shift ;;
+      esac
+    done
+    python3 - "${url}" <<'PY' | jq -r "${q}"
+import json, sys
+url = sys.argv[1]
+if "envoyproxy/envoy" in url:
+    tag = "v1.40.2"
+elif "ModSecurity" in url:
+    tag = "v3.0.17"
+elif "coreruleset" in url:
+    tag = "v4.30.0"
+else:
+    sys.stderr.write("unexpected api url %s\n" % url)
+    sys.exit(2)
+json.dump([{"tag_name": tag, "draft": False, "prerelease": False, "published_at": "2026-01-01T00:00:00Z"}], sys.stdout)
+PY
+    ;;
+  issue)
+    sub="$1"
+    shift
+    jqfilter=""
+    number=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --jq|-q) jqfilter="$2"; shift 2 ;;
+        --repo|--search|--json|--limit|--state|--reason|--body|--title|--body-file) shift 2 ;;
+        [0-9]*) number="$1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    case "${sub}" in
+      list)
+        if [[ -n "${jqfilter}" ]]; then
+          jq -r "${jqfilter}" "${issues}"
+        else
+          jq -c '[.[] | {number, title, state}]' "${issues}"
+        fi
+        ;;
+      view)
+        if [[ -n "${jqfilter}" ]]; then
+          jq -c --argjson n "${number}" '.[] | select(.number == $n) | {comments}' "${issues}" | jq -r "${jqfilter}"
+        else
+          jq -c --argjson n "${number}" '.[] | select(.number == $n)' "${issues}"
+        fi
+        ;;
+      comment|close)
+        printf '%s %s\n' "${sub}" "${number}" >>"${log}"
+        ;;
+      *)
+        echo "unexpected issue subcommand ${sub}" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    echo "unexpected gh command ${cmd}" >&2
+    exit 2
+    ;;
+esac
+EOF
+  chmod +x "${dir}/bin/gh"
+  : >"${dir}/gh.log"
+  local rc=0
+  (
+    export PATH="${dir}/bin:${PATH}"
+    export GH_FAKE_LOG="${dir}/gh.log" GH_FAKE_ISSUES="${dir}/issues.json"
+    export GITHUB_REPOSITORY=o/r WATCH_REF=main LOCK_FILE="${dir}/lock"
+    export DRY_RUN="${2:-}"
+    unset FORCE GITHUB_STEP_SUMMARY
+    hash -r
+    "${ROOT}/scripts/release-watch.sh"
+  ) >"${dir}/out" 2>"${dir}/err" || rc=$?
+  printf '%s\n' "${rc}" >"${dir}/rc"
+  echo "${dir}"
+}
+same_minor='[
+  {"number":12,"title":"stable-candidate: envoy v1.40.1","state":"OPEN","comments":[{"body":"still open"}]},
+  {"number":13,"title":"stable-candidate: envoy v1.40.2","state":"OPEN","comments":[{"body":"## ✅ passed\n\nok"}]}
+]'
+d="$(watch_close "${same_minor}")"
+check "release-watch: superseded close exits 0" 0 "$(cat "${d}/rc")"
+grep -qx 'close 12' "${d}/gh.log" && ok=0 || ok=1
+check "release-watch: closes older issue on the same minor" 0 "${ok}"
+grep -q 'close 13' "${d}/gh.log" && ok=1 || ok=0
+check "release-watch: leaves the passed newer issue open" 0 "${ok}"
+other_minor='[
+  {"number":12,"title":"stable-candidate: envoy v1.40.1","state":"OPEN","comments":[{"body":"still open"}]},
+  {"number":21,"title":"stable-candidate: envoy v1.41.0","state":"OPEN","comments":[{"body":"## ✅ passed\n\nok"}]}
+]'
+d="$(watch_close "${other_minor}")"
+check "release-watch: other minor does not close (neg)" 0 "$(cat "${d}/rc")"
+grep -q '^close ' "${d}/gh.log" && ok=1 || ok=0
+check "release-watch: a pass on the next minor closes nothing" 0 "${ok}"
+d="$(watch_close "${same_minor}" 1)"
+check "release-watch: dry run exits 0" 0 "$(cat "${d}/rc")"
+grep -q 'would close #12' "${d}/out" && ok=0 || ok=1
+check "release-watch: dry run reports the close" 0 "${ok}"
+grep -q '^close ' "${d}/gh.log" && ok=1 || ok=0
+check "release-watch: dry run does not close" 0 "${ok}"
+
 [[ "${fails}" -eq 0 ]] || { echo "test-ci-scripts: ${fails} failed" >&2; exit 1; }
 [[ "${passes}" -ge "${MIN_CHECKS}" ]] || { echo "test-ci-scripts: only ${passes} checks ran (floor ${MIN_CHECKS})" >&2; exit 1; }
 echo "test-ci-scripts OK: ${passes} checks"
