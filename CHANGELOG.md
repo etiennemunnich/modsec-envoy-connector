@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `release-watch` runs Monday 05:17 UTC instead of daily. An older open stable-candidate issue on the same minor line is closed once a newer tag on that line has passed. The Monday run still re-enables scheduled workflows inside GitHub's 60-day public-repo window.
 - **DM DetectionOnly honesty:** filter load rejects `SecRuleEngine` DetectionOnly / Off unless JSON `allow_detection_only: true` (parity with ext_proc `/healthz` + `--allow-detection-only`).
 - **DM missing-session symmetry:** `finish_held_response_body` fail-closes like the request twin when no session is present.
 - Docs: fail-closed-dm status off “alpha draft”; getting-started checklist uses published `v0.1.0-beta.1`; README “How it decides” covers both hops and links [fail-closed-dm.md](./docs/fail-closed-dm.md); Drop status diverge (DM **403** vs ext_proc **500**) noted; testing.md softens “alpha DM”.

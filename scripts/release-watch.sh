@@ -13,6 +13,9 @@
 # Dedupe is on recorded results, not on "an issue exists": a tag is skipped
 # once its issue has a "## ✅" result, or MAX_FAILS "## ❌" results (flakes are
 # retried until then). The issue is only created after the dispatch succeeded.
+# An older open issue on the same minor line (v1.40.1 vs v1.40.2, not v1.41)
+# is closed once a newer tag on that line has a passing result. DRY_RUN reports
+# that close and does not perform it.
 #
 #   ./scripts/release-watch.sh
 #   FORCE=envoy:v1.38.4 ./scripts/release-watch.sh   # also test this tag (even if
@@ -44,6 +47,98 @@ find_issue() {
 results() {
   gh issue view "$1" --repo "${REPO}" --json comments \
     -q '[.comments[].body] | "\(map(select(startswith("## ✅"))) | length) \(map(select(startswith("## ❌"))) | length)"'
+}
+# Close open stable-candidate issues older than a passing tag on the same
+# minor line. A pass on v1.41 does not close v1.40.
+close_superseded() {
+  local list rows number state axis tag counts passed key found win i j title
+  local -a numbers=()
+  local -a states=()
+  local -a axes=()
+  local -a tags=()
+  local -a passeds=()
+  local -a best_keys=()
+  local -a best_tags=()
+  list="$(mktemp)"
+  rows="$(mktemp)"
+  gh issue list --repo "${REPO}" --state all --limit 100 \
+    --search "\"stable-candidate:\" in:title" --json number,title,state >"${list}"
+  python3 - "${list}" >"${rows}" <<'PY'
+import json, sys
+items = json.load(open(sys.argv[1]))
+for item in items:
+    title = item.get("title") or ""
+    prefix = "stable-candidate: "
+    if not title.startswith(prefix):
+        continue
+    rest = title[len(prefix):]
+    axis, sep, tag = rest.partition(" ")
+    if not sep or axis not in ("envoy", "modsecurity", "crs"):
+        continue
+    parts = tag[1:].split(".") if tag.startswith("v") else []
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        continue
+    state = (item.get("state") or "").upper()
+    print(f"{item['number']}\t{state}\t{axis}\t{tag}")
+PY
+  while IFS=$'\t' read -r number state axis tag; do
+    [[ -n "${number}" ]] || continue
+    counts="$(results "${number}")"
+    passed="${counts%% *}"
+    numbers+=("${number}")
+    states+=("${state}")
+    axes+=("${axis}")
+    tags+=("${tag}")
+    passeds+=("${passed}")
+  done <"${rows}"
+  rm -f "${list}" "${rows}"
+  if [[ ${#passeds[@]} -gt 0 ]]; then
+    for i in "${!passeds[@]}"; do
+      [[ "${passeds[i]}" -gt 0 ]] || continue
+      key="${axes[i]} ${tags[i]%.*}"
+      found=0
+      if [[ ${#best_keys[@]} -gt 0 ]]; then
+        for j in "${!best_keys[@]}"; do
+          [[ "${best_keys[j]}" == "${key}" ]] || continue
+          found=1
+          if newer "${tags[i]}" "${best_tags[j]}"; then
+            best_tags[j]="${tags[i]}"
+          fi
+        done
+      fi
+      if [[ "${found}" -eq 0 ]]; then
+        best_keys+=("${key}")
+        best_tags+=("${tags[i]}")
+      fi
+    done
+  fi
+  if [[ ${#numbers[@]} -eq 0 ]]; then
+    return 0
+  fi
+  for i in "${!numbers[@]}"; do
+    [[ "${states[i]}" == "OPEN" ]] || continue
+    key="${axes[i]} ${tags[i]%.*}"
+    win=""
+    if [[ ${#best_keys[@]} -gt 0 ]]; then
+      for j in "${!best_keys[@]}"; do
+        if [[ "${best_keys[j]}" == "${key}" ]]; then
+          win="${best_tags[j]}"
+          break
+        fi
+      done
+    fi
+    [[ -n "${win}" ]] || continue
+    newer "${win}" "${tags[i]}" || continue
+    title="stable-candidate: ${axes[i]} ${tags[i]}"
+    if [[ -n "${DRY_RUN:-}" ]]; then
+      say "- ${title}: would close #${numbers[i]}, superseded by stable-candidate: ${axes[i]} ${win} (dry run)"
+      continue
+    fi
+    gh issue comment "${numbers[i]}" --repo "${REPO}" \
+      --body "Superseded by stable-candidate: ${axes[i]} ${win}, which passed on this minor line. ${RUN_URL}"
+    gh issue close "${numbers[i]}" --repo "${REPO}" --reason completed
+    say "- ${title}: closed #${numbers[i]}, superseded by stable-candidate: ${axes[i]} ${win}"
+  done
 }
 
 candidates=()
@@ -86,6 +181,7 @@ if [[ -n "${FORCE:-}" ]]; then
   add "${FORCE}"
 fi
 say ""
+close_superseded
 
 for c in ${candidates[@]+"${candidates[@]}"}; do
   axis="${c%%:*}" tag="${c#*:}"
